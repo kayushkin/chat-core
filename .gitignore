@@ -1,0 +1,16 @@
+node_modules/
+dist/
+*.tsbuildinfo
+coverage/
+
+# Host-specific config goes under ./.local/ (OSS convention)
+.local/
+.env
+.env.*
+*.key
+*.pem
+credentials.*
+secrets.*
+# ...but never ignore source files that happen to match the globs above
+!*.ts
+!*.tsx
