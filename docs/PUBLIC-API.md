@@ -22,14 +22,20 @@ export function ChatProvider(props: ChatProviderProps): JSX.Element;
 // ---- Selectors / hooks (all read from the in-memory store; no network on the hot path) ----
 
 // Sidebar list, already filtered + grouped + sorted by the current filter/folder state.
+// `effectiveState(sessionId)` returns the tail-reconciled state for a row's status dot: a
+// session the server still reports as running/holding but whose warm tail is terminal reads
+// as completed/failed (F1 self-heal). Cold sessions return their raw summary state.
 export function useSessionList(): {
   groups: { folder: string; sessions: SessionSummary[] }[];
   total: number;
   loading: boolean;
+  effectiveState: (sessionId: string) => string;
 };
 
 // Active session id + setter. select() is synchronous: it swaps the active id and renders
 // from cache immediately (sub-10ms); any needed fetch/reconcile happens in the background.
+// `summary.state` is reconciled against the warm tail (see effectiveState), so a stale
+// running/holding state clears once the session is open.
 export function useActiveSession(): {
   id: string | null;
   select: (id: string) => void;
@@ -96,3 +102,6 @@ Notes for implementers:
   path that updates the UI.
 - `useTurns(view:'raw')` and `sourcesFor` are the audit surface — they must expose every
   stored copy (see WIRE.md non-destructive dedup).
+- Pure reconcile helpers are also exported for non-React consumers/tests:
+  `terminalStateFromTail(model)` and `effectiveState(state, sessionId)` /
+  `activeSummaryEffective(state)` (see WIRE.md "Client terminal-state reconcile").

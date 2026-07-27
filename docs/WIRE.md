@@ -49,6 +49,34 @@ client keeps this logic for the LIVE TAIL only (`reduce/otelDedup.ts`); the serv
 for settled history. A shared fixture (including a 1s-late dual-emit case) pins both to the
 same output.
 
+### OTel / error / system `Entry` fields (mapped from the canonical wire)
+These optional fields ride on `Entry` (camelCase), mapped 1:1 from the source event —
+never invented. log-store's `Entry` struct and the live-tail reducer populate the same set.
+- `recovered?: boolean` — an assistant text block surfaced from the OTel copy after the live
+  stream produced nothing that turn (`extensions.recovered`; handler.go
+  `flushRecoveredAssistant`). It is NOT a duplicate — there is no live copy to collapse it
+  against, so it renders as the assistant message. The flag is a presentation marker only and
+  never gates visibility. On the settled path such a block is kept **visible/primary** when no
+  Result or harness assistant text supersedes it in the same turn.
+- `code?: string`, `retryable?: boolean`, `statusCode?: number` — the canonical
+  `msg.ErrorEvent{Code,Message,Retryable,StatusCode}` fields on a kind `'error'` entry (wire:
+  `error.code` / `error.retryable` / `error.status_code`). `code` values `TURN_IDLE_TIMEOUT` and
+  `PROCESS_DIED` are **turn terminators** (transition the session out of running/holding);
+  `api_error` / `api_retries_exhausted` are **informational** chips and must NOT clear the
+  running state. Unknown codes render generically.
+- `subtype?: string` — the `SystemEvent.subtype` on a kind `'system'` entry (e.g.
+  `subagent_completed`, `compact_boundary`). An unknown subtype renders generically, never as
+  an error.
+
+### Client terminal-state reconcile (F1)
+The server's `sessions.state` can stay pinned to a holding value (`tool_running`) after a turn
+actually settled. `reduce/terminalState.ts` `terminalStateFromTail(model)` scans the
+materialized tail for a terminal signal — a kind `'result'` entry, a kind `'error'` entry whose
+`code` is `TURN_IDLE_TIMEOUT`/`PROCESS_DIED`, or a raw event `type` in
+`{turn_complete, close, result}` — and the `effectiveState` selector overrides a stale
+running/holding summary state with the tail's verdict (`completed`/`failed`). Content was never
+missing; only the displayed state is corrected.
+
 ## SSE (unchanged from today)
 - `GET /session-events` — one global stream of list deltas (`hello`/`upsert`/`delete`).
 - `GET /sessions/{id}/events` — per-session stream for the ACTIVE session only; resumes via

@@ -69,6 +69,20 @@ export interface Entry {
   toolResult?: unknown;
   raw?: unknown; // original event payload, for the raw Timeline view / audit
 
+  // Provenance / kind-specific fields (mapped from the canonical wire, never invented):
+  /** true when this assistant text was recovered from the OTel copy after the live
+   *  stream produced nothing (`extensions.recovered`). Never gates visibility. */
+  recovered?: boolean;
+  /** error entries (kind 'error'): the canonical ErrorEvent fields. `code` values like
+   *  TURN_IDLE_TIMEOUT / PROCESS_DIED are turn terminators; api_error /
+   *  api_retries_exhausted are informational chips. */
+  code?: string;
+  retryable?: boolean;
+  statusCode?: number;
+  /** system entries (kind 'system'): the SystemEvent subtype (e.g. subagent_completed,
+   *  compact_boundary). An unknown subtype must render generically, never as an error. */
+  subtype?: string;
+
   // Non-destructive dedup annotations:
   duplicate: boolean; // hidden in collapsed Turns view; always shown in raw Timeline
   primary: boolean; // the copy shown for its group in the collapsed view

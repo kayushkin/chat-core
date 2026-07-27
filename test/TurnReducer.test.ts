@@ -106,6 +106,47 @@ describe('TurnReducer — live-tail, O(1)-indexed, idempotent', () => {
     expect(Object.keys(s.model.entries)).toContain('m3_user');
   });
 
+  it('carries canonical ErrorEvent fields (code/retryable/statusCode) onto the entry', () => {
+    const s = applyEvent(initTailState('br_1'), {
+      id: '7',
+      type: 'error',
+      data: {
+        event_id: 7,
+        message_id: 'me',
+        turn_id: 'te',
+        timestamp: '2026-07-27T14:00:03-07:00',
+        extensions: { source: 'otel' },
+        error: { code: 'api_error', message: 'Overloaded', retryable: true, status_code: 529 },
+      },
+    });
+    const e = s.model.entries['me_error'];
+    expect(e?.kind).toBe('error');
+    expect(e?.text).toBe('Overloaded');
+    expect(e?.code).toBe('api_error');
+    expect(e?.retryable).toBe(true);
+    expect(e?.statusCode).toBe(529);
+  });
+
+  it('marks a recovered OTel assistant block with recovered=true and keeps it visible', () => {
+    const s = applyEvent(initTailState('br_1'), {
+      id: '8',
+      type: 'block',
+      data: {
+        event_id: 8,
+        turn_id: 'tr',
+        timestamp: '2026-07-27T14:00:04-07:00',
+        extensions: { source: 'otel', recovered: true },
+        block: { block: { type: 'text', text_block: { text: 'final answer' } } },
+      },
+    });
+    // No message_id → keyed by event id; single copy stays primary/visible (recovery).
+    const e = s.model.entries['evt_8'];
+    expect(e?.recovered).toBe(true);
+    expect(e?.text).toBe('final answer');
+    expect(e?.duplicate).toBe(false);
+    expect(e?.primary).toBe(true);
+  });
+
   it('does not mutate the input state (pure)', () => {
     const s0 = initTailState('br_1');
     const s1 = applyEvent(s0, streamText(1, 'm1', 't1', 'x'));

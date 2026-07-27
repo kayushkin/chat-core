@@ -50,6 +50,8 @@ export {
   visibleSessions,
   visibleCount,
   activeSummary,
+  activeSummaryEffective,
+  effectiveState,
   turnsFor,
   turnList,
   entriesFor,
@@ -71,6 +73,7 @@ export {
   groupMembers,
   isOTelSourced,
 } from './reduce/otelDedup.js';
+export { terminalStateFromTail } from './reduce/terminalState.js';
 export {
   parseRefChips,
   remarkRefChips,

@@ -25,8 +25,10 @@ export interface WireEventData {
   client_request_id?: string;
 
   /** llm-bridge-claudecode tags the OTel copy of a prompt/response here
-   *  (`extensions.source = "otel"`) so consumers can tell the two sources apart. */
-  extensions?: { source?: string };
+   *  (`extensions.source = "otel"`) so consumers can tell the two sources apart.
+   *  `recovered` marks an assistant text block surfaced from the OTel copy after the
+   *  live stream produced nothing that turn (handler.go flushRecoveredAssistant). */
+  extensions?: { source?: string; recovered?: boolean };
 
   stream?: { delta?: { type?: string; text?: string; thinking?: string } };
   block?: {
@@ -40,7 +42,10 @@ export interface WireEventData {
   tool_call?: { tool_id?: string; name?: string; input?: unknown };
   tool_result?: { tool_id?: string; name?: string; output?: unknown; is_error?: boolean };
   result?: { text?: string; usage?: unknown; is_error?: boolean };
-  error?: { message?: string };
+  // Mirrors the canonical msg.ErrorEvent JSON (snake_case on the wire). `code` values
+  // TURN_IDLE_TIMEOUT / PROCESS_DIED are turn terminators; api_error /
+  // api_retries_exhausted are informational. `retryable` / `status_code` drive chip styling.
+  error?: { code?: string; message?: string; retryable?: boolean; status_code?: number };
   system?: { subtype?: string; message?: string };
   state?: { state?: string; previous?: string; reason?: string };
   info?: unknown;

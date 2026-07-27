@@ -1,5 +1,6 @@
 import type { Entry, SessionSummary, Turn, TurnModel } from '../net/types.js';
 import { annotateOTelDuplicates, groupMembers } from '../reduce/otelDedup.js';
+import { terminalStateFromTail } from '../reduce/terminalState.js';
 import type { ChatState, FilterState } from './ChatStore.js';
 
 // Memoized selectors over the hot store. Kept pure + framework-free so they are
@@ -84,6 +85,63 @@ export function visibleCount(state: ChatState): number {
 export function activeSummary(state: ChatState): SessionSummary | null {
   if (!state.activeId) return null;
   return state.sessions.get(state.activeId) ?? null;
+}
+
+// Summary states that mean "still working" — the ones a terminal tail may override.
+// Parked/settled states (awaiting_user, awaiting_permission, paused, idle, completed,
+// error, aborted, disconnected) are left untouched: they are not stale spinners.
+const RUNNING_STATES = new Set([
+  'starting',
+  'model_generating',
+  'tool_running',
+  'compacting',
+  'rate_limited',
+  'running',
+  'holding',
+  'waiting_on_approval',
+]);
+
+/**
+ * The effective (reconciled) state of a session. If the session's cached/warm
+ * TurnModel tail is terminal per `terminalStateFromTail`, a running/holding summary
+ * state is overridden with the tail's verdict ('completed' | 'failed') — this clears
+ * the stale spinner the server's state derivation can strand (F1). A session that is
+ * genuinely in flight (no terminal tail) or already in a settled/parked state is
+ * returned unchanged.
+ */
+export function effectiveState(state: ChatState, sessionId: string | null): string {
+  if (!sessionId) return '';
+  const summary = state.sessions.get(sessionId);
+  const raw = summary?.state ?? '';
+  if (!RUNNING_STATES.has(raw)) return raw;
+  const terminal = terminalStateFromTail(state.turnsBySession.get(sessionId));
+  if (!terminal) return raw;
+  return terminal === 'failed' ? 'failed' : 'completed';
+}
+
+// Memo for the reconciled active summary: recompute only when the summary object or
+// its warm TurnModel changes identity, so useStore sees a stable reference between
+// unrelated renders (a fresh object every call would loop the subscription).
+let activeEffectiveCache: {
+  summary: SessionSummary | null;
+  model: TurnModel | undefined;
+  result: SessionSummary | null;
+} | null = null;
+
+/** The active session's summary with its `state` reconciled against the warm tail
+ *  (see `effectiveState`). Same reference as `activeSummary` when the tail implies no
+ *  correction, so nothing downstream churns. */
+export function activeSummaryEffective(state: ChatState): SessionSummary | null {
+  const summary = activeSummary(state);
+  if (!summary) return null;
+  const model = state.turnsBySession.get(summary.sessionId);
+  if (activeEffectiveCache && activeEffectiveCache.summary === summary && activeEffectiveCache.model === model) {
+    return activeEffectiveCache.result;
+  }
+  const eff = effectiveState(state, summary.sessionId);
+  const result = eff === summary.state ? summary : { ...summary, state: eff };
+  activeEffectiveCache = { summary, model, result };
+  return result;
 }
 
 /** The materialized model for a session, or undefined if not warm. */

@@ -3,7 +3,8 @@ import { useStore } from 'zustand';
 import type { Entry, SessionSummary, Turn } from '../net/types.js';
 import type { ChatActions, FilterState } from '../store/ChatStore.js';
 import {
-  activeSummary,
+  activeSummaryEffective,
+  effectiveState,
   sourcesForEntry,
   turnsFor,
   visibleCount,
@@ -22,17 +23,29 @@ function useActions(): ChatActions {
   return useStore(store, (s) => s.actions);
 }
 
-/** Sidebar list, already filtered + grouped + sorted by the current filter/folder. */
+/** Sidebar list, already filtered + grouped + sorted by the current filter/folder.
+ *  `effectiveState(sessionId)` returns the tail-reconciled state for a row's status
+ *  indicator: a session the server still reports as running/holding but whose warm
+ *  tail is terminal reads as completed/failed, so a stale spinner self-heals on open
+ *  (F1). The function's identity changes when the tails or session maps change, so a
+ *  settling tail re-renders the affected rows. */
 export function useSessionList(): {
   groups: { folder: string; sessions: SessionSummary[] }[];
   total: number;
   loading: boolean;
+  effectiveState: (sessionId: string) => string;
 } {
   const { store } = useChatContext();
   const groups = useStore(store, visibleSessions);
   const total = useStore(store, visibleCount);
   const loading = useStore(store, (s) => s.listLoading);
-  return { groups, total, loading };
+  const turnsBySession = useStore(store, (s) => s.turnsBySession);
+  const sessions = useStore(store, (s) => s.sessions);
+  const effState = useCallback(
+    (sessionId: string) => effectiveState(store.getState(), sessionId),
+    [store, turnsBySession, sessions],
+  );
+  return { groups, total, loading, effectiveState: effState };
 }
 
 /** Active session id + a synchronous setter. */
@@ -43,7 +56,8 @@ export function useActiveSession(): {
 } {
   const { store, api, prefetcher } = useChatContext();
   const id = useStore(store, (s) => s.activeId);
-  const summary = useStore(store, activeSummary);
+  // Reconciled against the warm tail so a stale running/holding state clears on open.
+  const summary = useStore(store, activeSummaryEffective);
   const actions = useActions();
 
   const select = useCallback(

@@ -163,13 +163,22 @@ function applyPayload(prev: Entry, ev: WireEvent): Entry {
       break;
     case 'error':
       next.text = raw.error?.message || prev.text || 'error';
+      // Carry the canonical ErrorEvent fields so the edge can style the chip and
+      // the terminal-state reconcile can spot TURN_IDLE_TIMEOUT / PROCESS_DIED.
+      if (raw.error?.code !== undefined) next.code = raw.error.code;
+      if (raw.error?.retryable !== undefined) next.retryable = raw.error.retryable;
+      if (raw.error?.status_code !== undefined) next.statusCode = raw.error.status_code;
       break;
     case 'system':
       next.text = raw.system?.message ?? prev.text;
+      if (raw.system?.subtype !== undefined) next.subtype = raw.system.subtype;
       break;
     default:
       break;
   }
+  // Recovered-assistant provenance rides on extensions (block events); never gates
+  // visibility — it's a presentation marker only.
+  if (raw.extensions?.recovered === true) next.recovered = true;
   next.raw = raw;
   return next;
 }
