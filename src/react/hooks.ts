@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useStore } from 'zustand';
 import type { Entry, SessionSummary, Turn } from '../net/types.js';
 import type { ChatActions, FilterState } from '../store/ChatStore.js';
@@ -141,20 +141,53 @@ export function useTurns(
   return { turns, entries, visibleEntryIds, sourcesFor, loading, more, loadOlder };
 }
 
-/** Composer for a session (or the pending/new pane). */
+/** Composer + turn controls for a session (or the pending/new pane).
+ *
+ *  `stop()` interrupts the running turn (POST /sessions/{id}/interrupt). It is a
+ *  LOUD control: `ApiClient.interrupt` throws on any non-2xx (e.g. the 409 the
+ *  server returns while a tool still holds the turn), and `stop()` sets `error` AND
+ *  rethrows rather than optimistically marking the session idle — a failed stop must
+ *  be visible, never swallowed into a fake-idle. `interrupting` is true for the
+ *  duration of the request; `paused` reflects a parked/held session state (checked
+ *  as the explicit 'paused' value, never a bare `state === 'running'` — `tool_running`
+ *  is also busy, the §5 enum trap). */
 export function useComposer(sessionId: string | null): {
   send: (text: string) => void;
   draft: string;
   setDraft: (t: string) => void;
   sending: boolean;
+  stop: () => Promise<void>;
+  interrupting: boolean;
+  paused: boolean;
+  error: string | null;
 } {
   const { store, api } = useChatContext();
   const actions = useActions();
   const key = sessionId ?? PENDING_DRAFT_KEY;
   const draft = useStore(store, (s) => s.drafts.get(key) ?? '');
   const sending = useStore(store, (s) => (sessionId ? s.sending.has(sessionId) : false));
+  const state = useStore(store, (s) => (sessionId ? s.sessions.get(sessionId)?.state : undefined));
+  const paused = state === 'paused';
+  const [interrupting, setInterrupting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const setDraft = useCallback((t: string) => actions.setDraft(key, t), [actions, key]);
+
+  const stop = useCallback(async () => {
+    if (!sessionId) return;
+    setInterrupting(true);
+    setError(null);
+    try {
+      // Throws on non-2xx (incl. the 409 "nothing was stopped"). Do NOT mark the
+      // session idle on failure — surface the error and rethrow.
+      await api.interrupt(sessionId);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      throw e;
+    } finally {
+      setInterrupting(false);
+    }
+  }, [api, sessionId]);
 
   const send = useCallback(
     (text: string) => {
@@ -190,19 +223,42 @@ export function useComposer(sessionId: string | null): {
     [actions, api, store, sessionId, key],
   );
 
-  return { send, draft, setDraft, sending };
+  return { send, draft, setDraft, sending, stop, interrupting, paused, error };
 }
 
-/** Filters + folders (client-side; switching is sub-10ms). */
+/** Filters + folders (client-side; switching is sub-10ms).
+ *
+ *  `set({ search })` matches the display name INSTANTLY and locally. Content search
+ *  (C6) is an async augmentation: the same query is also sent to the backend
+ *  (GET /sessions/search) and its hit ids are folded into the list path when they
+ *  arrive, so the filter matches transcript text too — without ever blocking the
+ *  local name filter on the network. */
 export function useFilters(): {
   filter: FilterState;
   set: (patch: Partial<FilterState>) => void;
   openFolder: (folder: string) => void;
 } {
-  const { store } = useChatContext();
+  const { store, api } = useChatContext();
   const filter = useStore(store, (s) => s.filter);
   const actions = useActions();
-  const set = useCallback((patch: Partial<FilterState>) => actions.setFilter(patch), [actions]);
+  const set = useCallback(
+    (patch: Partial<FilterState>) => {
+      actions.setFilter(patch); // instant/local — never awaits the network.
+      if (patch.search !== undefined) {
+        const q = patch.search.trim();
+        if (q) {
+          // Async augmentation; setContentHits ignores a stale response.
+          void api
+            .search(q)
+            .then((r) => actions.setContentHits(q, r.sessionIds))
+            .catch(() => {});
+        } else {
+          actions.setContentHits('', []);
+        }
+      }
+    },
+    [actions, api],
+  );
   const openFolder = useCallback((folder: string) => actions.openFolder(folder), [actions]);
   return { filter, set, openFolder };
 }

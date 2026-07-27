@@ -56,17 +56,33 @@ export function useTurns(sessionId: string | null, view?: 'turns' | 'raw'): {
   loadOlder: () => void;
 };
 
-// Composer for a session (or the pending/new pane). Optimistic: append() shows the user
-// text instantly and reconciles the message id after POST. Creating the real session is
-// lazy on first send for a pending pane.
+// Composer + turn controls for a session (or the pending/new pane). Optimistic:
+// append() shows the user text instantly and reconciles the message id after POST.
+// Creating the real session is lazy on first send for a pending pane.
+//
+// `stop()` interrupts the running turn (POST /sessions/{id}/interrupt). It is a LOUD
+// control: it throws on a non-2xx (e.g. the 409 the server returns while a tool still
+// holds the turn), sets `error`, and does NOT optimistically mark the session idle —
+// a failed stop must be visible, never swallowed into a fake-idle. `interrupting` is
+// true for the request's duration. `paused` reflects a parked/held session (the
+// explicit 'paused' state; never gate on a bare `state === 'running'` — `tool_running`
+// is also busy). `error` is the last send/stop error message, or null.
 export function useComposer(sessionId: string | null): {
   send: (text: string) => void;
   draft: string;
   setDraft: (t: string) => void;
   sending: boolean;
+  stop: () => Promise<void>;
+  interrupting: boolean;
+  paused: boolean;
+  error: string | null;
 };
 
 // Filters + folders (client-side over the loaded list; switching is sub-10ms).
+// `set({ search })` matches the display name INSTANTLY/locally; it also fires an async
+// content search (GET /sessions/search) whose hit ids are folded into the list path
+// when they arrive, so the filter matches transcript text too — without ever blocking
+// the local name filter on the network (C6).
 export function useFilters(): {
   filter: FilterState;
   set: (patch: Partial<FilterState>) => void;
@@ -93,6 +109,45 @@ export interface FilterState {
   folder: string | null; // e.g. 'archive'
   search: string;
 }
+
+// ---- Timeline pane selector (Path A) ----
+// A pure, memoized transform of a materialized model into the event-granular,
+// turn→task-grouped structure the Timeline pane renders. Returns DATA, not JSX, so
+// the pane stays presentation-only and never re-derives. Memoized on model identity.
+// Mirrors the grouping semantics of bridge-ui Timeline.tsx (group by turn, sub-group
+// tool/thinking/result/error, respect task_* scoping); being the raw audit surface it
+// represents every entry, ordered by eventId.
+export function selectTimeline(model: TurnModel | undefined): TimelineView;
+
+export interface TimelineView {
+  items: TimelineItem[];          // flat, ordered — every event
+  turns: TimelineTurnGroup[];     // turn → task grouped tree
+  count: number;
+}
+export interface TimelineTurnGroup { turnId: string; header: TimelineItem; children: TimelineNode[]; }
+export type TimelineNode =
+  | { type: 'item'; item: TimelineItem }
+  | { type: 'task'; taskId: string; header: TimelineItem; children: TimelineItem[] };
+export interface TimelineItem {
+  key: string; entryId: string; turnId: string; taskId?: string;
+  icon: string; label: string; detail?: string; fullText?: string;
+  ts: string; tone: TimelineTone;
+}
+export type TimelineTone =
+  | 'turn' | 'task-start' | 'thinking' | 'tool' | 'tool-done' | 'tool-err'
+  | 'result' | 'error' | 'system' | 'text';
+
+// ---- Reference chips (dash TurnList wiring) ----
+// Pure matcher + a remark transformer (dependency-free) and a minimal React renderer.
+// Wire into ReactMarkdown:  remarkPlugins={[remarkRefChips]} components={{ 'ref-chip': RefChip }}
+export function parseRefChips(value: string): RefSegment[];
+export function remarkRefChips(): (tree: unknown) => void;
+export function RefChip(props: RefChipProps): JSX.Element;
+
+// ---- ApiClient additions ----
+// interrupt() fails LOUD (throws on non-2xx, incl. the 409 "nothing was stopped");
+// search() returns the session ids whose transcript text matched, for filter folding.
+// class ApiClient { interrupt(id: string): Promise<unknown>; search(q: string): Promise<SearchResponse>; }
 ```
 
 Notes for implementers:

@@ -1,6 +1,7 @@
 import type {
   MessagesResponse,
   RecentBundleResponse,
+  SearchResponse,
   SummaryResponse,
   ValidatorsResponse,
 } from './types.js';
@@ -100,6 +101,15 @@ export class ApiClient {
     return this.getJSON<MessagesResponse>(`/sessions/${id}/messages${qs ? `?${qs}` : ''}`);
   }
 
+  /** Full-text content search across session transcripts. Returns the matching
+   *  session ids so the list/filter path can fold content hits in alongside the
+   *  instant local name match. Async augmentation only — the caller must NOT block
+   *  the local name filter on this. Throws loudly on a non-2xx. */
+  search(q: string): Promise<SearchResponse> {
+    const qs = new URLSearchParams({ q }).toString();
+    return this.getJSON<SearchResponse>(`/sessions/search?${qs}`);
+  }
+
   // --- mutations (existing bridge endpoints; see bridge-ui useBridgeSession.ts) ---
 
   createSession(opts?: { instanceId?: string; harness?: string }): Promise<CreatedSession> {
@@ -130,5 +140,19 @@ export class ApiClient {
 
   resume(id: string): Promise<unknown> {
     return this.postJSON(`/sessions/${id}/resume`, {});
+  }
+
+  /**
+   * Interrupt/stop a running session's current turn.
+   * POST /sessions/{id}/interrupt.
+   *
+   * This is deliberately a LOUD call: `postJSON` throws on any non-2xx, and this
+   * method keeps that. The server returns 409 ("nothing was stopped") while a tool
+   * still holds the turn (until the server-side gate fix ships) — that MUST surface
+   * as a thrown error so the caller does NOT optimistically mark the session idle.
+   * Never swallow this into a fake-idle.
+   */
+  interrupt(id: string): Promise<unknown> {
+    return this.postJSON(`/sessions/${id}/interrupt`, {});
   }
 }

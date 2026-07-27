@@ -35,6 +35,20 @@ Materialized tail (or a page older than `before`). → `MessagesResponse { model
 `model.more=true` if older turns remain. Never unbounded — default returns the last `limit`
 turns only.
 
+### `GET /sessions/search?q=<text>`
+Full-text content search across session transcripts. → `SearchResponse`
+`{ sessionIds: string[], hits?: { sessionId, snippet? }[] }` — the ids whose materialized
+transcript text matched `q`. The client folds `sessionIds` into the search-filter path
+(C6) so a query matches transcript content, not just the display name. This is an ASYNC
+AUGMENTATION of the instant local name filter — the client never blocks name-matching on
+it, and a response for a superseded query is dropped (the hit set is pinned to its query).
+
+### `POST /sessions/{id}/interrupt`
+Interrupt/stop the running turn. The client treats this as a LOUD call: any non-2xx throws
+and MUST surface (never a swallowed fake-idle). In particular the server returns **409**
+("nothing was stopped") while a tool still holds the turn — until the server-side gate fix
+ships — and the client must show that, not optimistically mark the session idle.
+
 ## The `Entry` / dedup model (non-destructive)
 Every stored event → exactly one `Entry`. Materialization on the server (log-store
 `materialize.go`) groups entries into turns and sets the annotations:

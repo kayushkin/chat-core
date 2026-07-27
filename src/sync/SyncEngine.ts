@@ -193,12 +193,28 @@ export class SyncEngine {
       const server = serverValidators[id];
       const local = this.store.getState().turnsBySession.get(id)?.validator;
       if (validatorsEqual(local, server)) continue;
-      await this.repairSession(id);
+      // Idle over-poll fix: a changed validator only justifies pulling the heavy
+      // message tail when this session's tail is actually on screen — i.e. it is
+      // the active/open one. For an UNSELECTED cached session (even a running one)
+      // we stop here: the cheap validator check has already run, and the full
+      // ~500 KB tail is NOT fetched. It self-heals when the session next becomes
+      // active — the active-session SSE resumes from Last-Event-ID and replays the
+      // missed events, and this sweep repairs it once activeId points at it.
+      if (this.isDisplayed(id)) {
+        await this.repairSession(id);
+      }
     }
 
     if (this.cache.isEnabled) {
       void enforceCacheBound(this.cache, this.sweepLimit);
     }
+  }
+
+  /** True iff this session's tail is currently being displayed. In this client the
+   *  only displayed tail is the active (open) session; a warm-but-inactive session
+   *  is never on screen, so its tail must not be refetched by the sweep. */
+  private isDisplayed(sessionId: string): boolean {
+    return this.store.getState().activeId === sessionId;
   }
 
   /** Silent repair: refetch the tail, repair the cache, and update VISIBLE store

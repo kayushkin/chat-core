@@ -126,3 +126,20 @@ export type ValidatorsResponse = Record<string, Validator>;
 export interface MessagesResponse {
   model: TurnModel;
 }
+
+/** One content-search hit: the session whose transcript matched, plus an optional
+ *  snippet for highlighting. `snippet` is advisory; the list path only needs the id. */
+export interface SearchHit {
+  sessionId: string;
+  snippet?: string;
+}
+
+/** `GET /sessions/search?q=` — the session ids whose materialized transcript text
+ *  matches `q`. This is the async augmentation of the instant local name filter:
+ *  the client folds `sessionIds` into the search-filter path so a query matches
+ *  transcript content, not just the display name. `hits` (optional) carries the
+ *  same ids with snippets when the backend supplies them. */
+export interface SearchResponse {
+  sessionIds: string[];
+  hits?: SearchHit[];
+}

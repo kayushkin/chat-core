@@ -38,6 +38,15 @@ export interface PendingSession {
   harness?: string;
 }
 
+/** Content-search augmentation (C6). The set of session ids whose materialized
+ *  transcript text matched `query`, fetched async via `ApiClient.search`. `query`
+ *  pins the hits to the filter they were fetched for, so a stale set is never
+ *  folded into a newer search. The instant local name match never waits on this. */
+export interface ContentHits {
+  query: string;
+  ids: Set<string>;
+}
+
 export interface ChatState {
   sessions: Map<string, SessionSummary>;
   turnsBySession: Map<string, TurnModel>;
@@ -45,6 +54,9 @@ export interface ChatState {
   tails: Map<string, TailState>;
   activeId: string | null;
   filter: FilterState;
+  /** Content-search hits for the current `filter.search`, or null when none have
+   *  been fetched (or the query changed and the prior set was invalidated). */
+  contentHits: ContentHits | null;
   /** Known folder names, maintained from session upserts. */
   folders: string[];
   connState: ConnState;
@@ -77,6 +89,10 @@ export interface ChatActions {
 
   setFilter(patch: Partial<FilterState>): void;
   openFolder(folder: string): void;
+  /** Record async content-search hits for a query. Ignored (a no-op) if the
+   *  current filter's search no longer equals `query`, so a late/stale response
+   *  can't override a newer search. */
+  setContentHits(query: string, ids: string[]): void;
 
   setDraft(sessionId: string, text: string): void;
   setSending(sessionId: string, sending: boolean): void;
@@ -161,10 +177,11 @@ export function createChatStore(): ChatStoreApi {
         let tail = getOrInitTail(state, sessionId);
         // Strip a matching optimistic user row when the real user_message lands,
         // so the two don't double-show (both are harness-sourced, so the OTel
-        // annotator won't collapse them).
+        // annotator won't collapse them). Correlation prefers the client request id,
+        // then falls back to a normalized-text match (bug-1 hardening) so a server
+        // prompt that came back trimmed/normalized still reconciles.
         if (event.type === 'user_message') {
-          const text = event.data.result?.text;
-          if (text) tail = stripOptimisticUser(tail, text);
+          tail = stripOptimisticUser(tail, event);
         }
         const next = applyEvent(tail, event);
         if (next === tail) return; // idempotent no-op
@@ -219,11 +236,26 @@ export function createChatStore(): ChatStoreApi {
       },
 
       setFilter(patch) {
-        set({ filter: { ...get().filter, ...patch } });
+        const filter = { ...get().filter, ...patch };
+        // A changed search query invalidates the prior content-search hits until
+        // the async augmentation returns for the new query (fails safe: local name
+        // matching still runs instantly).
+        const nextState: Partial<ChatState> = { filter };
+        if (patch.search !== undefined) {
+          const cur = get().contentHits;
+          if (!cur || cur.query !== filter.search) nextState.contentHits = null;
+        }
+        set(nextState);
       },
 
       openFolder(folder) {
         set({ filter: { ...get().filter, folder } });
+      },
+
+      setContentHits(query, ids) {
+        // Drop a stale response whose query no longer matches the live filter.
+        if (get().filter.search !== query) return;
+        set({ contentHits: { query, ids: new Set(ids) } });
       },
 
       setDraft(sessionId, text) {
@@ -260,6 +292,7 @@ export function createChatStore(): ChatStoreApi {
       tails: new Map(),
       activeId: null,
       filter: { ...EMPTY_FILTER },
+      contentHits: null,
       folders: [],
       connState: 'idle',
       listLoading: false,
@@ -302,13 +335,42 @@ function appendOptimistic(tail: TailState, text: string, clientId: string): Tail
   return { ...tail, model, turnIndex };
 }
 
-function stripOptimisticUser(tail: TailState, text: string): TailState {
+function normalizeText(s: string): string {
+  return s.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Reconcile the optimistic user row against the canonical `user_message` event.
+ * Bug-1 hardening: correlate by `client_request_id` FIRST (an exact, id-based
+ * match), then fall back to a NORMALIZED text match (trim + collapse whitespace)
+ * so a server prompt echoed back trimmed/normalized still collapses the optimistic
+ * copy instead of leaving both rows alive. The empty-text case is guarded — a
+ * canonical event with no text is never matched against an optimistic row by text,
+ * which would otherwise drop an unrelated row or leave both alive.
+ */
+function stripOptimisticUser(tail: TailState, event: WireEvent): TailState {
+  const clientId = event.data.client_request_id;
+  const normText = normalizeText(event.data.result?.text ?? '');
+
   let removedId: string | null = null;
-  for (const [id, entry] of Object.entries(tail.model.entries)) {
-    const raw = entry.raw as { optimistic?: boolean } | undefined;
-    if (raw?.optimistic && entry.text === text) {
-      removedId = id;
-      break;
+  // 1. Prefer an id-based correlation when the server echoes the client request id.
+  if (clientId) {
+    for (const [id, entry] of Object.entries(tail.model.entries)) {
+      const raw = entry.raw as { optimistic?: boolean; clientId?: string } | undefined;
+      if (raw?.optimistic && raw.clientId === clientId) {
+        removedId = id;
+        break;
+      }
+    }
+  }
+  // 2. Fall back to a normalized-text match, guarding empty text (no blind match).
+  if (!removedId && normText) {
+    for (const [id, entry] of Object.entries(tail.model.entries)) {
+      const raw = entry.raw as { optimistic?: boolean } | undefined;
+      if (raw?.optimistic && normalizeText(entry.text ?? '') === normText) {
+        removedId = id;
+        break;
+      }
     }
   }
   if (!removedId) return tail;

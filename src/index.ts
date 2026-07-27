@@ -12,6 +12,7 @@ export {
   useSessionActions,
   usePrefetch,
 } from './react/hooks.js';
+export { RefChip, type RefChipProps } from './react/RefChip.js';
 
 // ---- Wire types (docs/WIRE.md, src/net/types.ts) ----
 export type {
@@ -27,6 +28,8 @@ export type {
   RecentBundleResponse,
   ValidatorsResponse,
   MessagesResponse,
+  SearchHit,
+  SearchResponse,
 } from './net/types.js';
 export type {
   WireEvent,
@@ -45,6 +48,7 @@ export {
   type ConnState,
   type FilterState,
   type PendingSession,
+  type ContentHits,
 } from './store/ChatStore.js';
 export {
   visibleSessions,
@@ -58,7 +62,13 @@ export {
   visibleEntryIdsFor,
   sourcesForEntry,
   matchesFilter,
+  selectTimeline,
   type FolderGroup,
+  type TimelineTone,
+  type TimelineItem,
+  type TimelineNode,
+  type TimelineTurnGroup,
+  type TimelineView,
 } from './store/selectors.js';
 
 // ---- Reduce (pure, ported logic) ----

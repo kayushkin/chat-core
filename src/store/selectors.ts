@@ -1,7 +1,7 @@
 import type { Entry, SessionSummary, Turn, TurnModel } from '../net/types.js';
 import { annotateOTelDuplicates, groupMembers } from '../reduce/otelDedup.js';
 import { terminalStateFromTail } from '../reduce/terminalState.js';
-import type { ChatState, FilterState } from './ChatStore.js';
+import type { ChatState, ContentHits, FilterState } from './ChatStore.js';
 
 // Memoized selectors over the hot store. Kept pure + framework-free so they are
 // testable in isolation and cheap enough to run on every render (the memo cache
@@ -13,8 +13,15 @@ export interface FolderGroup {
 }
 
 /** True iff a session passes the current filter. Empty/null filter fields match
- *  everything; `search` matches the display name case-insensitively. */
-export function matchesFilter(s: SessionSummary, f: FilterState): boolean {
+ *  everything; `search` matches the display name case-insensitively AND, when
+ *  `contentHits` is supplied (C6 content search), any session whose transcript text
+ *  matched the same query. Name matching stays instant/local; the content-hit set
+ *  is an async augmentation folded in when it arrives (see `useFilters`). */
+export function matchesFilter(
+  s: SessionSummary,
+  f: FilterState,
+  contentHits?: ContentHits | null,
+): boolean {
   if (f.harness && s.harness !== f.harness) return false;
   if (f.status && s.state !== f.status) return false;
   if (f.type && s.type !== f.type) return false;
@@ -24,7 +31,10 @@ export function matchesFilter(s: SessionSummary, f: FilterState): boolean {
   if (f.search) {
     const q = f.search.toLowerCase();
     const name = (s.displayName || s.sessionId).toLowerCase();
-    if (!name.includes(q)) return false;
+    const nameHit = name.includes(q);
+    const contentHit =
+      !!contentHits && contentHits.query === f.search && contentHits.ids.has(s.sessionId);
+    if (!nameHit && !contentHit) return false;
   }
   return true;
 }
@@ -35,24 +45,31 @@ function byUpdatedDesc(a: SessionSummary, b: SessionSummary): number {
   return 0;
 }
 
-// Simple identity-keyed memo: recompute only when (sessions, filter) change.
+// Simple identity-keyed memo: recompute only when (sessions, filter, contentHits)
+// change. contentHits is part of the key so a content-search response repaints.
 let visibleCache: {
   sessions: Map<string, SessionSummary>;
   filter: FilterState;
+  contentHits: ContentHits | null;
   result: FolderGroup[];
 } | null = null;
 
 /** Filter → group-by-folder → sort. Groups are ordered by their most-recent
  *  session; sessions within a group are newest-first. Memoized on identity of
- *  the sessions Map + filter object. */
+ *  the sessions Map + filter object + content-hit set. */
 export function visibleSessions(state: ChatState): FolderGroup[] {
-  const { sessions, filter } = state;
-  if (visibleCache && visibleCache.sessions === sessions && visibleCache.filter === filter) {
+  const { sessions, filter, contentHits } = state;
+  if (
+    visibleCache &&
+    visibleCache.sessions === sessions &&
+    visibleCache.filter === filter &&
+    visibleCache.contentHits === contentHits
+  ) {
     return visibleCache.result;
   }
   const byFolder = new Map<string, SessionSummary[]>();
   for (const s of sessions.values()) {
-    if (!matchesFilter(s, filter)) continue;
+    if (!matchesFilter(s, filter, contentHits)) continue;
     const folder = s.folderName || '';
     let arr = byFolder.get(folder);
     if (!arr) {
@@ -72,7 +89,7 @@ export function visibleSessions(state: ChatState): FolderGroup[] {
     const bn = b.sessions[0]?.updatedAt ?? '';
     return an < bn ? 1 : an > bn ? -1 : 0;
   });
-  visibleCache = { sessions, filter, result: groups };
+  visibleCache = { sessions, filter, contentHits, result: groups };
   return groups;
 }
 
@@ -187,4 +204,301 @@ export function sourcesForEntry(model: TurnModel | undefined, entryId: string): 
   if (!model) return [];
   const annotated = annotateOTelDuplicates(Object.values(model.entries));
   return groupMembers(annotated, entryId);
+}
+
+// ---- Timeline selector (Path A Timeline pane) ----
+//
+// A pure, memoizable transform of the materialized `entries` into the
+// event-granular, turn→task-grouped structure the Timeline pane renders. It mirrors
+// the grouping semantics of bridge-ui `Timeline.tsx` rowsToTimeline (group by turn,
+// sub-group tool/thinking/result/error, respect task_* scoping) but returns DATA,
+// not JSX — the pane stays presentation-only and never re-derives. Being the raw
+// audit surface (see WIRE.md), it is event-granular: every entry is represented,
+// ordered by eventId, so the timeline can reconstruct every stored event.
+
+export type TimelineTone =
+  | 'turn'
+  | 'task-start'
+  | 'thinking'
+  | 'tool'
+  | 'tool-done'
+  | 'tool-err'
+  | 'result'
+  | 'error'
+  | 'system'
+  | 'text';
+
+/** One event-granular row in the timeline (presentation-agnostic). */
+export interface TimelineItem {
+  key: string;
+  entryId: string;
+  turnId: string;
+  /** Set on rows scoped to an active task_* span (bridge-ui task grouping). */
+  taskId?: string;
+  icon: string;
+  label: string;
+  detail?: string; // one-line preview
+  fullText?: string; // untruncated source text
+  ts: string;
+  tone: TimelineTone;
+}
+
+/** A child of a turn: either a standalone item or a task-scoped sub-group. */
+export type TimelineNode =
+  | { type: 'item'; item: TimelineItem }
+  | { type: 'task'; taskId: string; header: TimelineItem; children: TimelineItem[] };
+
+/** A turn group: its header row (the user prompt / first event) + grouped children. */
+export interface TimelineTurnGroup {
+  turnId: string;
+  header: TimelineItem;
+  children: TimelineNode[];
+}
+
+/** The full render-ready structure: the flat ordered items plus the turn→task tree. */
+export interface TimelineView {
+  items: TimelineItem[];
+  turns: TimelineTurnGroup[];
+  count: number;
+}
+
+function oneLine(s: string): string {
+  return s.replace(/\s+/g, ' ').trim();
+}
+
+function asString(v: unknown): string | undefined {
+  return typeof v === 'string' && v.length > 0 ? v : undefined;
+}
+
+function safeJson(v: unknown): string {
+  try {
+    return JSON.stringify(v) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function toolIsError(e: Entry): boolean {
+  const tr = (e.raw as { tool_result?: { is_error?: boolean } } | undefined)?.tool_result;
+  return tr?.is_error === true;
+}
+
+function toolText(e: Entry): string | undefined {
+  const parts: string[] = [];
+  if (e.toolInput !== undefined) {
+    parts.push(typeof e.toolInput === 'string' ? e.toolInput : safeJson(e.toolInput));
+  }
+  if (e.toolResult !== undefined) {
+    parts.push(typeof e.toolResult === 'string' ? e.toolResult : safeJson(e.toolResult));
+  }
+  const s = parts.filter(Boolean).join(' → ');
+  return s.length > 0 ? s : undefined;
+}
+
+function makeItem(
+  e: Entry,
+  o: { icon: string; label: string; tone: TimelineTone; taskId?: string; text?: string },
+): TimelineItem {
+  const item: TimelineItem = {
+    key: `tl_${e.id}`,
+    entryId: e.id,
+    turnId: e.turnId,
+    icon: o.icon,
+    label: o.label,
+    ts: e.ts,
+    tone: o.tone,
+  };
+  if (o.taskId) item.taskId = o.taskId;
+  const line = o.text ? oneLine(o.text) : '';
+  if (line) {
+    item.detail = line;
+    item.fullText = o.text;
+  }
+  return item;
+}
+
+/** Flatten the model's entries into ordered timeline items, tracking task_* scope
+ *  exactly as bridge-ui rowsToTimeline does (start opens a scope, user_message and
+ *  result close it, repeated task events fold their description into the header). */
+function toTimelineItems(model: TurnModel): TimelineItem[] {
+  const entries = Object.values(model.entries)
+    .slice()
+    .sort((a, b) => a.eventId - b.eventId);
+
+  const out: TimelineItem[] = [];
+  const seenTurn = new Set<string>();
+  const taskIdxByScope = new Map<string, number>();
+  let currentTurnId: string | undefined;
+  let currentTaskId: string | undefined;
+
+  for (const e of entries) {
+    if (e.turnId !== currentTurnId) {
+      currentTurnId = e.turnId;
+      currentTaskId = undefined;
+      taskIdxByScope.clear();
+    }
+
+    // User prompt → the turn header row.
+    if (e.role === 'user') {
+      currentTaskId = undefined;
+      const first = !seenTurn.has(e.turnId);
+      seenTurn.add(e.turnId);
+      out.push(makeItem(e, { icon: first ? '▶' : '»', label: 'Turn', tone: 'turn', text: e.text }));
+      continue;
+    }
+
+    // task_* scope marker (system entry whose subtype starts with task_).
+    if (e.kind === 'system' && e.subtype && e.subtype.startsWith('task_')) {
+      const raw = (e.raw ?? {}) as Record<string, unknown>;
+      const rawSys = (raw.system ?? {}) as Record<string, unknown>;
+      const explicitId = asString(raw.task_id) ?? asString(rawSys.task_id);
+      const isStart = e.subtype === 'task_started';
+      if (isStart) currentTaskId = explicitId ?? `task_${e.id}`;
+      else if (explicitId && !currentTaskId) currentTaskId = explicitId;
+      const description =
+        asString(raw.description) ??
+        asString(rawSys.description) ??
+        asString(rawSys.message) ??
+        asString(e.text) ??
+        '';
+
+      if (currentTaskId && taskIdxByScope.has(currentTaskId)) {
+        const idx = taskIdxByScope.get(currentTaskId)!;
+        const existing = out[idx];
+        if (existing && !existing.detail && description) {
+          existing.detail = oneLine(description);
+          existing.fullText = description;
+        }
+        continue;
+      }
+      out.push(
+        makeItem(e, {
+          icon: '▣',
+          label: 'Task',
+          tone: 'task-start',
+          taskId: currentTaskId,
+          text: description || undefined,
+        }),
+      );
+      if (currentTaskId) taskIdxByScope.set(currentTaskId, out.length - 1);
+      continue;
+    }
+
+    if (e.kind === 'thinking') {
+      out.push(
+        makeItem(e, {
+          icon: '💭',
+          label: 'Thinking',
+          tone: 'thinking',
+          taskId: currentTaskId,
+          text: e.text,
+        }),
+      );
+      continue;
+    }
+
+    if (e.kind === 'tool_call' || e.kind === 'tool_result') {
+      const done = e.kind === 'tool_result' || e.toolResult !== undefined;
+      const err = toolIsError(e);
+      out.push(
+        makeItem(e, {
+          icon: err ? '✗' : done ? '✓' : '⚙',
+          label: e.toolName || 'tool',
+          tone: err ? 'tool-err' : done ? 'tool-done' : 'tool',
+          taskId: currentTaskId,
+          text: toolText(e),
+        }),
+      );
+      continue;
+    }
+
+    if (e.kind === 'result') {
+      currentTaskId = undefined;
+      out.push(makeItem(e, { icon: '■', label: 'Done', tone: 'result', text: e.text }));
+      continue;
+    }
+
+    if (e.kind === 'error') {
+      out.push(
+        makeItem(e, {
+          icon: '⚠',
+          label: 'Error',
+          tone: 'error',
+          taskId: currentTaskId,
+          text: e.text,
+        }),
+      );
+      continue;
+    }
+
+    if (e.kind === 'system') {
+      out.push(
+        makeItem(e, {
+          icon: 'ⓘ',
+          label: e.subtype || 'System',
+          tone: 'system',
+          taskId: currentTaskId,
+          text: e.text,
+        }),
+      );
+      continue;
+    }
+
+    if (e.kind === 'text' && e.text) {
+      out.push(
+        makeItem(e, { icon: '✎', label: 'Text', tone: 'text', taskId: currentTaskId, text: e.text }),
+      );
+      continue;
+    }
+    // meta / empty entries carry nothing to render — skipped, as bridge-ui does.
+  }
+  return out;
+}
+
+function groupTaskChildren(items: TimelineItem[]): TimelineNode[] {
+  const out: TimelineNode[] = [];
+  let i = 0;
+  while (i < items.length) {
+    const it = items[i]!;
+    if (!it.taskId) {
+      out.push({ type: 'item', item: it });
+      i++;
+      continue;
+    }
+    const taskId = it.taskId;
+    const start = i;
+    while (i < items.length && items[i]!.taskId === taskId) i++;
+    const slice = items.slice(start, i);
+    out.push({ type: 'task', taskId, header: slice[0]!, children: slice.slice(1) });
+  }
+  return out;
+}
+
+function groupTurns(items: TimelineItem[]): TimelineTurnGroup[] {
+  const groups: TimelineTurnGroup[] = [];
+  let i = 0;
+  while (i < items.length) {
+    const turnId = items[i]!.turnId;
+    const start = i;
+    while (i < items.length && items[i]!.turnId === turnId) i++;
+    const slice = items.slice(start, i);
+    groups.push({ turnId, header: slice[0]!, children: groupTaskChildren(slice.slice(1)) });
+  }
+  return groups;
+}
+
+// Identity memo: the TurnModel is replaced immutably on every mutation, so
+// referential equality is a correct and cheap staleness check.
+let timelineCache: { model: TurnModel | undefined; result: TimelineView } | null = null;
+
+/**
+ * Build the event-granular, turn→task-grouped timeline for a materialized model.
+ * Pure + memoized on the model's identity so the Timeline pane never re-derives.
+ */
+export function selectTimeline(model: TurnModel | undefined): TimelineView {
+  if (timelineCache && timelineCache.model === model) return timelineCache.result;
+  const items = model ? toTimelineItems(model) : [];
+  const result: TimelineView = { items, turns: groupTurns(items), count: items.length };
+  timelineCache = { model, result };
+  return result;
 }
