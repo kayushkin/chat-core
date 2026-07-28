@@ -1,5 +1,13 @@
 import { createStore, type StoreApi } from 'zustand/vanilla';
-import type { Entry, SessionInfo, SessionSummary, Turn, TurnModel } from '../net/types.js';
+import type {
+  Entry,
+  HarnessConfig,
+  ManagedSessionDetail,
+  SessionInfo,
+  SessionSummary,
+  Turn,
+  TurnModel,
+} from '../net/types.js';
 import type { WireEvent } from '../net/wireEvents.js';
 import { applyEvent, initTailState, type TailState } from '../reduce/TurnReducer.js';
 
@@ -11,22 +19,37 @@ import { applyEvent, initTailState, type TailState } from '../reduce/TurnReducer
 
 export type ConnState = 'idle' | 'connecting' | 'open' | 'closed';
 
+/**
+ * Sidebar filter state. Each faceted axis (`harness`, `status`, `type`, `purpose`,
+ * `mode`, `machine`) is now MULTI-SELECT: a `string[]` where an empty array means
+ * "no filter on this axis". Matching is OR **within** an axis (any selected value
+ * matches) and AND **across** axes (every non-empty axis must match) — see
+ * `matchesFilter`. `folder` and `search` keep their scalar semantics.
+ *
+ * The `machine` axis matches `SessionSummary.instanceId`: the summary carries no
+ * machine field, and instanceId is the value the dash resolves to a machine display
+ * name (via bridge-ui `useBridgeMachines`). So the dash passes instanceId values here
+ * (grouped by machine on its side) — `selectFacets().machine` is likewise keyed by
+ * instanceId.
+ */
 export interface FilterState {
-  harness: string | null;
-  status: string | null;
-  type: string | null;
-  purpose: string | null;
-  mode: string | null;
+  harness: string[];
+  status: string[];
+  type: string[];
+  purpose: string[];
+  mode: string[];
+  machine: string[];
   folder: string | null;
   search: string;
 }
 
 export const EMPTY_FILTER: FilterState = {
-  harness: null,
-  status: null,
-  type: null,
-  purpose: null,
-  mode: null,
+  harness: [],
+  status: [],
+  type: [],
+  purpose: [],
+  mode: [],
+  machine: [],
   folder: null,
   search: '',
 };
@@ -57,6 +80,14 @@ export interface ChatState {
   sessionInfo: Map<string, SessionInfo | null>;
   /** Session ids whose detail fetch is in flight (drives `useSessionInfo` loading). */
   sessionInfoLoading: Set<string>;
+  /** Lazily-fetched FULL per-session detail (`ManagedSessionDetail`: summary + info +
+   *  harnessConfig), keyed by session id — the source for `useManagedSession` and the
+   *  interactive permission-mode selector. A present key mapping to a detail means it
+   *  was fetched; distinct from `sessionInfo` (which caches only the `info` sub-blob).
+   *  Populated on first use, never on the hot path. */
+  sessionDetail: Map<string, ManagedSessionDetail>;
+  /** Session ids whose full-detail fetch is in flight (drives `useManagedSession` loading). */
+  sessionDetailLoading: Set<string>;
   /** Internal live-tail reducer state per session (not for direct UI reads). */
   tails: Map<string, TailState>;
   activeId: string | null;
@@ -96,6 +127,15 @@ export interface ChatActions {
    *  clears the loading flag. Keyed by id so a repeat `useSessionInfo` reads the cache. */
   setSessionInfo(sessionId: string, info: SessionInfo | null): void;
   setSessionInfoLoading(sessionId: string, loading: boolean): void;
+
+  /** Cache a session's fetched FULL detail (summary + info + harnessConfig); clears the
+   *  detail-loading flag. Backs `useManagedSession`. */
+  setSessionDetail(sessionId: string, detail: ManagedSessionDetail): void;
+  setSessionDetailLoading(sessionId: string, loading: boolean): void;
+  /** Optimistically merge a patch into a cached detail's `harnessConfig` (e.g. a
+   *  permission-mode change). No-op if the detail isn't cached yet. Returns the prior
+   *  `harnessConfig` (or null) so the caller can revert on a failed PUT. */
+  patchHarnessConfig(sessionId: string, patch: Partial<HarnessConfig>): HarnessConfig | null;
 
   appendOptimisticUser(sessionId: string, text: string, clientId: string): void;
 
@@ -163,12 +203,18 @@ export function createChatStore(): ChatStoreApi {
         sessionInfo.delete(sessionId);
         const sessionInfoLoading = new Set(get().sessionInfoLoading);
         sessionInfoLoading.delete(sessionId);
+        const sessionDetail = new Map(get().sessionDetail);
+        sessionDetail.delete(sessionId);
+        const sessionDetailLoading = new Set(get().sessionDetailLoading);
+        sessionDetailLoading.delete(sessionId);
         set({
           sessions,
           turnsBySession,
           tails,
           sessionInfo,
           sessionInfoLoading,
+          sessionDetail,
+          sessionDetailLoading,
           folders: collectFolders(sessions.values()),
           activeId: get().activeId === sessionId ? null : get().activeId,
         });
@@ -230,6 +276,32 @@ export function createChatStore(): ChatStoreApi {
         if (loading) sessionInfoLoading.add(sessionId);
         else sessionInfoLoading.delete(sessionId);
         set({ sessionInfoLoading });
+      },
+
+      setSessionDetail(sessionId, detail) {
+        const sessionDetail = new Map(get().sessionDetail);
+        sessionDetail.set(sessionId, detail);
+        const sessionDetailLoading = new Set(get().sessionDetailLoading);
+        sessionDetailLoading.delete(sessionId);
+        set({ sessionDetail, sessionDetailLoading });
+      },
+
+      setSessionDetailLoading(sessionId, loading) {
+        const sessionDetailLoading = new Set(get().sessionDetailLoading);
+        if (loading) sessionDetailLoading.add(sessionId);
+        else sessionDetailLoading.delete(sessionId);
+        set({ sessionDetailLoading });
+      },
+
+      patchHarnessConfig(sessionId, patch) {
+        const prev = get().sessionDetail.get(sessionId);
+        if (!prev) return null;
+        const prevConfig = prev.harnessConfig;
+        const nextConfig: HarnessConfig = { ...(prevConfig ?? {}), ...patch };
+        const sessionDetail = new Map(get().sessionDetail);
+        sessionDetail.set(sessionId, { ...prev, harnessConfig: nextConfig });
+        set({ sessionDetail });
+        return prevConfig;
       },
 
       prependOlder(sessionId, older) {
@@ -324,6 +396,8 @@ export function createChatStore(): ChatStoreApi {
       turnsBySession: new Map(),
       sessionInfo: new Map(),
       sessionInfoLoading: new Set(),
+      sessionDetail: new Map(),
+      sessionDetailLoading: new Set(),
       tails: new Map(),
       activeId: null,
       filter: { ...EMPTY_FILTER },

@@ -169,12 +169,42 @@ export interface SessionInfo {
   mcpServers?: McpServerInfo[];
 }
 
+/** The raw approval/sandbox knobs under `harnessConfig.permissionModeCustom` (the
+ *  power-user "custom" permission mode). camelCase of `HarnessConfigCustomWire`. */
+export interface HarnessConfigCustom {
+  approval?: string;
+  sandbox?: string;
+}
+
+/** A session's per-harness config bag (`harness_config` on the wire; opaque
+ *  `json.RawMessage` on the Go side). The bridge's own well-known keys are surfaced in
+ *  camelCase; the index signature carries any harness-specific knob through unchanged so
+ *  the layer stays transparent and lossless. Fields:
+ *   - `permissionMode` — the per-session prehook gate (ask / auto / bypass / plan / …);
+ *     what the interactive permission-mode selector reads and writes.
+ *   - `disableNetwork` — the sandbox "no outbound network" gate (harnesses that support it).
+ *   - `permissionModeCustom` — raw approval/sandbox knobs for the "custom" mode.
+ *   - `model` / `effort` — the per-harness defaults snapshotted at session create.
+ *  Absent fields stay absent; nothing is invented. */
+export interface HarnessConfig {
+  permissionMode?: string;
+  disableNetwork?: boolean;
+  permissionModeCustom?: HarnessConfigCustom;
+  model?: string;
+  effort?: string;
+  [k: string]: unknown;
+}
+
 /** The full per-session detail from `GET /sessions/{id}` (the canonical ManagedSession),
- *  with its snake_case `info` mapped to camelCase `SessionInfo`. `info` is null when the
- *  harness has not reported one yet. */
+ *  with its snake_case `info` mapped to camelCase `SessionInfo` and `harness_config`
+ *  mapped to `HarnessConfig`. `info` / `harnessConfig` are null when the harness has not
+ *  reported / carries none. `sessionId` is surfaced at the top level (it also lives on
+ *  `summary`) so a consumer holding just the detail can identify the session. */
 export interface ManagedSessionDetail {
+  sessionId: string;
   summary: SessionSummary;
   info: SessionInfo | null;
+  harnessConfig: HarnessConfig | null;
 }
 
 // ---- Endpoint response shapes ----

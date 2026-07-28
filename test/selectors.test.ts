@@ -54,13 +54,13 @@ describe('selectors — filter / group / sort', () => {
       summary({ sessionId: 'c', harness: 'claudecode', state: 'completed', displayName: 'Refactor cache' }),
     ];
 
-    expect(matchesFilter(list[0]!, { ...EMPTY_FILTER, harness: 'claudecode' })).toBe(true);
-    expect(matchesFilter(list[1]!, { ...EMPTY_FILTER, harness: 'claudecode' })).toBe(false);
+    expect(matchesFilter(list[0]!, { ...EMPTY_FILTER, harness: ['claudecode'] })).toBe(true);
+    expect(matchesFilter(list[1]!, { ...EMPTY_FILTER, harness: ['claudecode'] })).toBe(false);
 
-    const byHarness = seed(list, { harness: 'claudecode' });
+    const byHarness = seed(list, { harness: ['claudecode'] });
     expect(visibleCount(byHarness.getState())).toBe(2);
 
-    const byState = seed(list, { status: 'idle' });
+    const byState = seed(list, { status: ['idle'] });
     expect(visibleCount(byState.getState())).toBe(2);
 
     const bySearch = seed(list, { search: 'refactor' });

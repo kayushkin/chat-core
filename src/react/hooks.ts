@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useStore } from 'zustand';
-import type { Entry, SessionInfo, SessionSummary, Turn } from '../net/types.js';
+import type { Entry, ManagedSessionDetail, SessionInfo, SessionSummary, Turn } from '../net/types.js';
 import type { ChatActions, FilterState } from '../store/ChatStore.js';
+import { changeSessionPermissionMode } from '../store/permissionMode.js';
 import {
   activeSummaryEffective,
   contextUsage,
   effectiveState,
+  selectFacets,
   sessionCost,
   sourcesForEntry,
   turnsFor,
@@ -13,6 +15,7 @@ import {
   visibleSessions,
   visibleEntryIdsFor,
   type ContextUsage,
+  type Facets,
   type SessionCost,
 } from '../store/selectors.js';
 import { useChatContext } from './context.js';
@@ -38,18 +41,23 @@ export function useSessionList(): {
   total: number;
   loading: boolean;
   effectiveState: (sessionId: string) => string;
+  facets: Facets;
 } {
   const { store } = useChatContext();
   const groups = useStore(store, visibleSessions);
   const total = useStore(store, visibleCount);
   const loading = useStore(store, (s) => s.listLoading);
+  // Cross-axis facet counts over the FULL loaded set (independent of the active filter),
+  // so the sidebar can render every available option with its count. Memoized on the
+  // sessions Map identity (see selectFacets).
+  const facets = useStore(store, selectFacets);
   const turnsBySession = useStore(store, (s) => s.turnsBySession);
   const sessions = useStore(store, (s) => s.sessions);
   const effState = useCallback(
     (sessionId: string) => effectiveState(store.getState(), sessionId),
     [store, turnsBySession, sessions],
   );
-  return { groups, total, loading, effectiveState: effState };
+  return { groups, total, loading, effectiveState: effState, facets };
 }
 
 /** Active session id + a synchronous setter. */
@@ -352,6 +360,50 @@ export function useSessionInfo(sessionId: string | null): {
   }, [sessionId, store, api, actions]);
 
   return { info, loading };
+}
+
+/** Full per-session detail (summary + info + `harnessConfig`) plus a permission-mode
+ *  mutator — the source for the interactive permission-mode selector. LAZILY fetches
+ *  `GET /sessions/{id}` on first use, caches the `ManagedSessionDetail` in the store
+ *  keyed by id, and returns the cache thereafter. NEVER blocks the hot path: the fetch
+ *  is backgrounded and the store update re-renders. `loading` is true only while the
+ *  first fetch is in flight.
+ *
+ *  `setPermissionMode(mode)` OPTIMISTICALLY patches the cached detail's
+ *  `harnessConfig.permissionMode`, then PUTs `/sessions/{id}/permission-mode`. On a
+ *  non-2xx it REVERTS the cached detail to its prior value and rethrows — a failed
+ *  change must be visible, never silently kept. Resolves once persisted. */
+export function useManagedSession(sessionId: string | null): {
+  session: ManagedSessionDetail | null;
+  loading: boolean;
+  setPermissionMode: (mode: string) => Promise<void>;
+} {
+  const { store, api } = useChatContext();
+  const actions = useActions();
+  const session = useStore(store, (s) => (sessionId ? s.sessionDetail.get(sessionId) ?? null : null));
+  const loading = useStore(store, (s) => (sessionId ? s.sessionDetailLoading.has(sessionId) : false));
+
+  useEffect(() => {
+    if (!sessionId) return;
+    const state = store.getState();
+    if (state.sessionDetail.has(sessionId)) return; // cached
+    if (state.sessionDetailLoading.has(sessionId)) return;
+    actions.setSessionDetailLoading(sessionId, true);
+    void api
+      .getSessionDetail(sessionId)
+      .then((detail) => actions.setSessionDetail(sessionId, detail))
+      .catch(() => actions.setSessionDetailLoading(sessionId, false));
+  }, [sessionId, store, api, actions]);
+
+  const setPermissionMode = useCallback(
+    async (mode: string) => {
+      if (!sessionId) return;
+      await changeSessionPermissionMode({ store, api }, sessionId, mode);
+    },
+    [sessionId, store, api],
+  );
+
+  return { session, loading, setPermissionMode };
 }
 
 /** A session's rolled-up cost from its cached/active model's `TurnModel.aggregates`.

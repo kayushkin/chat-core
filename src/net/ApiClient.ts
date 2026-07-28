@@ -1,4 +1,5 @@
 import type {
+  HarnessConfig,
   ManagedSessionDetail,
   MessagesResponse,
   RecentBundleResponse,
@@ -7,7 +8,7 @@ import type {
   SummaryResponse,
   ValidatorsResponse,
 } from './types.js';
-import type { ManagedSessionDetailWire, SessionInfoWire } from './wireEvents.js';
+import type { HarnessConfigWire, ManagedSessionDetailWire, SessionInfoWire } from './wireEvents.js';
 import { summaryFromManaged } from '../sync/sse.js';
 
 /** Map the snake_case `msg.SessionInfo` wire blob to the camelCase `SessionInfo`.
@@ -27,6 +28,34 @@ function sessionInfoFromWire(w: SessionInfoWire): SessionInfo {
     skills: w.skills,
     mcpServers: w.mcp_servers?.map((s) => ({ name: s.name, status: s.status })),
   };
+}
+
+/** Map the opaque snake_case `harness_config` bag to the camelCase `HarnessConfig`.
+ *  The bridge's well-known keys are copied explicitly (so a wire rename fails the
+ *  type-check here); every OTHER key is carried through unchanged — `harness_config`
+ *  is opaque on the Go side, and dropping an unnamed knob would make this layer lossy.
+ *  Absent well-known fields stay absent; nothing is invented. */
+function harnessConfigFromWire(w: HarnessConfigWire): HarnessConfig {
+  const {
+    permission_mode,
+    disable_network,
+    permission_mode_custom,
+    model,
+    effort,
+    ...rest
+  } = w;
+  const cfg: HarnessConfig = { ...rest };
+  if (permission_mode !== undefined) cfg.permissionMode = permission_mode;
+  if (disable_network !== undefined) cfg.disableNetwork = disable_network;
+  if (permission_mode_custom !== undefined) {
+    cfg.permissionModeCustom = {
+      approval: permission_mode_custom.approval,
+      sandbox: permission_mode_custom.sandbox,
+    };
+  }
+  if (model !== undefined) cfg.model = model;
+  if (effort !== undefined) cfg.effort = effort;
+  return cfg;
 }
 
 /** The auth'd fetch + API root the client speaks through. dash passes its
@@ -88,6 +117,19 @@ export class ApiClient {
     return (await res.json().catch(() => ({}))) as T;
   }
 
+  private async putJSON<T>(path: string, body?: unknown): Promise<T> {
+    const res = await this.doFetch(`${this.basePath}${path}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      throw new Error(`PUT ${path} failed: ${res.status} ${res.statusText} ${detail}`.trim());
+    }
+    return (await res.json().catch(() => ({}))) as T;
+  }
+
   // --- dashv2 read endpoints ---
 
   /** Projected sidebar list, newest first, paginated. */
@@ -140,9 +182,12 @@ export class ApiClient {
    *  has not reported one yet. Throws loudly on a non-2xx (getJSON). */
   async getSessionDetail(id: string): Promise<ManagedSessionDetail> {
     const wire = await this.getJSON<ManagedSessionDetailWire>(`/sessions/${id}`);
+    const summary = summaryFromManaged(wire);
     return {
-      summary: summaryFromManaged(wire),
+      sessionId: summary.sessionId,
+      summary,
       info: wire.info ? sessionInfoFromWire(wire.info) : null,
+      harnessConfig: wire.harness_config ? harnessConfigFromWire(wire.harness_config) : null,
     };
   }
 
@@ -190,5 +235,20 @@ export class ApiClient {
    */
   interrupt(id: string): Promise<unknown> {
     return this.postJSON(`/sessions/${id}/interrupt`, {});
+  }
+
+  /**
+   * Set a session's per-session permission mode.
+   * PUT /sessions/{id}/permission-mode with body `{ mode }`.
+   *
+   * The bridge persists this into `harness_config.permission_mode`; the prehook
+   * reads it live, so the change takes effect on the session's NEXT tool call
+   * without a restart. `mode` is one of the canonical `msg.PermissionMode*` values
+   * (ask / auto / bypass / plan / read / ask_all / block_all / custom) — validated
+   * server-side. This is a LOUD call: `putJSON` throws on any non-2xx (e.g. 400 on an
+   * invalid mode, 404 on an unknown session), so an optimistic UI update can revert.
+   */
+  setPermissionMode(id: string, mode: string): Promise<unknown> {
+    return this.putJSON(`/sessions/${id}/permission-mode`, { mode });
   }
 }

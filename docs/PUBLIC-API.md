@@ -9,6 +9,7 @@ import type { ReactNode } from 'react';
 import type {
   SessionSummary, TurnModel, Entry, Turn,
   SessionInfo, ToolInfo, McpServerInfo, ManagedSessionDetail,
+  HarnessConfig, HarnessConfigCustom, Facets,
 } from '@kayushkin/chat-core';
 
 // ---- Provider ----
@@ -28,11 +29,16 @@ export function ChatProvider(props: ChatProviderProps): JSX.Element;
 // `effectiveState(sessionId)` returns the tail-reconciled state for a row's status dot: a
 // session the server still reports as running/holding but whose warm tail is terminal reads
 // as completed/failed (F1 self-heal). Cold sessions return their raw summary state.
+// `facets` are cross-axis counts over the FULL loaded session set (independent of the
+// active filter), so the sidebar can render every available option + count and offer
+// multi-select. Memoized on the sessions Map identity. (A `useFacets()` hook was NOT
+// added — facets ride on `useSessionList` since the sidebar renders both together.)
 export function useSessionList(): {
   groups: { folder: string; sessions: SessionSummary[] }[];
   total: number;
   loading: boolean;
   effectiveState: (sessionId: string) => string;
+  facets: Facets;
 };
 
 // Active session id + setter. select() is synchronous: it swaps the active id and renders
@@ -147,18 +153,89 @@ export interface SessionInfo {
 export interface ToolInfo { name: string; description?: string; }
 export interface McpServerInfo { name: string; status?: string; }
 
+// ---- Managed-session detail + permission mode (dashv2 follow-up) ----
+
+// Full per-session detail (summary + info + harnessConfig) PLUS a permission-mode
+// mutator — what the interactive SessionPermissionMode selector consumes. LAZY: fetches
+// GET /sessions/{id} on first use, caches the ManagedSessionDetail in the store keyed by
+// id, returns the cache thereafter. Never blocks the hot path (backgrounded fetch;
+// the store update re-renders). `loading` is true only while the first fetch is in flight.
+//
+// `setPermissionMode(mode)` OPTIMISTICALLY patches the cached detail's
+// `harnessConfig.permissionMode`, then PUTs /sessions/{id}/permission-mode. On a non-2xx
+// it REVERTS the cached detail and rethrows — a failed change must be visible, never
+// silently kept. Resolves once persisted. `mode` is a canonical PermissionMode value
+// (ask | auto | bypass | plan | read | ask_all | block_all | custom).
+export function useManagedSession(sessionId: string | null): {
+  session: ManagedSessionDetail | null;
+  loading: boolean;
+  setPermissionMode: (mode: string) => Promise<void>;
+};
+
+// The full detail carried by useManagedSession / ApiClient.getSessionDetail. `sessionId`
+// is surfaced at the top level (also on `summary`). `info` / `harnessConfig` are null
+// when the harness has reported / carries none.
+export interface ManagedSessionDetail {
+  sessionId: string;
+  summary: SessionSummary;
+  info: SessionInfo | null;
+  harnessConfig: HarnessConfig | null;
+}
+// The per-harness config bag (wire `harness_config`, opaque json.RawMessage on the Go
+// side). Bridge-owned well-known keys are surfaced camelCase; the index signature carries
+// any unnamed harness-specific knob through unchanged (lossless). `permissionMode` is what
+// the selector reads/writes; `disableNetwork` + `permissionModeCustom` are the sandbox /
+// custom-mode knobs; `model` / `effort` are the per-harness defaults snapshot.
+export interface HarnessConfig {
+  permissionMode?: string;
+  disableNetwork?: boolean;
+  permissionModeCustom?: HarnessConfigCustom;
+  model?: string;
+  effort?: string;
+  [k: string]: unknown;
+}
+export interface HarnessConfigCustom { approval?: string; sandbox?: string; }
+
 // Prefetch hint (call on sidebar row hover) — warms a cold session so the click is instant.
 export function usePrefetch(): (sessionId: string) => void;
 
+// FilterState (BREAKING vs Phase 1): the faceted axes are now MULTI-SELECT `string[]`
+// (was `string | null`), and a new `machine` axis is added. An EMPTY array means "no
+// filter on this axis". Matching is OR *within* an axis (any selected value matches)
+// and AND *across* axes (every non-empty axis must match). `folder` and `search` keep
+// their scalar semantics. Dash consumers must migrate: `set({ harness: 'codex' })` →
+// `set({ harness: ['codex'] })`, and read/toggle these as arrays.
+//
+// The `machine` axis matches `SessionSummary.instanceId` — the summary carries NO
+// machine field, and instanceId is the value the dash resolves to a machine display
+// name (bridge-ui `useBridgeMachines`). So the dash passes instanceId values here
+// (grouped by machine on its side); `selectFacets().machine` is likewise keyed by
+// instanceId. See "Canonical field flagged" in the handoff note.
 export interface FilterState {
-  harness: string | null;
-  status: string | null;
-  type: string | null;
-  purpose: string | null;
-  mode: string | null;
-  folder: string | null; // e.g. 'archive'
-  search: string;
+  harness: string[];
+  status: string[];
+  type: string[];
+  purpose: string[];
+  mode: string[];
+  machine: string[];   // matches SessionSummary.instanceId (no machine field on summary)
+  folder: string | null; // e.g. 'archive' — unchanged scalar
+  search: string;         // unchanged
 }
+
+// Cross-axis facet counts over the FULL loaded session set (NOT the filtered list), so
+// the sidebar can show every available option with its count and support cross-axis
+// selection. `status` counts `SessionSummary.state`; `machine` counts `instanceId`.
+// Empty-string axis values are skipped. Exposed via `useSessionList().facets` (below)
+// and as the pure selector `selectFacets(state)`.
+export interface Facets {
+  harness: Record<string, number>;
+  status: Record<string, number>;
+  type: Record<string, number>;
+  purpose: Record<string, number>;
+  mode: Record<string, number>;
+  machine: Record<string, number>;
+}
+export function selectFacets(state: ChatState): Facets;
 
 // ---- Timeline pane selector (Path A) ----
 // A pure, memoized transform of a materialized model into the event-granular,
@@ -198,12 +275,16 @@ export function RefChip(props: RefChipProps): JSX.Element;
 // interrupt() fails LOUD (throws on non-2xx, incl. the 409 "nothing was stopped");
 // search() returns the session ids whose transcript text matched, for filter folding.
 // getSessionDetail() GETs the full ManagedSession from GET /sessions/{id} and maps its
-// snake_case `info` to a camelCase `SessionInfo` (info=null when the harness reported none);
-// it backs useSessionInfo. Throws loud on non-2xx like the rest.
+// snake_case `info` → camelCase `SessionInfo` (info=null when the harness reported none)
+// AND its snake_case `harness_config` → camelCase `HarnessConfig` (null when absent); it
+// backs useSessionInfo + useManagedSession. setPermissionMode() PUTs
+// /sessions/{id}/permission-mode with `{ mode }` (fails loud on non-2xx). All throw loud
+// on non-2xx like the rest.
 // class ApiClient {
 //   interrupt(id: string): Promise<unknown>;
 //   search(q: string): Promise<SearchResponse>;
-//   getSessionDetail(id: string): Promise<ManagedSessionDetail>;  // { summary, info }
+//   getSessionDetail(id: string): Promise<ManagedSessionDetail>;  // { sessionId, summary, info, harnessConfig }
+//   setPermissionMode(id: string, mode: string): Promise<unknown>;
 // }
 ```
 

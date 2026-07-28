@@ -69,8 +69,39 @@ camelCase `SessionInfo`; `info` is `null` when the harness has reported none yet
 | `skills[]` | `skills?` |
 | `mcp_servers[]` `{name, status?}` (`msg.MCPServerInfo`) | `mcpServers?: { name; status? }[]` (`McpServerInfo`) |
 
-Every field is copied explicitly (never spread) so a wire rename fails the type-check at the
-mapping site instead of leaking a snake_case key through.
+Every info field is copied explicitly (never spread) so a wire rename fails the type-check at
+the mapping site instead of leaking a snake_case key through.
+
+The detail also carries the session's `harness_config` bag, which the summary list omits.
+On the Go side `ManagedSession.HarnessConfig` is an **opaque `json.RawMessage`** — a
+per-harness config map — so `getSessionDetail` surfaces the bridge's own well-known keys in
+camelCase (`harnessConfigFromWire`) and passes every OTHER key through unchanged (the index
+signature on `HarnessConfig`), keeping the layer lossless. `harnessConfig` is `null` when the
+wire omits `harness_config`. The well-known keys are the ones the bridge itself reads/writes
+(llm-bridge-server `permission_mode.go`, `hooks_resolve.go`):
+
+| wire (snake_case, `harness_config`) | client (`HarnessConfig`, camelCase) |
+| --- | --- |
+| `permission_mode` | `permissionMode?` |
+| `disable_network` | `disableNetwork?` |
+| `permission_mode_custom` `{approval?, sandbox?}` | `permissionModeCustom?: { approval?; sandbox? }` (`HarnessConfigCustom`) |
+| `model` | `model?` |
+| `effort` | `effort?` |
+| *(any other key)* | *(carried through unchanged — opaque bag)* |
+
+`ManagedSessionDetail` is `{ sessionId, summary, info, harnessConfig }` — `sessionId` is
+surfaced at the top level (it also lives on `summary`). `useManagedSession` reads this; the
+interactive permission-mode selector reads `harnessConfig.permissionMode`.
+
+### `PUT /sessions/{id}/permission-mode`
+Set a session's per-session permission mode. Body `{ "mode": "<PermissionMode>" }` where
+mode ∈ ask | auto | bypass | plan | read | ask_all | block_all | custom (validated
+server-side → 400 on an invalid value; 404 on an unknown session). The bridge persists it
+into `harness_config.permission_mode`; the prehook reads it **live**, so the change takes
+effect on the session's NEXT tool call without a restart. `ApiClient.setPermissionMode` treats
+this as a LOUD call (throws on any non-2xx) so `useManagedSession`'s optimistic cache update
+can revert. (The server also accepts optional `disable_network` and `permission_mode_custom`
+fields on this PUT; the client currently sends only `mode` per the required signature.)
 
 ## Cost / context: `Entry.usage` + `TurnModel.aggregates` (Phase 2)
 These ride on the materialized model from `GET /sessions/{id}/messages`, populated by

@@ -98,11 +98,38 @@ export interface SessionInfoWire {
   mcp_servers?: McpServerInfoWire[];
 }
 
+/** The raw approval/sandbox knobs carried under `harness_config.permission_mode_custom`
+ *  (the power-user "custom" mode escape hatch). Codex consumes `approval` + `sandbox`;
+ *  other harnesses define their own subset. snake-free already — these are the leaf
+ *  fields of `msg` permissionModeCustomConfig. */
+export interface HarnessConfigCustomWire {
+  approval?: string;
+  sandbox?: string;
+}
+
+/** snake_case `harness_config` as it rides on a ManagedSession (`GET /sessions/{id}`).
+ *  On the Go side this is an OPAQUE `json.RawMessage` — a per-harness config bag — so
+ *  the well-known bridge keys are surfaced explicitly here and the index signature
+ *  preserves any harness-specific knob the bridge has not (yet) named. The keys below
+ *  are the canonical ones the bridge itself reads/writes (permission_mode.go,
+ *  hooks_resolve.go): `permission_mode` (the per-session gate), `disable_network`
+ *  (sandbox network gate), `permission_mode_custom` (raw approval/sandbox knobs),
+ *  plus `model` / `effort` (per-harness defaults snapshot). Nothing is invented. */
+export interface HarnessConfigWire {
+  permission_mode?: string;
+  disable_network?: boolean;
+  permission_mode_custom?: HarnessConfigCustomWire;
+  model?: string;
+  effort?: string;
+  [k: string]: unknown;
+}
+
 /** The full per-session detail from `GET /sessions/{id}` — the canonical
  *  ManagedSession (a superset of the list-projection `ManagedSessionWire`) plus the
- *  snake_case `info` blob the summary list omits. */
+ *  snake_case `info` blob the summary list omits and the opaque `harness_config` bag. */
 export type ManagedSessionDetailWire = ManagedSessionWire & {
   info?: SessionInfoWire | null;
+  harness_config?: HarnessConfigWire | null;
 };
 
 /** Frame on the global session-list stream (`GET /session-events`). */

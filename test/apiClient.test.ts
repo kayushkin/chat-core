@@ -137,3 +137,77 @@ describe('ApiClient.getSessionDetail — snake_case info → camelCase SessionIn
     await expect(api.getSessionDetail('nope')).rejects.toThrow(/404/);
   });
 });
+
+describe('ApiClient.getSessionDetail — harness_config → camelCase harnessConfig', () => {
+  it('maps the well-known keys and carries opaque knobs through', async () => {
+    const wire = {
+      session_id: 'br_5',
+      state: 'idle',
+      harness: 'codex',
+      updated_at: '2026-07-27T10:00:00-07:00',
+      created_at: '2026-07-27T09:00:00-07:00',
+      harness_config: {
+        permission_mode: 'custom',
+        disable_network: true,
+        permission_mode_custom: { approval: 'on-request', sandbox: 'workspace-write' },
+        model: 'gpt-5',
+        effort: 'high',
+        // an unnamed harness-specific knob — must survive (opaque bag).
+        reasoning_summaries: 'auto',
+      },
+    };
+    const api = new ApiClient({
+      fetch: fakeFetch({ ok: true, status: 200, statusText: 'OK', jsonBody: wire }),
+      basePath: '/api/bridge',
+    });
+    const detail = await api.getSessionDetail('br_5');
+    expect(detail.sessionId).toBe('br_5');
+    expect(detail.harnessConfig).toEqual({
+      permissionMode: 'custom',
+      disableNetwork: true,
+      permissionModeCustom: { approval: 'on-request', sandbox: 'workspace-write' },
+      model: 'gpt-5',
+      effort: 'high',
+      reasoning_summaries: 'auto',
+    });
+  });
+
+  it('harnessConfig is null when harness_config is absent', async () => {
+    const api = new ApiClient({
+      fetch: fakeFetch({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        jsonBody: { session_id: 'br_6', state: 'starting' },
+      }),
+      basePath: '/api/bridge',
+    });
+    const detail = await api.getSessionDetail('br_6');
+    expect(detail.harnessConfig).toBeNull();
+    expect(detail.sessionId).toBe('br_6');
+  });
+});
+
+describe('ApiClient.setPermissionMode — loud PUT', () => {
+  it('PUTs /sessions/{id}/permission-mode with { mode } and resolves on 2xx', async () => {
+    const seen: { url: string; init?: RequestInit }[] = [];
+    const api = new ApiClient({
+      fetch: fakeFetch({ ok: true, status: 200, statusText: 'OK', jsonBody: { status: 'ok' } }, (url, init) =>
+        seen.push({ url, init }),
+      ),
+      basePath: '/api/bridge',
+    });
+    await expect(api.setPermissionMode('br_1', 'bypass')).resolves.toBeDefined();
+    expect(seen[0]!.url).toBe('/api/bridge/sessions/br_1/permission-mode');
+    expect(seen[0]!.init?.method).toBe('PUT');
+    expect(JSON.parse(String(seen[0]!.init?.body))).toEqual({ mode: 'bypass' });
+  });
+
+  it('throws (does NOT swallow) on a non-2xx — e.g. 400 invalid mode', async () => {
+    const api = new ApiClient({
+      fetch: fakeFetch({ ok: false, status: 400, statusText: 'Bad Request', textBody: 'mode must be one of ...' }),
+      basePath: '/api/bridge',
+    });
+    await expect(api.setPermissionMode('br_1', 'nonsense')).rejects.toThrow(/400/);
+  });
+});

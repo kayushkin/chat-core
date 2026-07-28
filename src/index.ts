@@ -11,6 +11,7 @@ export {
   useFilters,
   useSessionActions,
   useSessionInfo,
+  useManagedSession,
   useSessionCost,
   useContextUsage,
   usePrefetch,
@@ -32,6 +33,8 @@ export type {
   SessionInfo,
   ToolInfo,
   McpServerInfo,
+  HarnessConfig,
+  HarnessConfigCustom,
   ManagedSessionDetail,
   SummaryResponse,
   RecentBundleResponse,
@@ -48,6 +51,8 @@ export type {
   SessionInfoWire,
   ToolInfoWire,
   McpServerInfoWire,
+  HarnessConfigWire,
+  HarnessConfigCustomWire,
   SessionListFrame,
 } from './net/wireEvents.js';
 
@@ -63,6 +68,7 @@ export {
   type PendingSession,
   type ContentHits,
 } from './store/ChatStore.js';
+export { changeSessionPermissionMode } from './store/permissionMode.js';
 export {
   visibleSessions,
   visibleCount,
@@ -75,11 +81,13 @@ export {
   visibleEntryIdsFor,
   sourcesForEntry,
   matchesFilter,
+  selectFacets,
   sessionCost,
   contextUsage,
   selectTimeline,
   type SessionCost,
   type ContextUsage,
+  type Facets,
   type FolderGroup,
   type TimelineTone,
   type TimelineItem,

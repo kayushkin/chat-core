@@ -12,21 +12,30 @@ export interface FolderGroup {
   sessions: SessionSummary[];
 }
 
-/** True iff a session passes the current filter. Empty/null filter fields match
- *  everything; `search` matches the display name case-insensitively AND, when
- *  `contentHits` is supplied (C6 content search), any session whose transcript text
- *  matched the same query. Name matching stays instant/local; the content-hit set
- *  is an async augmentation folded in when it arrives (see `useFilters`). */
+/** True iff a session passes the current filter.
+ *
+ *  Each faceted axis (`harness`, `status`, `type`, `purpose`, `mode`, `machine`) is a
+ *  multi-select `string[]`: an EMPTY array is "no filter" (matches everything), a
+ *  non-empty array matches a session whose value is ANY of the selected ones (OR within
+ *  the axis). Axes combine with AND — every non-empty axis must match. The `machine`
+ *  axis matches `SessionSummary.instanceId` (there is no machine field on the summary;
+ *  the dash resolves instanceId → machine and passes instanceId values here).
+ *
+ *  `folder` is a scalar exact match; `search` matches the display name case-insensitively
+ *  AND, when `contentHits` is supplied (C6 content search), any session whose transcript
+ *  text matched the same query. Name matching stays instant/local; the content-hit set is
+ *  an async augmentation folded in when it arrives (see `useFilters`). */
 export function matchesFilter(
   s: SessionSummary,
   f: FilterState,
   contentHits?: ContentHits | null,
 ): boolean {
-  if (f.harness && s.harness !== f.harness) return false;
-  if (f.status && s.state !== f.status) return false;
-  if (f.type && s.type !== f.type) return false;
-  if (f.purpose && s.purpose !== f.purpose) return false;
-  if (f.mode && s.mode !== f.mode) return false;
+  if (f.harness.length && !f.harness.includes(s.harness)) return false;
+  if (f.status.length && !f.status.includes(s.state)) return false;
+  if (f.type.length && !f.type.includes(s.type)) return false;
+  if (f.purpose.length && !f.purpose.includes(s.purpose)) return false;
+  if (f.mode.length && !f.mode.includes(s.mode)) return false;
+  if (f.machine.length && !f.machine.includes(s.instanceId)) return false;
   if (f.folder && s.folderName !== f.folder) return false;
   if (f.search) {
     const q = f.search.toLowerCase();
@@ -96,6 +105,55 @@ export function visibleSessions(state: ChatState): FolderGroup[] {
 /** Total visible session count across all groups. */
 export function visibleCount(state: ChatState): number {
   return visibleSessions(state).reduce((n, g) => n + g.sessions.length, 0);
+}
+
+/** Cross-axis facet counts: for each faceted filter axis, a `value → count` map over
+ *  the FULL loaded session set (NOT the already-filtered list), so the sidebar can show
+ *  every available option with its count and offer cross-axis selection. `status` counts
+ *  `SessionSummary.state`; `machine` counts `instanceId` (the summary has no machine
+ *  field — see `matchesFilter`). Empty-string values are skipped (an unfiled/unknown axis
+ *  value is not a facet). */
+export interface Facets {
+  harness: Record<string, number>;
+  status: Record<string, number>;
+  type: Record<string, number>;
+  purpose: Record<string, number>;
+  mode: Record<string, number>;
+  machine: Record<string, number>;
+}
+
+function tally(map: Record<string, number>, value: string): void {
+  if (!value) return;
+  map[value] = (map[value] ?? 0) + 1;
+}
+
+// Identity memo keyed on the sessions Map: facets recompute only when the loaded set
+// changes (the Map is replaced immutably on every session mutation), so `useStore` sees
+// a stable reference between unrelated renders.
+let facetsCache: { sessions: Map<string, SessionSummary>; result: Facets } | null = null;
+
+/** Facet counts over every loaded session, independent of the active filter. */
+export function selectFacets(state: ChatState): Facets {
+  const { sessions } = state;
+  if (facetsCache && facetsCache.sessions === sessions) return facetsCache.result;
+  const result: Facets = {
+    harness: {},
+    status: {},
+    type: {},
+    purpose: {},
+    mode: {},
+    machine: {},
+  };
+  for (const s of sessions.values()) {
+    tally(result.harness, s.harness);
+    tally(result.status, s.state);
+    tally(result.type, s.type);
+    tally(result.purpose, s.purpose);
+    tally(result.mode, s.mode);
+    tally(result.machine, s.instanceId);
+  }
+  facetsCache = { sessions, result };
+  return result;
 }
 
 /** The active session's summary, or null. */
