@@ -49,6 +49,58 @@ and MUST surface (never a swallowed fake-idle). In particular the server returns
 ("nothing was stopped") while a tool still holds the turn — until the server-side gate fix
 ships — and the client must show that, not optimistically mark the session idle.
 
+### `GET /sessions/{id}`
+The full per-session detail — the canonical `msg.ManagedSession` (snake_case). Unlike the
+summary list it carries the heavy `info` blob. The client (`ApiClient.getSessionDetail`)
+projects the summary fields via `summaryFromManaged` and maps the snake_case `info` →
+camelCase `SessionInfo`; `info` is `null` when the harness has reported none yet. Backs
+`useSessionInfo` (lazy, cached per id). The wire `info` is `msg.SessionInfo`:
+
+| wire (snake_case, `msg.SessionInfo`) | client (`SessionInfo`, camelCase) |
+| --- | --- |
+| `system_prompt` | `systemPrompt?` |
+| `append_system_prompt` | `appendSystemPrompt?` |
+| `working_dir` | `workingDir?` |
+| `model` | `model?` |
+| `permission_mode` | `permissionMode?` |
+| `tools[]` `{name, description?}` (`msg.ToolInfo`) | `tools?: { name; description? }[]` (`ToolInfo`) |
+| `slash_commands[]` | `slashCommands?` |
+| `agents[]` | `agents?` |
+| `skills[]` | `skills?` |
+| `mcp_servers[]` `{name, status?}` (`msg.MCPServerInfo`) | `mcpServers?: { name; status? }[]` (`McpServerInfo`) |
+
+Every field is copied explicitly (never spread) so a wire rename fails the type-check at the
+mapping site instead of leaking a snake_case key through.
+
+## Cost / context: `Entry.usage` + `TurnModel.aggregates` (Phase 2)
+These ride on the materialized model from `GET /sessions/{id}/messages`, populated by
+log-store's spend/context materializer. Unlike `SessionInfo` they are **camelCase already on
+the wire** — no client mapping — so the TS shapes below ARE the wire shapes. Both MAY be
+absent; absence reads as zero, never a fabricated figure.
+
+- `Entry.usage?` — per-entry token usage, mirrored 1:1 from the source event's
+  `msg.TokenUsage`. Absent on events with no usage (user_message, most system entries). Read
+  by the UI directly off the entry; there is no per-entry hook.
+  ```
+  usage?: { inputTokens?; outputTokens?; cacheReadTokens?; cacheWriteTokens? }
+  ```
+  Provenance: `msg.TokenUsage` (`InputTokens` / `OutputTokens` / `CacheReadTokens` /
+  `CacheWriteTokens`). On the materialized model the field is emitted camelCase per the
+  convention above — no client mapping.
+- `TurnModel.aggregates?` — the loaded page's cost/context roll-up. **Undefined when the
+  spend/context events fall outside the loaded page.** `useSessionCost` and `useContextUsage`
+  read from here and return zeros when it (or a member) is absent.
+  ```
+  aggregates?: {
+    totalUsd?;                          // APISpendTotalEvent.TotalUSD
+    byModel?: Record<string, number>;   // APISpendTotalEvent.ByModel
+    byQuerySource?: Record<string, number>; // APISpendTotalEvent.ByQuerySource
+    contextTokens?; contextLimit?;      // context-window figures; pct = tokens/limit*100
+  }
+  ```
+  Emitted camelCase on the materialized wire (no client mapping); the `msg` names are
+  provenance for the canonical source of each figure.
+
 ## The `Entry` / dedup model (non-destructive)
 Every stored event → exactly one `Entry`. Materialization on the server (log-store
 `materialize.go`) groups entries into turns and sets the annotations:

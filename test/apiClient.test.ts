@@ -66,3 +66,74 @@ describe('ApiClient.search', () => {
     await expect(api.search('x')).rejects.toThrow(/500/);
   });
 });
+
+describe('ApiClient.getSessionDetail — snake_case info → camelCase SessionInfo', () => {
+  it('GETs /sessions/{id} and maps every info field explicitly', async () => {
+    const seen: string[] = [];
+    const wire = {
+      session_id: 'br_7',
+      state: 'idle',
+      harness: 'claudecode',
+      display_name: 'My session',
+      updated_at: '2026-07-27T10:00:00-07:00',
+      created_at: '2026-07-27T09:00:00-07:00',
+      info: {
+        system_prompt: 'You are helpful.',
+        append_system_prompt: 'Extra.',
+        working_dir: '/home/u/repo',
+        model: 'claude-opus',
+        permission_mode: 'acceptEdits',
+        tools: [{ name: 'Read', description: 'reads' }, { name: 'Bash' }],
+        slash_commands: ['/init', '/review'],
+        agents: ['Explore'],
+        skills: ['browser-automation'],
+        mcp_servers: [{ name: 'gmail', status: 'connected' }, { name: 'drive' }],
+      },
+    };
+    const api = new ApiClient({
+      fetch: fakeFetch({ ok: true, status: 200, statusText: 'OK', jsonBody: wire }, (u) => seen.push(u)),
+      basePath: '/api/bridge',
+    });
+    const detail = await api.getSessionDetail('br_7');
+    expect(seen[0]).toBe('/api/bridge/sessions/br_7');
+    // Summary projection reuses summaryFromManaged (single source of truth).
+    expect(detail.summary.sessionId).toBe('br_7');
+    expect(detail.summary.displayName).toBe('My session');
+    // Every info field mapped to camelCase.
+    expect(detail.info).toEqual({
+      systemPrompt: 'You are helpful.',
+      appendSystemPrompt: 'Extra.',
+      workingDir: '/home/u/repo',
+      model: 'claude-opus',
+      permissionMode: 'acceptEdits',
+      tools: [{ name: 'Read', description: 'reads' }, { name: 'Bash', description: undefined }],
+      slashCommands: ['/init', '/review'],
+      agents: ['Explore'],
+      skills: ['browser-automation'],
+      mcpServers: [{ name: 'gmail', status: 'connected' }, { name: 'drive', status: undefined }],
+    });
+  });
+
+  it('returns info=null when the harness has reported none', async () => {
+    const api = new ApiClient({
+      fetch: fakeFetch({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        jsonBody: { session_id: 'br_8', state: 'starting' },
+      }),
+      basePath: '/api/bridge',
+    });
+    const detail = await api.getSessionDetail('br_8');
+    expect(detail.summary.sessionId).toBe('br_8');
+    expect(detail.info).toBeNull();
+  });
+
+  it('throws loudly on a non-2xx detail response', async () => {
+    const api = new ApiClient({
+      fetch: fakeFetch({ ok: false, status: 404, statusText: 'Not Found' }),
+      basePath: '/api/bridge',
+    });
+    await expect(api.getSessionDetail('nope')).rejects.toThrow(/404/);
+  });
+});

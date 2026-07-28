@@ -1,10 +1,33 @@
 import type {
+  ManagedSessionDetail,
   MessagesResponse,
   RecentBundleResponse,
   SearchResponse,
+  SessionInfo,
   SummaryResponse,
   ValidatorsResponse,
 } from './types.js';
+import type { ManagedSessionDetailWire, SessionInfoWire } from './wireEvents.js';
+import { summaryFromManaged } from '../sync/sse.js';
+
+/** Map the snake_case `msg.SessionInfo` wire blob to the camelCase `SessionInfo`.
+ *  The single source of truth for this mapping — every field is copied explicitly
+ *  (never spread), so a wire rename fails the type-check here instead of leaking a
+ *  snake_case key into the client. Absent fields stay absent; nothing is invented. */
+function sessionInfoFromWire(w: SessionInfoWire): SessionInfo {
+  return {
+    systemPrompt: w.system_prompt,
+    appendSystemPrompt: w.append_system_prompt,
+    workingDir: w.working_dir,
+    model: w.model,
+    permissionMode: w.permission_mode,
+    tools: w.tools?.map((t) => ({ name: t.name, description: t.description })),
+    slashCommands: w.slash_commands,
+    agents: w.agents,
+    skills: w.skills,
+    mcpServers: w.mcp_servers?.map((s) => ({ name: s.name, status: s.status })),
+  };
+}
 
 /** The auth'd fetch + API root the client speaks through. dash passes its
  *  cookie-credentialed `apiFetch` and `basePath = '/api/bridge'`. */
@@ -108,6 +131,19 @@ export class ApiClient {
   search(q: string): Promise<SearchResponse> {
     const qs = new URLSearchParams({ q }).toString();
     return this.getJSON<SearchResponse>(`/sessions/search?${qs}`);
+  }
+
+  /** Full per-session detail (`GET /sessions/{id}`) — the canonical ManagedSession,
+   *  with its snake_case `info` mapped to a camelCase `SessionInfo`. This endpoint
+   *  already exists and is live; the summary list deliberately omits `info`, so this
+   *  is the lazy fetch that backs `useSessionInfo`. `info` is null when the harness
+   *  has not reported one yet. Throws loudly on a non-2xx (getJSON). */
+  async getSessionDetail(id: string): Promise<ManagedSessionDetail> {
+    const wire = await this.getJSON<ManagedSessionDetailWire>(`/sessions/${id}`);
+    return {
+      summary: summaryFromManaged(wire),
+      info: wire.info ? sessionInfoFromWire(wire.info) : null,
+    };
   }
 
   // --- mutations (existing bridge endpoints; see bridge-ui useBridgeSession.ts) ---

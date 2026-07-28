@@ -6,7 +6,10 @@ library can be built in parallel.
 
 ```ts
 import type { ReactNode } from 'react';
-import type { SessionSummary, TurnModel, Entry, Turn } from '@kayushkin/chat-core';
+import type {
+  SessionSummary, TurnModel, Entry, Turn,
+  SessionInfo, ToolInfo, McpServerInfo, ManagedSessionDetail,
+} from '@kayushkin/chat-core';
 
 // ---- Provider ----
 export interface ChatProviderProps {
@@ -97,6 +100,53 @@ export function useSessionActions(): {
   rename: (id: string, name: string) => void;
 };
 
+// ---- Session info + cost/context (Phase 2) ----
+
+// Session detail info (system prompt, model, permission mode, tools, slash commands,
+// sub-agents, skills, MCP servers). LAZY: fetches GET /sessions/{id} on first use, caches
+// the result in the store keyed by id, and returns the cache thereafter — a cached `null`
+// means the harness has reported no info yet and is NOT re-fetched. Never blocks the hot
+// path (the fetch is backgrounded; the store update re-renders). `loading` is true only
+// while the first fetch is in flight.
+export function useSessionInfo(sessionId: string | null): {
+  info: SessionInfo | null;
+  loading: boolean;
+};
+
+// A session's rolled-up cost from the cached/active model's `TurnModel.aggregates`. PURE
+// selector — no network. Every field is 0/{} when aggregates are absent (the spend events
+// fell outside the loaded page).
+export function useSessionCost(sessionId: string | null): {
+  totalUsd: number;
+  byModel: Record<string, number>;
+  byQuerySource: Record<string, number>;
+};
+
+// A session's context-window usage from `TurnModel.aggregates`. PURE selector — no network.
+// `pct = tokens/limit*100`, or 0 when the limit is missing; zeros when aggregates are absent.
+export function useContextUsage(sessionId: string | null): {
+  tokens: number;
+  limit: number;
+  pct: number;
+};
+
+// Per-entry token usage is read DIRECTLY off the entry (`entry.usage`) — there is no
+// per-entry hook. It may be absent when the source event carried no usage.
+export interface SessionInfo {
+  systemPrompt?: string;
+  appendSystemPrompt?: string;
+  workingDir?: string;
+  model?: string;
+  permissionMode?: string;
+  tools?: ToolInfo[];
+  slashCommands?: string[];
+  agents?: string[];
+  skills?: string[];
+  mcpServers?: McpServerInfo[];
+}
+export interface ToolInfo { name: string; description?: string; }
+export interface McpServerInfo { name: string; status?: string; }
+
 // Prefetch hint (call on sidebar row hover) — warms a cold session so the click is instant.
 export function usePrefetch(): (sessionId: string) => void;
 
@@ -147,7 +197,14 @@ export function RefChip(props: RefChipProps): JSX.Element;
 // ---- ApiClient additions ----
 // interrupt() fails LOUD (throws on non-2xx, incl. the 409 "nothing was stopped");
 // search() returns the session ids whose transcript text matched, for filter folding.
-// class ApiClient { interrupt(id: string): Promise<unknown>; search(q: string): Promise<SearchResponse>; }
+// getSessionDetail() GETs the full ManagedSession from GET /sessions/{id} and maps its
+// snake_case `info` to a camelCase `SessionInfo` (info=null when the harness reported none);
+// it backs useSessionInfo. Throws loud on non-2xx like the rest.
+// class ApiClient {
+//   interrupt(id: string): Promise<unknown>;
+//   search(q: string): Promise<SearchResponse>;
+//   getSessionDetail(id: string): Promise<ManagedSessionDetail>;  // { summary, info }
+// }
 ```
 
 Notes for implementers:

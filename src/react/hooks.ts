@@ -1,15 +1,19 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useStore } from 'zustand';
-import type { Entry, SessionSummary, Turn } from '../net/types.js';
+import type { Entry, SessionInfo, SessionSummary, Turn } from '../net/types.js';
 import type { ChatActions, FilterState } from '../store/ChatStore.js';
 import {
   activeSummaryEffective,
+  contextUsage,
   effectiveState,
+  sessionCost,
   sourcesForEntry,
   turnsFor,
   visibleCount,
   visibleSessions,
   visibleEntryIdsFor,
+  type ContextUsage,
+  type SessionCost,
 } from '../store/selectors.js';
 import { useChatContext } from './context.js';
 
@@ -318,6 +322,52 @@ export function useSessionActions(): {
   );
 
   return { newSession, archive, unarchive, rename };
+}
+
+/** Session detail info (system prompt, model, permission mode, tools, slash commands,
+ *  sub-agents, skills, MCP servers). Lazily fetches `GET /sessions/{id}` on first use,
+ *  caches the result in the store keyed by id (a cached `null` means the harness has
+ *  reported no info yet — never re-fetched), and returns the cache thereafter. NEVER
+ *  blocks the hot path: the fetch is fired in the background and the store update is
+ *  what re-renders. `loading` is true only while the first fetch is in flight. */
+export function useSessionInfo(sessionId: string | null): {
+  info: SessionInfo | null;
+  loading: boolean;
+} {
+  const { store, api } = useChatContext();
+  const actions = useActions();
+  const info = useStore(store, (s) => (sessionId ? s.sessionInfo.get(sessionId) ?? null : null));
+  const loading = useStore(store, (s) => (sessionId ? s.sessionInfoLoading.has(sessionId) : false));
+
+  useEffect(() => {
+    if (!sessionId) return;
+    const state = store.getState();
+    if (state.sessionInfo.has(sessionId)) return; // cached (incl. a fetched null)
+    if (state.sessionInfoLoading.has(sessionId)) return;
+    actions.setSessionInfoLoading(sessionId, true);
+    void api
+      .getSessionDetail(sessionId)
+      .then((detail) => actions.setSessionInfo(sessionId, detail.info))
+      .catch(() => actions.setSessionInfoLoading(sessionId, false));
+  }, [sessionId, store, api, actions]);
+
+  return { info, loading };
+}
+
+/** A session's rolled-up cost from its cached/active model's `TurnModel.aggregates`.
+ *  Pure selector — NO network. Zeros for every field when aggregates are absent (the
+ *  spend events fell outside the loaded page). */
+export function useSessionCost(sessionId: string | null): SessionCost {
+  const { store } = useChatContext();
+  return useStore(store, (s) => sessionCost(s, sessionId));
+}
+
+/** A session's context-window usage from `TurnModel.aggregates`. Pure selector — NO
+ *  network. `pct = tokens/limit*100`, or 0 when the limit is missing; zeros when
+ *  aggregates are absent. */
+export function useContextUsage(sessionId: string | null): ContextUsage {
+  const { store } = useChatContext();
+  return useStore(store, (s) => contextUsage(s, sessionId));
 }
 
 /** Prefetch hint — call on sidebar row hover. Warms a cold session. */

@@ -1,5 +1,5 @@
 import { createStore, type StoreApi } from 'zustand/vanilla';
-import type { Entry, SessionSummary, Turn, TurnModel } from '../net/types.js';
+import type { Entry, SessionInfo, SessionSummary, Turn, TurnModel } from '../net/types.js';
 import type { WireEvent } from '../net/wireEvents.js';
 import { applyEvent, initTailState, type TailState } from '../reduce/TurnReducer.js';
 
@@ -50,6 +50,13 @@ export interface ContentHits {
 export interface ChatState {
   sessions: Map<string, SessionSummary>;
   turnsBySession: Map<string, TurnModel>;
+  /** Lazily-fetched per-session detail info (system prompt, tools, permission mode,
+   *  …), keyed by session id. A present key — even mapping to `null` — means the
+   *  detail was fetched (null = the harness reported no info yet), so `useSessionInfo`
+   *  never re-fetches. Populated on first use, never on the hot path. */
+  sessionInfo: Map<string, SessionInfo | null>;
+  /** Session ids whose detail fetch is in flight (drives `useSessionInfo` loading). */
+  sessionInfoLoading: Set<string>;
   /** Internal live-tail reducer state per session (not for direct UI reads). */
   tails: Map<string, TailState>;
   activeId: string | null;
@@ -84,6 +91,11 @@ export interface ChatActions {
   applyTailEvent(sessionId: string, event: WireEvent): void;
   setTurnsLoading(sessionId: string, loading: boolean): void;
   prependOlder(sessionId: string, older: TurnModel): void;
+
+  /** Cache a session's fetched detail info (null = fetched, harness reported none);
+   *  clears the loading flag. Keyed by id so a repeat `useSessionInfo` reads the cache. */
+  setSessionInfo(sessionId: string, info: SessionInfo | null): void;
+  setSessionInfoLoading(sessionId: string, loading: boolean): void;
 
   appendOptimisticUser(sessionId: string, text: string, clientId: string): void;
 
@@ -147,10 +159,16 @@ export function createChatStore(): ChatStoreApi {
         turnsBySession.delete(sessionId);
         const tails = new Map(get().tails);
         tails.delete(sessionId);
+        const sessionInfo = new Map(get().sessionInfo);
+        sessionInfo.delete(sessionId);
+        const sessionInfoLoading = new Set(get().sessionInfoLoading);
+        sessionInfoLoading.delete(sessionId);
         set({
           sessions,
           turnsBySession,
           tails,
+          sessionInfo,
+          sessionInfoLoading,
           folders: collectFolders(sessions.values()),
           activeId: get().activeId === sessionId ? null : get().activeId,
         });
@@ -197,6 +215,21 @@ export function createChatStore(): ChatStoreApi {
         if (loading) turnsLoading.add(sessionId);
         else turnsLoading.delete(sessionId);
         set({ turnsLoading });
+      },
+
+      setSessionInfo(sessionId, info) {
+        const sessionInfo = new Map(get().sessionInfo);
+        sessionInfo.set(sessionId, info);
+        const sessionInfoLoading = new Set(get().sessionInfoLoading);
+        sessionInfoLoading.delete(sessionId);
+        set({ sessionInfo, sessionInfoLoading });
+      },
+
+      setSessionInfoLoading(sessionId, loading) {
+        const sessionInfoLoading = new Set(get().sessionInfoLoading);
+        if (loading) sessionInfoLoading.add(sessionId);
+        else sessionInfoLoading.delete(sessionId);
+        set({ sessionInfoLoading });
       },
 
       prependOlder(sessionId, older) {
@@ -289,6 +322,8 @@ export function createChatStore(): ChatStoreApi {
     return {
       sessions: new Map(),
       turnsBySession: new Map(),
+      sessionInfo: new Map(),
+      sessionInfoLoading: new Set(),
       tails: new Map(),
       activeId: null,
       filter: { ...EMPTY_FILTER },

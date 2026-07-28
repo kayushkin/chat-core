@@ -53,6 +53,16 @@ export type Role = 'user' | 'assistant' | 'system' | 'tool';
  *    assistant message and its ~1s-late OTel copy) share a `groupId`; exactly one of them
  *    has `primary=true`. The sources badge counts a group's members.
  */
+/** Per-entry token usage, mirrored 1:1 from the source event (camelCase on the wire —
+ *  log-store populates these directly, no client mapping). MAY be absent when the event
+ *  carried no usage (e.g. a user_message or a system entry). Never invented. */
+export interface EntryUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+}
+
 export interface Entry {
   id: string; // stable per-entry key (message_id + role, or synthesized from event_id)
   turnId: string; // groups entries into a turn
@@ -61,6 +71,10 @@ export interface Entry {
   source: EntrySource;
   eventId: number; // the log-store event row id — monotonic, used for ordering + resume
   ts: string; // RFC3339 + offset
+
+  /** Token usage for this entry, when the source event reported it. camelCase on the
+   *  wire; read directly by the UI (`entry.usage`) — there is no per-entry hook. */
+  usage?: EntryUsage;
 
   // Rendered payload (kind-dependent; unused fields omitted):
   text?: string;
@@ -96,6 +110,19 @@ export interface Turn {
   entryIds: string[]; // order within the turn, by eventId
 }
 
+/** Rolled-up cost/context figures for a session's materialized model, populated by
+ *  log-store's spend/context materializer (camelCase on the wire, mirrored directly).
+ *  MAY be undefined — or carry undefined members — when the spend/context events fall
+ *  outside the currently loaded page; consumers must treat absence as zero, never
+ *  fabricate a figure. `useSessionCost` / `useContextUsage` read from here. */
+export interface TurnAggregates {
+  totalUsd?: number;
+  byModel?: Record<string, number>;
+  byQuerySource?: Record<string, number>;
+  contextTokens?: number;
+  contextLimit?: number;
+}
+
 /** The render-ready, fully-annotated model for one session. Holds EVERY entry; the
  *  collapsed Turns view is a pure selector over `entries` (filter !duplicate), the raw
  *  Timeline view renders all of `entries`. */
@@ -105,6 +132,49 @@ export interface TurnModel {
   entries: Record<string, Entry>; // id -> Entry (all sources, all copies)
   validator: Validator;
   more: boolean; // true if older turns exist beyond this page (paginate with `before`)
+  /** Cost/context roll-up for the loaded page; undefined when the materializer has not
+   *  attached one (spend/context events outside the page). Read via the cost/context hooks. */
+  aggregates?: TurnAggregates;
+}
+
+/** A tool the harness reports as available to the agent (SessionInfo.tools[]).
+ *  `description` is optional — the harness only reports what the agent exposes. */
+export interface ToolInfo {
+  name: string;
+  description?: string;
+}
+
+/** An MCP server connection reported by the agent (SessionInfo.mcpServers[]). */
+export interface McpServerInfo {
+  name: string;
+  status?: string;
+}
+
+/** What the harness knows about a session at start: the configured system prompt,
+ *  working dir, model, permission mode, and the tools / slash commands / sub-agents /
+ *  skills / MCP servers the underlying agent reports. camelCase after the client maps
+ *  it; the WIRE is snake_case `msg.SessionInfo` (system_prompt, working_dir, …), mapped
+ *  explicitly in `ApiClient.getSessionDetail`. Fetched lazily per session via
+ *  `useSessionInfo`; absent fields stay absent (never guessed). */
+export interface SessionInfo {
+  systemPrompt?: string;
+  appendSystemPrompt?: string;
+  workingDir?: string;
+  model?: string;
+  permissionMode?: string;
+  tools?: ToolInfo[];
+  slashCommands?: string[];
+  agents?: string[];
+  skills?: string[];
+  mcpServers?: McpServerInfo[];
+}
+
+/** The full per-session detail from `GET /sessions/{id}` (the canonical ManagedSession),
+ *  with its snake_case `info` mapped to camelCase `SessionInfo`. `info` is null when the
+ *  harness has not reported one yet. */
+export interface ManagedSessionDetail {
+  summary: SessionSummary;
+  info: SessionInfo | null;
 }
 
 // ---- Endpoint response shapes ----

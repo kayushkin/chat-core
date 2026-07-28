@@ -167,6 +167,68 @@ export function turnsFor(state: ChatState, sessionId: string | null): TurnModel 
   return state.turnsBySession.get(sessionId);
 }
 
+// ---- Cost / context selectors (from TurnModel.aggregates; pure, no network) ----
+//
+// Both read the loaded model's roll-up. `aggregates` MAY be absent (the spend/context
+// events fell outside the loaded page) — absence reads as zeros, never a fabricated
+// figure. Memoized single-slot on the TurnModel's identity (the model is replaced
+// immutably on every mutation) so `useStore` sees a stable reference between unrelated
+// renders — a fresh object every call would loop the subscription.
+
+/** A session's rolled-up cost, or all-zeros when no aggregates are loaded. */
+export interface SessionCost {
+  totalUsd: number;
+  byModel: Record<string, number>;
+  byQuerySource: Record<string, number>;
+}
+
+/** A session's context-window usage, or all-zeros when no aggregates are loaded.
+ *  `pct` is 0 when the limit is missing (never divide-by-zero). */
+export interface ContextUsage {
+  tokens: number;
+  limit: number;
+  pct: number;
+}
+
+const EMPTY_COST: SessionCost = { totalUsd: 0, byModel: {}, byQuerySource: {} };
+const EMPTY_CONTEXT: ContextUsage = { tokens: 0, limit: 0, pct: 0 };
+
+let costCache: { model: TurnModel | undefined; result: SessionCost } | null = null;
+
+/** Cost roll-up for a session from `TurnModel.aggregates`; zeros when absent. */
+export function sessionCost(state: ChatState, sessionId: string | null): SessionCost {
+  const model = turnsFor(state, sessionId);
+  if (costCache && costCache.model === model) return costCache.result;
+  const agg = model?.aggregates;
+  const result: SessionCost = agg
+    ? {
+        totalUsd: agg.totalUsd ?? 0,
+        byModel: agg.byModel ?? {},
+        byQuerySource: agg.byQuerySource ?? {},
+      }
+    : EMPTY_COST;
+  costCache = { model, result };
+  return result;
+}
+
+let contextCache: { model: TurnModel | undefined; result: ContextUsage } | null = null;
+
+/** Context-window usage for a session from `TurnModel.aggregates`; zeros when absent.
+ *  `pct = tokens/limit*100`, or 0 when the limit is missing/zero. */
+export function contextUsage(state: ChatState, sessionId: string | null): ContextUsage {
+  const model = turnsFor(state, sessionId);
+  if (contextCache && contextCache.model === model) return contextCache.result;
+  const agg = model?.aggregates;
+  const tokens = agg?.contextTokens ?? 0;
+  const limit = agg?.contextLimit ?? 0;
+  const result: ContextUsage =
+    tokens === 0 && limit === 0
+      ? EMPTY_CONTEXT
+      : { tokens, limit, pct: limit > 0 ? (tokens / limit) * 100 : 0 };
+  contextCache = { model, result };
+  return result;
+}
+
 /** Turns for a session, or an empty array. */
 export function turnList(state: ChatState, sessionId: string | null): Turn[] {
   return turnsFor(state, sessionId)?.turns ?? [];

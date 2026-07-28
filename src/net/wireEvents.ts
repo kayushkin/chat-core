@@ -70,6 +70,41 @@ export interface ManagedSessionWire {
   created_at?: string;
 }
 
+/** snake_case `msg.ToolInfo` — a tool the agent reports (SessionInfoWire.tools[]). */
+export interface ToolInfoWire {
+  name: string;
+  description?: string;
+}
+
+/** snake_case `msg.MCPServerInfo` — an MCP server the agent reports. */
+export interface McpServerInfoWire {
+  name: string;
+  status?: string;
+}
+
+/** snake_case `msg.SessionInfo` as it rides on a ManagedSession's `info` field
+ *  (`GET /sessions/{id}`). Mapped to the camelCase `SessionInfo` by
+ *  `ApiClient.getSessionDetail` — this is the single source for that mapping. */
+export interface SessionInfoWire {
+  system_prompt?: string;
+  append_system_prompt?: string;
+  working_dir?: string;
+  model?: string;
+  permission_mode?: string;
+  tools?: ToolInfoWire[];
+  slash_commands?: string[];
+  agents?: string[];
+  skills?: string[];
+  mcp_servers?: McpServerInfoWire[];
+}
+
+/** The full per-session detail from `GET /sessions/{id}` — the canonical
+ *  ManagedSession (a superset of the list-projection `ManagedSessionWire`) plus the
+ *  snake_case `info` blob the summary list omits. */
+export type ManagedSessionDetailWire = ManagedSessionWire & {
+  info?: SessionInfoWire | null;
+};
+
 /** Frame on the global session-list stream (`GET /session-events`). */
 export type SessionListFrame =
   | { type: 'hello' }
