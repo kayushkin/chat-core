@@ -1,14 +1,23 @@
 import type {
   HarnessConfig,
+  HarnessMeta,
   ManagedSessionDetail,
   MessagesResponse,
+  ModelOption,
   RecentBundleResponse,
   SearchResponse,
+  SessionConfig,
   SessionInfo,
   SummaryResponse,
   ValidatorsResponse,
 } from './types.js';
-import type { HarnessConfigWire, ManagedSessionDetailWire, SessionInfoWire } from './wireEvents.js';
+import type {
+  HarnessConfigWire,
+  HarnessInfoWire,
+  ManagedSessionDetailWire,
+  SessionInfoWire,
+  StoreModelWire,
+} from './wireEvents.js';
 import { summaryFromManaged } from '../sync/sse.js';
 
 /** Map the snake_case `msg.SessionInfo` wire blob to the camelCase `SessionInfo`.
@@ -56,6 +65,49 @@ function harnessConfigFromWire(w: HarnessConfigWire): HarnessConfig {
   if (model !== undefined) cfg.model = model;
   if (effort !== undefined) cfg.effort = effort;
   return cfg;
+}
+
+/** Map the snake_case `msg.HarnessInfo` from `GET /harnesses` to the camelCase
+ *  `HarnessMeta`. The single source of truth for this mapping — every field is copied
+ *  explicitly (a wire rename fails the type-check here), so no snake_case key leaks into
+ *  the client. `capabilities` defaults to `[]` only to keep the type non-optional; the
+ *  wire always sends it. Absent optional fields stay absent. */
+function harnessMetaFromWire(w: HarnessInfoWire): HarnessMeta {
+  return {
+    name: w.name,
+    label: w.label,
+    emoji: w.emoji,
+    tint: w.tint,
+    available: w.available,
+    capabilities: w.capabilities ?? [],
+    hookEvents: w.hook_events,
+    supportedProviders: w.supported_providers,
+    supportedPermissionModes: w.supported_permission_modes,
+    pty: w.pty,
+    supportsDisableNetwork: w.supports_disable_network,
+  };
+}
+
+/** Project a snake_case `GET /models` row to the controls-bar `ModelOption`. `value` is
+ *  the model id the config POST sends; `label` mirrors bridge-ui's `name ($in/$out)`
+ *  format, falling back to just the name (or id) when cost is not reported — never
+ *  fabricating a cost. */
+function modelOptionFromWire(w: StoreModelWire): ModelOption {
+  const name = w.name || w.id;
+  const label =
+    typeof w.input_cost === 'number' && typeof w.output_cost === 'number'
+      ? `${name} ($${w.input_cost}/$${w.output_cost})`
+      : name;
+  return { value: w.id, label, provider: w.provider };
+}
+
+/** Project a create/fork response (the canonical snake_case `msg.ManagedSession`) to a
+ *  `CreatedSession`. The wire id field is `session_id` — read it from the CANONICAL key
+ *  (never a `sessionId` that these endpoints don't emit) and surface it camelCase, while
+ *  carrying the rest of the payload through unchanged. */
+function createdSessionFromWire(w: Record<string, unknown>): CreatedSession {
+  const sessionId = typeof w['session_id'] === 'string' ? (w['session_id'] as string) : '';
+  return { ...w, sessionId };
 }
 
 /** The auth'd fetch + API root the client speaks through. dash passes its
@@ -193,18 +245,104 @@ export class ApiClient {
 
   // --- mutations (existing bridge endpoints; see bridge-ui useBridgeSession.ts) ---
 
-  createSession(opts?: { instanceId?: string; harness?: string }): Promise<CreatedSession> {
-    return this.postJSON<CreatedSession>('/sessions', {
+  async createSession(opts?: { instanceId?: string; harness?: string }): Promise<CreatedSession> {
+    const wire = await this.postJSON<Record<string, unknown>>('/sessions', {
       type: 'interactive',
       purpose: 'chat',
       origin: 'frontend',
       ...(opts?.instanceId ? { instance_id: opts.instanceId } : {}),
       ...(opts?.harness ? { harness: opts.harness } : {}),
     });
+    // POST /sessions returns the canonical `msg.ManagedSession` (snake_case) — its id
+    // field is `session_id`, so read it from the canonical key rather than assuming a
+    // `sessionId` these endpoints never emit.
+    return createdSessionFromWire(wire);
   }
 
   send(id: string, text: string): Promise<SendResult> {
     return this.postJSON<SendResult>(`/sessions/${id}/send`, { message: text });
+  }
+
+  /**
+   * Compact a session's context. POST /sessions/{id}/compact — body `{ summary }` when a
+   * caller supplies a compaction summary, else `{}`. LOUD: `postJSON` throws on any
+   * non-2xx. The POST only ACKNOWLEDGES the request (a `compact_ack` system event);
+   * compaction runs async and its real completion is the `compact_boundary` system entry
+   * on the session's event stream — `useSessionControls` watches for that, never faking a
+   * done state.
+   * (bridge-ui: useBridgeSession.ts:1129.)
+   */
+  compact(id: string, summary?: string): Promise<unknown> {
+    return this.postJSON(`/sessions/${id}/compact`, summary ? { summary } : {});
+  }
+
+  /**
+   * Fork a session into a new sibling. POST /sessions/{id}/fork — body
+   * `{ display_name, type: 'interactive' }` (empty display name lets the server derive
+   * "<parent> (fork)"). Returns the new `CreatedSession`, its id read from the canonical
+   * `session_id` wire key. LOUD: throws on any non-2xx (e.g. the 409 the server returns
+   * when the parent has no `harness_session_id` yet).
+   * (bridge-ui: useBridgeSession.ts:1143.)
+   */
+  async fork(id: string, displayName?: string): Promise<CreatedSession> {
+    const wire = await this.postJSON<Record<string, unknown>>(`/sessions/${id}/fork`, {
+      display_name: displayName ?? '',
+      type: 'interactive',
+    });
+    return createdSessionFromWire(wire);
+  }
+
+  /**
+   * Switch a live session between events and pty I/O mode. POST /sessions/{id}/mode with
+   * body `{ mode }` (`'events' | 'pty'`). The server kills and respawns the harness via
+   * --resume so history is preserved. Returns the raw response (which carries an
+   * `attach_token` for a pty switch); pty attach-token management is a bridge-ui concern,
+   * so chat-core passes the payload through unchanged. LOUD: throws on any non-2xx.
+   * (bridge-ui: useBridgeSession.ts:973.)
+   */
+  switchMode(id: string, mode: 'events' | 'pty'): Promise<unknown> {
+    return this.postJSON(`/sessions/${id}/mode`, { mode });
+  }
+
+  /**
+   * Apply per-session config knobs. POST /sessions/{id}/config with the snake_case body
+   * `{ model?, effort?, max_budget?, disabled_tools? }` — only the provided fields are
+   * sent (an absent field is never serialized as null). This is the canonical path
+   * bridge-ui uses for BOTH the controls-bar model/effort pre-start settings (applied
+   * right after create) and changing them on a live session. LOUD: throws on any non-2xx.
+   * (bridge-ui: useBridgeSession.ts:1176.)
+   */
+  setConfig(id: string, config: SessionConfig): Promise<unknown> {
+    const body: Record<string, unknown> = {};
+    if (config.model !== undefined) body.model = config.model;
+    if (config.effort !== undefined) body.effort = config.effort;
+    if (config.maxBudget !== undefined) body.max_budget = config.maxBudget;
+    if (config.disabledTools !== undefined) body.disabled_tools = config.disabledTools;
+    return this.postJSON(`/sessions/${id}/config`, body);
+  }
+
+  /**
+   * The registered harness types and their capabilities. GET /harnesses — the CANONICAL
+   * registry the controls bar gates each control on (`capabilities`) and scopes the model
+   * picker with (`supportedProviders`). Mapped snake_case → camelCase per harness. LOUD:
+   * throws on any non-2xx. (bridge-ui reads the same endpoint: BridgeChat.tsx:304.)
+   */
+  async getHarnesses(): Promise<HarnessMeta[]> {
+    const wire = await this.getJSON<HarnessInfoWire[] | null>('/harnesses');
+    // A nil Go slice serializes as JSON `null`; treat any non-array as empty.
+    return Array.isArray(wire) ? wire.map(harnessMetaFromWire) : [];
+  }
+
+  /**
+   * The available models for the controls-bar picker. GET /models — the canonical
+   * model-store registry. Drops `enabled=false` rows (mirroring bridge-ui) and projects
+   * each to a `ModelOption` carrying `provider` so `useModels` can filter by a harness's
+   * supported providers. LOUD: throws on any non-2xx. (bridge-ui: BridgeChat.tsx:260.)
+   */
+  async getModels(): Promise<ModelOption[]> {
+    const wire = await this.getJSON<StoreModelWire[] | null>('/models');
+    // A nil Go slice serializes as JSON `null`; treat any non-array as empty.
+    return Array.isArray(wire) ? wire.filter((m) => m.enabled).map(modelOptionFromWire) : [];
   }
 
   rename(id: string, displayName: string): Promise<unknown> {

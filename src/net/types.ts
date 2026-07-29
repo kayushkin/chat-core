@@ -207,6 +207,48 @@ export interface ManagedSessionDetail {
   harnessConfig: HarnessConfig | null;
 }
 
+/** A registered harness type and its capabilities, from `GET /harnesses` (camelCase of
+ *  `msg.HarnessInfo`). `capabilities` is the CANONICAL per-harness feature set the
+ *  controls bar gates each control on (`model` / `effort` / `compact` / `fork` /
+ *  `system_prompt` / `tools`); `supportedProviders` scopes the model picker to the
+ *  providers this harness can run. Single source of truth — never a hardcoded
+ *  per-harness allowlist. Absent optional fields stay absent; nothing is invented. */
+export interface HarnessMeta {
+  name: string;
+  label: string;
+  emoji: string;
+  tint?: string;
+  available: boolean;
+  capabilities: string[];
+  hookEvents?: string[];
+  supportedProviders?: string[];
+  supportedPermissionModes?: string[];
+  pty: boolean;
+  supportsDisableNetwork?: boolean;
+}
+
+/** One selectable model for the controls-bar picker, projected from `GET /models`
+ *  (only `enabled` rows). `value` is the model id (exactly what the config POST sends),
+ *  `label` is display text including per-million cost when reported, `provider` scopes
+ *  the option to a harness's `supportedProviders`. */
+export interface ModelOption {
+  value: string;
+  label: string;
+  provider: string;
+}
+
+/** The per-session runtime knobs applied via `POST /sessions/{id}/config`. camelCase
+ *  here; mapped to the snake_case wire body (`model` / `effort` / `max_budget` /
+ *  `disabled_tools`) by `ApiClient.setConfig`. `model` / `effort` are the controls-bar
+ *  pre-start settings (applied right after create) and can also be changed on a live
+ *  session; absent fields are omitted from the request (never sent as null). */
+export interface SessionConfig {
+  model?: string;
+  effort?: string;
+  maxBudget?: number;
+  disabledTools?: string[];
+}
+
 // ---- Endpoint response shapes ----
 
 export interface SummaryResponse {

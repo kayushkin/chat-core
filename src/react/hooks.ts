@@ -1,12 +1,22 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from 'zustand';
-import type { Entry, ManagedSessionDetail, SessionInfo, SessionSummary, Turn } from '../net/types.js';
+import type {
+  Entry,
+  ManagedSessionDetail,
+  ModelOption,
+  SessionConfig,
+  SessionInfo,
+  SessionSummary,
+  Turn,
+} from '../net/types.js';
 import type { ChatActions, FilterState } from '../store/ChatStore.js';
 import { changeSessionPermissionMode } from '../store/permissionMode.js';
 import {
   activeSummaryEffective,
   contextUsage,
   effectiveState,
+  harnessCapabilities,
+  modelsForHarness,
   selectFacets,
   sessionCost,
   sourcesForEntry,
@@ -216,6 +226,15 @@ export function useComposer(sessionId: string | null): {
             const newId = created.sessionId;
             actions.setActive(newId);
             actions.clearPending();
+            // Apply the controls-bar pre-start model/effort via POST /config right after
+            // create (bridge-ui parity — create itself takes no model/effort). Best-effort
+            // on this optimistic, non-blocking send path: a failure must not strand the
+            // message. `useSessionControls().setConfig` is the LOUD path for a live change.
+            if (pending?.model || pending?.effort) {
+              void api
+                .setConfig(newId, { model: pending.model, effort: pending.effort })
+                .catch(() => {});
+            }
             actions.appendOptimisticUser(newId, trimmed, `c_${Date.now()}`);
             actions.setSending(newId, true);
             return api.send(newId, trimmed).finally(() => actions.setSending(newId, false));
@@ -278,7 +297,7 @@ export function useFilters(): {
 /** Optimistic mutations: update the store first, POST in the background, revert
  *  the store on error. None await the network on the UI-update path. */
 export function useSessionActions(): {
-  newSession: (opts?: { instanceId?: string; harness?: string }) => void;
+  newSession: (opts?: { instanceId?: string; harness?: string; model?: string; effort?: string }) => void;
   archive: (id: string) => void;
   unarchive: (id: string) => void;
   rename: (id: string, name: string) => void;
@@ -286,8 +305,11 @@ export function useSessionActions(): {
   const { store, api } = useChatContext();
   const actions = useActions();
 
+  // `model` / `effort` are pre-start settings: they ride on the pending pane and are
+  // applied via POST /config right after the real session is lazily created on first
+  // send (see useComposer) — matching bridge-ui, whose create call carries no model/effort.
   const newSession = useCallback(
-    (opts?: { instanceId?: string; harness?: string }) => {
+    (opts?: { instanceId?: string; harness?: string; model?: string; effort?: string }) => {
       actions.openPending(opts);
     },
     [actions],
@@ -420,6 +442,200 @@ export function useSessionCost(sessionId: string | null): SessionCost {
 export function useContextUsage(sessionId: string | null): ContextUsage {
   const { store } = useChatContext();
   return useStore(store, (s) => contextUsage(s, sessionId));
+}
+
+/** Ensure the harness registry (`GET /harnesses`) is loaded — fetched once, cached in the
+ *  store, shared across every consumer. Never blocks the hot path. Internal to the
+ *  capability/model hooks. */
+function useEnsureHarnesses(): void {
+  const { store, api } = useChatContext();
+  const actions = useActions();
+  useEffect(() => {
+    const state = store.getState();
+    if (state.harnesses !== null || state.harnessesLoading) return;
+    actions.setHarnessesLoading(true);
+    void api
+      .getHarnesses()
+      .then((list) => actions.setHarnesses(list))
+      .catch(() => actions.setHarnessesLoading(false));
+  }, [store, api, actions]);
+}
+
+/** Ensure the model registry (`GET /models`) is loaded — fetched once, cached, shared.
+ *  Never blocks the hot path. Internal to `useModels`. */
+function useEnsureModels(): void {
+  const { store, api } = useChatContext();
+  const actions = useActions();
+  useEffect(() => {
+    const state = store.getState();
+    if (state.models !== null || state.modelsLoading) return;
+    actions.setModelsLoading(true);
+    void api
+      .getModels()
+      .then((list) => actions.setModels(list))
+      .catch(() => actions.setModelsLoading(false));
+  }, [store, api, actions]);
+}
+
+/** The capability set for a harness, from the CANONICAL `GET /harnesses` registry (never a
+ *  hardcoded per-harness allowlist). The controls bar gates each control on this set:
+ *  `capabilities.has('model' | 'effort' | 'compact' | 'fork' | 'system_prompt' | 'tools')`.
+ *  Fetches the registry once on first use (cached in the store, shared); returns an empty
+ *  set until it loads or when the harness is unknown — so a control simply stays hidden,
+ *  never guessed. */
+export function useHarnessCapabilities(harnessId: string | null): Set<string> {
+  const { store } = useChatContext();
+  useEnsureHarnesses();
+  const harnesses = useStore(store, (s) => s.harnesses);
+  return useMemo(() => harnessCapabilities(harnesses, harnessId), [harnesses, harnessId]);
+}
+
+/** The models for the controls-bar picker, from the CANONICAL `GET /models` registry
+ *  (enabled rows only), filtered to a harness's `supportedProviders` exactly as bridge-ui's
+ *  `harnessModels` does. Pass no `harnessId` (or a harness that declares no providers) to
+ *  get every enabled model. Fetches the model + harness registries once on first use
+ *  (cached, shared); returns `[]` until they load. Each option is
+ *  `{ value: modelId, label, provider }`. */
+export function useModels(harnessId?: string | null): ModelOption[] {
+  const { store } = useChatContext();
+  useEnsureModels();
+  useEnsureHarnesses();
+  const models = useStore(store, (s) => s.models);
+  const harnesses = useStore(store, (s) => s.harnesses);
+  return useMemo(
+    () => modelsForHarness(models, harnesses, harnessId),
+    [models, harnesses, harnessId],
+  );
+}
+
+/** Live-session controls for the settings bar: `compact`, `fork`, `switchMode`, and the
+ *  model/effort `setConfig`. All are LOUD — the underlying `ApiClient` methods throw on any
+ *  non-2xx, and each control here surfaces the message on `error` and RETHROWS rather than
+ *  faking a success/idle state.
+ *
+ *  `compacting` is set when `compact()` is invoked and cleared only when the CANONICAL
+ *  `compact_boundary` system entry lands on the session's stream (or a 180s safety
+ *  timeout) — the POST only ACKs, so this never fakes completion, mirroring bridge-ui.
+ *  `forking` is true for the fork request's duration; on success it navigates the store to
+ *  the new fork (whose summary arrives via the list SSE upsert). `error` is the last
+ *  control error, or null. */
+export function useSessionControls(sessionId: string | null): {
+  compact: (summary?: string) => Promise<void>;
+  fork: (displayName?: string) => Promise<void>;
+  switchMode: (mode: 'events' | 'pty') => Promise<void>;
+  setConfig: (config: SessionConfig) => Promise<void>;
+  compacting: boolean;
+  forking: boolean;
+  error: string | null;
+} {
+  const { store, api } = useChatContext();
+  const actions = useActions();
+  const [compacting, setCompacting] = useState(false);
+  const [forking, setForking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const model = useStore(store, (s) => (sessionId ? turnsFor(s, sessionId) : undefined));
+  // Max eventId at compact-request time — the boundary that clears `compacting` must be
+  // newer than this, so a boundary already in history never resolves a fresh request.
+  const compactStart = useRef<number>(-1);
+  const compactTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearCompactTimer = useCallback(() => {
+    if (compactTimer.current) {
+      clearTimeout(compactTimer.current);
+      compactTimer.current = null;
+    }
+  }, []);
+
+  // Clear `compacting` when the canonical compact_boundary system entry arrives.
+  useEffect(() => {
+    if (!compacting || !model) return;
+    for (const e of Object.values(model.entries)) {
+      if (e.kind === 'system' && e.subtype === 'compact_boundary' && e.eventId > compactStart.current) {
+        setCompacting(false);
+        clearCompactTimer();
+        return;
+      }
+    }
+  }, [compacting, model, clearCompactTimer]);
+
+  useEffect(() => () => clearCompactTimer(), [clearCompactTimer]);
+
+  const compact = useCallback(
+    async (summary?: string) => {
+      if (!sessionId) return;
+      setError(null);
+      compactStart.current = store.getState().turnsBySession.get(sessionId)?.validator.maxEventId ?? -1;
+      setCompacting(true);
+      clearCompactTimer();
+      // Safety net: a large context can take a while; the boundary event normally clears
+      // this well before the timeout fires.
+      compactTimer.current = setTimeout(() => {
+        compactTimer.current = null;
+        setCompacting(false);
+      }, 180000);
+      try {
+        await api.compact(sessionId, summary);
+      } catch (e) {
+        clearCompactTimer();
+        setCompacting(false);
+        setError(e instanceof Error ? e.message : String(e));
+        throw e;
+      }
+    },
+    [api, store, sessionId, clearCompactTimer],
+  );
+
+  const fork = useCallback(
+    async (displayName?: string) => {
+      if (!sessionId) return;
+      setError(null);
+      setForking(true);
+      try {
+        const created = await api.fork(sessionId, displayName);
+        // Navigate to the fork; its summary arrives via the global list SSE upsert.
+        if (created.sessionId) {
+          actions.setActive(created.sessionId);
+          actions.clearPending();
+        }
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+        throw e;
+      } finally {
+        setForking(false);
+      }
+    },
+    [api, actions, sessionId],
+  );
+
+  const switchMode = useCallback(
+    async (mode: 'events' | 'pty') => {
+      if (!sessionId) return;
+      setError(null);
+      try {
+        await api.switchMode(sessionId, mode);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+        throw e;
+      }
+    },
+    [api, sessionId],
+  );
+
+  const setConfig = useCallback(
+    async (config: SessionConfig) => {
+      if (!sessionId) return;
+      setError(null);
+      try {
+        await api.setConfig(sessionId, config);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+        throw e;
+      }
+    },
+    [api, sessionId],
+  );
+
+  return { compact, fork, switchMode, setConfig, compacting, forking, error };
 }
 
 /** Prefetch hint — call on sidebar row hover. Warms a cold session. */

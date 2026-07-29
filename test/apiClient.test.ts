@@ -188,6 +188,207 @@ describe('ApiClient.getSessionDetail — harness_config → camelCase harnessCon
   });
 });
 
+describe('ApiClient.createSession / fork — map canonical session_id → sessionId', () => {
+  it('createSession reads session_id from the ManagedSession wire (not a phantom sessionId)', async () => {
+    const seen: { url: string; init?: RequestInit }[] = [];
+    const api = new ApiClient({
+      fetch: fakeFetch(
+        { ok: true, status: 201, statusText: 'Created', jsonBody: { session_id: 'br_new', state: 'starting' } },
+        (url, init) => seen.push({ url, init }),
+      ),
+      basePath: '/api/bridge',
+    });
+    const created = await api.createSession({ instanceId: 'inst1', harness: 'claudecode' });
+    expect(created.sessionId).toBe('br_new');
+    expect(seen[0]!.url).toBe('/api/bridge/sessions');
+    expect(JSON.parse(String(seen[0]!.init?.body))).toEqual({
+      type: 'interactive',
+      purpose: 'chat',
+      origin: 'frontend',
+      instance_id: 'inst1',
+      harness: 'claudecode',
+    });
+  });
+
+  it('fork POSTs display_name + type and maps the forked session_id', async () => {
+    const seen: { url: string; init?: RequestInit }[] = [];
+    const api = new ApiClient({
+      fetch: fakeFetch(
+        { ok: true, status: 201, statusText: 'Created', jsonBody: { session_id: 'br_fork', state: 'starting' } },
+        (url, init) => seen.push({ url, init }),
+      ),
+      basePath: '/api/bridge',
+    });
+    const created = await api.fork('br_1', 'My fork');
+    expect(created.sessionId).toBe('br_fork');
+    expect(seen[0]!.url).toBe('/api/bridge/sessions/br_1/fork');
+    expect(JSON.parse(String(seen[0]!.init?.body))).toEqual({ display_name: 'My fork', type: 'interactive' });
+  });
+
+  it('fork throws loud on a non-2xx (e.g. 409 parent not initialized)', async () => {
+    const api = new ApiClient({
+      fetch: fakeFetch({ ok: false, status: 409, statusText: 'Conflict', textBody: 'no harness_session_id yet' }),
+      basePath: '/api/bridge',
+    });
+    await expect(api.fork('br_1')).rejects.toThrow(/409/);
+  });
+});
+
+describe('ApiClient.compact — loud, body shape', () => {
+  it('POSTs {} with no summary and { summary } with one', async () => {
+    const seen: { url: string; init?: RequestInit }[] = [];
+    const api = new ApiClient({
+      fetch: fakeFetch({ ok: true, status: 200, statusText: 'OK', jsonBody: {} }, (url, init) =>
+        seen.push({ url, init }),
+      ),
+      basePath: '/api/bridge',
+    });
+    await api.compact('br_1');
+    await api.compact('br_1', 'keep the plan');
+    expect(seen[0]!.url).toBe('/api/bridge/sessions/br_1/compact');
+    expect(JSON.parse(String(seen[0]!.init?.body))).toEqual({});
+    expect(JSON.parse(String(seen[1]!.init?.body))).toEqual({ summary: 'keep the plan' });
+  });
+
+  it('throws loud on a non-2xx', async () => {
+    const api = new ApiClient({
+      fetch: fakeFetch({ ok: false, status: 404, statusText: 'Not Found' }),
+      basePath: '/api/bridge',
+    });
+    await expect(api.compact('nope')).rejects.toThrow(/404/);
+  });
+});
+
+describe('ApiClient.switchMode — loud, POST /mode { mode }', () => {
+  it('POSTs the mode and resolves on 2xx', async () => {
+    const seen: { url: string; init?: RequestInit }[] = [];
+    const api = new ApiClient({
+      fetch: fakeFetch({ ok: true, status: 200, statusText: 'OK', jsonBody: { attach_token: 'tok' } }, (url, init) =>
+        seen.push({ url, init }),
+      ),
+      basePath: '/api/bridge',
+    });
+    await expect(api.switchMode('br_1', 'pty')).resolves.toBeDefined();
+    expect(seen[0]!.url).toBe('/api/bridge/sessions/br_1/mode');
+    expect(JSON.parse(String(seen[0]!.init?.body))).toEqual({ mode: 'pty' });
+  });
+
+  it('throws loud on a non-2xx (e.g. pty unsupported)', async () => {
+    const api = new ApiClient({
+      fetch: fakeFetch({ ok: false, status: 400, statusText: 'Bad Request' }),
+      basePath: '/api/bridge',
+    });
+    await expect(api.switchMode('br_1', 'pty')).rejects.toThrow(/400/);
+  });
+});
+
+describe('ApiClient.setConfig — camelCase → snake_case body, only provided fields', () => {
+  it('maps model/effort/maxBudget/disabledTools and omits absent fields', async () => {
+    const seen: { url: string; init?: RequestInit }[] = [];
+    const api = new ApiClient({
+      fetch: fakeFetch({ ok: true, status: 200, statusText: 'OK', jsonBody: {} }, (url, init) =>
+        seen.push({ url, init }),
+      ),
+      basePath: '/api/bridge',
+    });
+    await api.setConfig('br_1', { model: 'claude-opus', effort: 'high', maxBudget: 5, disabledTools: ['Bash'] });
+    expect(seen[0]!.url).toBe('/api/bridge/sessions/br_1/config');
+    expect(JSON.parse(String(seen[0]!.init?.body))).toEqual({
+      model: 'claude-opus',
+      effort: 'high',
+      max_budget: 5,
+      disabled_tools: ['Bash'],
+    });
+    // A partial config sends ONLY the provided key — never a null for the rest.
+    await api.setConfig('br_1', { effort: 'low' });
+    expect(JSON.parse(String(seen[1]!.init?.body))).toEqual({ effort: 'low' });
+  });
+
+  it('throws loud on a non-2xx', async () => {
+    const api = new ApiClient({
+      fetch: fakeFetch({ ok: false, status: 400, statusText: 'Bad Request' }),
+      basePath: '/api/bridge',
+    });
+    await expect(api.setConfig('br_1', { model: 'x' })).rejects.toThrow(/400/);
+  });
+});
+
+describe('ApiClient.getHarnesses — snake_case HarnessInfo → camelCase HarnessMeta', () => {
+  it('maps every field and defaults capabilities', async () => {
+    const seen: string[] = [];
+    const wire = [
+      {
+        name: 'claudecode',
+        label: 'Claude Code',
+        emoji: '🤖',
+        tint: '#d97757',
+        available: true,
+        capabilities: ['model', 'effort', 'compact', 'fork', 'system_prompt', 'tools'],
+        hook_events: ['PreToolUse'],
+        supported_providers: ['anthropic'],
+        supported_permission_modes: ['ask', 'bypass'],
+        pty: true,
+        supports_disable_network: false,
+      },
+    ];
+    const api = new ApiClient({
+      fetch: fakeFetch({ ok: true, status: 200, statusText: 'OK', jsonBody: wire }, (u) => seen.push(u)),
+      basePath: '/api/bridge',
+    });
+    const harnesses = await api.getHarnesses();
+    expect(seen[0]).toBe('/api/bridge/harnesses');
+    expect(harnesses[0]).toEqual({
+      name: 'claudecode',
+      label: 'Claude Code',
+      emoji: '🤖',
+      tint: '#d97757',
+      available: true,
+      capabilities: ['model', 'effort', 'compact', 'fork', 'system_prompt', 'tools'],
+      hookEvents: ['PreToolUse'],
+      supportedProviders: ['anthropic'],
+      supportedPermissionModes: ['ask', 'bypass'],
+      pty: true,
+      supportsDisableNetwork: false,
+    });
+  });
+
+  it('tolerates a null body (nil slice) → []', async () => {
+    const api = new ApiClient({
+      fetch: fakeFetch({ ok: true, status: 200, statusText: 'OK', jsonBody: null }),
+      basePath: '/api/bridge',
+    });
+    await expect(api.getHarnesses()).resolves.toEqual([]);
+  });
+});
+
+describe('ApiClient.getModels — filters enabled + projects ModelOption', () => {
+  it('drops disabled rows and builds { value, label, provider } with cost', async () => {
+    const wire = [
+      { id: 'claude-opus', name: 'Opus', provider: 'anthropic', enabled: true, input_cost: 15, output_cost: 75 },
+      { id: 'gpt-5', name: 'GPT-5', provider: 'openai', enabled: false, input_cost: 10, output_cost: 30 },
+      { id: 'bare', provider: 'local', enabled: true },
+    ];
+    const api = new ApiClient({
+      fetch: fakeFetch({ ok: true, status: 200, statusText: 'OK', jsonBody: wire }),
+      basePath: '/api/bridge',
+    });
+    const models = await api.getModels();
+    expect(models).toEqual([
+      { value: 'claude-opus', label: 'Opus ($15/$75)', provider: 'anthropic' },
+      // No cost reported → label is just the name (falls back to id) — never a fake cost.
+      { value: 'bare', label: 'bare', provider: 'local' },
+    ]);
+  });
+
+  it('tolerates a null body → []', async () => {
+    const api = new ApiClient({
+      fetch: fakeFetch({ ok: true, status: 200, statusText: 'OK', jsonBody: null }),
+      basePath: '/api/bridge',
+    });
+    await expect(api.getModels()).resolves.toEqual([]);
+  });
+});
+
 describe('ApiClient.setPermissionMode — loud PUT', () => {
   it('PUTs /sessions/{id}/permission-mode with { mode } and resolves on 2xx', async () => {
     const seen: { url: string; init?: RequestInit }[] = [];

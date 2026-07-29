@@ -1,4 +1,4 @@
-import type { Entry, SessionSummary, Turn, TurnModel } from '../net/types.js';
+import type { Entry, HarnessMeta, ModelOption, SessionSummary, Turn, TurnModel } from '../net/types.js';
 import { annotateOTelDuplicates, groupMembers } from '../reduce/otelDedup.js';
 import { terminalStateFromTail } from '../reduce/terminalState.js';
 import type { ChatState, ContentHits, FilterState } from './ChatStore.js';
@@ -621,4 +621,43 @@ export function selectTimeline(model: TurnModel | undefined): TimelineView {
   const result: TimelineView = { items, turns: groupTurns(items), count: items.length };
   timelineCache = { model, result };
   return result;
+}
+
+// --- Harness capabilities + model picker (controls bar) ---
+//
+// Both read the CANONICAL registries fetched from GET /harnesses and GET /models —
+// never a hardcoded per-harness allowlist. Pure over the lists (not ChatState) so they
+// stay trivially testable and the React hooks can memoize on the stable slice identity.
+
+/**
+ * The capability set for a harness — the source the controls bar gates each control on
+ * (`model` / `effort` / `compact` / `fork` / `system_prompt` / `tools`). Returns an empty
+ * set when the registry has not loaded yet or the harness is unknown (a control simply
+ * stays hidden — never guessed into existence).
+ */
+export function harnessCapabilities(
+  harnesses: HarnessMeta[] | null,
+  harnessId: string | null | undefined,
+): Set<string> {
+  if (!harnessId || !harnesses) return new Set();
+  const h = harnesses.find((x) => x.name === harnessId);
+  return new Set(h?.capabilities ?? []);
+}
+
+/**
+ * The models offered for a harness's picker: every enabled model when no harness (or a
+ * harness that declares no `supportedProviders`) is given, else only the models whose
+ * `provider` the harness supports — mirroring bridge-ui's `harnessModels` filter. Returns
+ * an empty array until the model registry loads.
+ */
+export function modelsForHarness(
+  models: ModelOption[] | null,
+  harnesses: HarnessMeta[] | null,
+  harnessId?: string | null,
+): ModelOption[] {
+  const list = models ?? [];
+  if (!harnessId) return list;
+  const providers = harnesses?.find((x) => x.name === harnessId)?.supportedProviders;
+  if (!providers || providers.length === 0) return list;
+  return list.filter((m) => providers.includes(m.provider));
 }

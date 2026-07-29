@@ -103,6 +103,70 @@ this as a LOUD call (throws on any non-2xx) so `useManagedSession`'s optimistic 
 can revert. (The server also accepts optional `disable_network` and `permission_mode_custom`
 fields on this PUT; the client currently sends only `mode` per the required signature.)
 
+## Settings / controls bar (dashv2 `bc-controls-bar`)
+
+These back the settings-bar controls. Every mutation is a LOUD `ApiClient` call (throws on
+any non-2xx). Endpoints + bodies are the exact canonical ones bridge-ui uses — verified
+against `bridge-ui/src/useBridgeSession.ts` (line refs below) and the Go handlers in
+`llm-bridge-server/internal/server/{sessions.go,mode_switch.go,models.go,health.go}`.
+
+### `POST /sessions` and `POST /sessions/{id}/fork`
+Both return the canonical **snake_case `msg.ManagedSession`** — its id field is `session_id`
+(there is no `sessionId` on this shape). `ApiClient.createSession` / `fork` therefore read
+`session_id` from the canonical key and surface it camelCase as `CreatedSession.sessionId`.
+Fork body: `{ "display_name": "", "type": "interactive" }` (empty name → server derives
+"<parent> (fork)"). Create is unchanged (`type`/`purpose`/`origin` + optional
+`instance_id`/`harness`). (useBridgeSession.ts:908 create, :1143 fork.)
+
+### `POST /sessions/{id}/compact`
+Compact the context. Body `{ "summary": "..." }` when a caller supplies one, else `{}`. The
+POST only ACKs (`compact_ack` system event); the real completion is the `compact_boundary`
+system event on the session stream — `useSessionControls` clears its `compacting` flag on
+that entry (or a 180s safety timeout), never on the POST resolving. (useBridgeSession.ts:1129.)
+
+### `POST /sessions/{id}/mode`
+Switch a live session between I/O modes. Body `{ "mode": "events" | "pty" }`. The server
+kills + respawns the harness via `--resume` (history preserved) and, for a pty switch,
+returns an `attach_token` sibling. chat-core passes the response through unchanged (pty
+attach-token management is a bridge-ui concern). Gated in the UI on `HarnessMeta.pty`.
+(useBridgeSession.ts:973; handler `mode_switch.go`.)
+
+### `POST /sessions/{id}/config`
+Apply per-session runtime knobs. Body `{ model?, effort?, max_budget?, disabled_tools? }`
+(`msg.ConfigSessionRequest`; only the provided fields are sent — never a null for the rest).
+This is the canonical path for BOTH the controls-bar model/effort **pre-start** settings
+(applied right after create — bridge-ui's create call carries no model/effort) and changing
+them on a **live** session. `ApiClient.setConfig(id, SessionConfig)` maps the camelCase
+`SessionConfig` (`maxBudget`/`disabledTools`) to the snake_case wire body. (useBridgeSession.ts:1176.)
+
+### `GET /harnesses`
+The registered harness types + capabilities — the canonical registry the controls bar gates
+on. Returns `msg.HarnessInfo[]` (snake_case; nil slice → JSON `null`).
+`ApiClient.getHarnesses` maps each to the camelCase `HarnessMeta`:
+
+| wire (snake_case, `msg.HarnessInfo`) | client (`HarnessMeta`, camelCase) |
+| --- | --- |
+| `name` / `label` / `emoji` / `tint` / `available` | same |
+| `capabilities` (`model`,`effort`,`compact`,`fork`,`system_prompt`,`tools`) | `capabilities` |
+| `hook_events` | `hookEvents` |
+| `supported_providers` | `supportedProviders` (scopes the model picker) |
+| `supported_permission_modes` | `supportedPermissionModes` |
+| `pty` | `pty` (gates the events/pty toggle) |
+| `supports_disable_network` | `supportsDisableNetwork` |
+
+`useHarnessCapabilities(harnessId) → Set<string>` reads this — never a hardcoded per-harness
+allowlist. (bridge-ui reads the same endpoint: `BridgeChat.tsx:304`; handler `health.go:249`.)
+
+### `GET /models`
+The model-store registry. Returns model rows (snake_case: `id`, `provider`, `name`,
+`max_tokens`, `input_cost`, `output_cost`, `enabled`; the handler also embeds credential
+status, ignored here; nil slice → JSON `null`). `ApiClient.getModels` drops `enabled=false`
+rows and projects each to a `ModelOption { value: id, label: "<name> ($in/$out)", provider }`
+(label falls back to just the name/id when cost is unreported — never a fabricated cost).
+`useModels(harnessId?)` filters these to the harness's `supportedProviders` exactly as
+bridge-ui's `harnessModels` does; no harness (or one declaring no providers) → all enabled
+models. (bridge-ui: `BridgeChat.tsx:260`; handler `models.go`.)
+
 ## Cost / context: `Entry.usage` + `TurnModel.aggregates` (Phase 2)
 These ride on the materialized model from `GET /sessions/{id}/messages`, populated by
 log-store's spend/context materializer. Unlike `SessionInfo` they are **camelCase already on

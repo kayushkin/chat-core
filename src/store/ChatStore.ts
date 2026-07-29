@@ -2,7 +2,9 @@ import { createStore, type StoreApi } from 'zustand/vanilla';
 import type {
   Entry,
   HarnessConfig,
+  HarnessMeta,
   ManagedSessionDetail,
+  ModelOption,
   SessionInfo,
   SessionSummary,
   Turn,
@@ -54,11 +56,16 @@ export const EMPTY_FILTER: FilterState = {
   search: '',
 };
 
-/** A pending (not-yet-created) session pane — 0 network until first send. */
+/** A pending (not-yet-created) session pane — 0 network until first send. `model` /
+ *  `effort` are the controls-bar pre-start settings chosen before the first send; they
+ *  are applied via `POST /sessions/{id}/config` right after the real session is lazily
+ *  created (bridge-ui parity — create takes no model/effort). */
 export interface PendingSession {
   clientId: string;
   instanceId?: string;
   harness?: string;
+  model?: string;
+  effort?: string;
 }
 
 /** Content-search augmentation (C6). The set of session ids whose materialized
@@ -105,6 +112,20 @@ export interface ChatState {
   sending: Set<string>;
   pending: PendingSession | null;
 
+  /** The harness registry from `GET /harnesses` — the canonical source the controls bar
+   *  gates on (`capabilities`) and scopes the model picker with (`supportedProviders`).
+   *  `null` means "not fetched yet"; `useHarnessCapabilities` / `useModels` fetch it once
+   *  on first use, never on the hot path. */
+  harnesses: HarnessMeta[] | null;
+  /** True while the one-shot `GET /harnesses` fetch is in flight. */
+  harnessesLoading: boolean;
+  /** The model registry from `GET /models` (enabled rows only), projected to
+   *  `ModelOption`s. `null` means "not fetched yet"; `useModels` fetches it once on first
+   *  use. */
+  models: ModelOption[] | null;
+  /** True while the one-shot `GET /models` fetch is in flight. */
+  modelsLoading: boolean;
+
   actions: ChatActions;
 }
 
@@ -149,8 +170,15 @@ export interface ChatActions {
   setDraft(sessionId: string, text: string): void;
   setSending(sessionId: string, sending: boolean): void;
 
-  openPending(opts?: { instanceId?: string; harness?: string }): PendingSession;
+  openPending(opts?: { instanceId?: string; harness?: string; model?: string; effort?: string }): PendingSession;
   clearPending(): void;
+
+  /** Cache the harness registry (`GET /harnesses`); clears the loading flag. */
+  setHarnesses(list: HarnessMeta[]): void;
+  setHarnessesLoading(loading: boolean): void;
+  /** Cache the model registry (`GET /models`, enabled rows); clears the loading flag. */
+  setModels(list: ModelOption[]): void;
+  setModelsLoading(loading: boolean): void;
 }
 
 export type ChatStoreApi = StoreApi<ChatState>;
@@ -381,6 +409,8 @@ export function createChatStore(): ChatStoreApi {
           clientId: `pending_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
           ...(opts?.instanceId ? { instanceId: opts.instanceId } : {}),
           ...(opts?.harness ? { harness: opts.harness } : {}),
+          ...(opts?.model ? { model: opts.model } : {}),
+          ...(opts?.effort ? { effort: opts.effort } : {}),
         };
         set({ pending, activeId: null });
         return pending;
@@ -388,6 +418,19 @@ export function createChatStore(): ChatStoreApi {
 
       clearPending() {
         set({ pending: null });
+      },
+
+      setHarnesses(list) {
+        set({ harnesses: list, harnessesLoading: false });
+      },
+      setHarnessesLoading(harnessesLoading) {
+        set({ harnessesLoading });
+      },
+      setModels(list) {
+        set({ models: list, modelsLoading: false });
+      },
+      setModelsLoading(modelsLoading) {
+        set({ modelsLoading });
       },
     };
 
@@ -410,6 +453,10 @@ export function createChatStore(): ChatStoreApi {
       drafts: new Map(),
       sending: new Set(),
       pending: null,
+      harnesses: null,
+      harnessesLoading: false,
+      models: null,
+      modelsLoading: false,
       actions,
     };
   });

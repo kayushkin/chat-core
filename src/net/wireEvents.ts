@@ -132,6 +132,43 @@ export type ManagedSessionDetailWire = ManagedSessionWire & {
   harness_config?: HarnessConfigWire | null;
 };
 
+/** snake_case `msg.HarnessInfo` as returned by `GET /harnesses` — one registered
+ *  harness type and its capabilities. Mapped to the camelCase `HarnessMeta` by
+ *  `ApiClient.getHarnesses` (the single source of truth for that mapping). This is the
+ *  canonical registry the controls bar gates on; the client never hardcodes a
+ *  per-harness allowlist. Narrowed to the fields chat-core reads. */
+export interface HarnessInfoWire {
+  name: string;
+  label: string;
+  emoji: string;
+  tint?: string;
+  available: boolean;
+  binary?: string;
+  /** The feature set the controls bar gates each control on: e.g. `model`, `effort`,
+   *  `compact`, `fork`, `system_prompt`, `tools`. */
+  capabilities: string[];
+  hook_events?: string[];
+  /** Provider ids this harness can run models from — scopes the model picker. */
+  supported_providers?: string[];
+  supported_permission_modes?: string[];
+  pty: boolean;
+  supports_disable_network?: boolean;
+}
+
+/** snake_case model row as returned by `GET /models` (model-store `Model` fields; the
+ *  handler embeds credential status too, which chat-core ignores). Projected to the
+ *  camelCase `ModelOption` by `ApiClient.getModels`, which also drops `enabled=false`
+ *  rows. */
+export interface StoreModelWire {
+  id: string;
+  provider: string;
+  name?: string;
+  max_tokens?: number;
+  input_cost?: number;
+  output_cost?: number;
+  enabled?: boolean;
+}
+
 /** Frame on the global session-list stream (`GET /session-events`). */
 export type SessionListFrame =
   | { type: 'hello' }

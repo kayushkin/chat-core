@@ -10,6 +10,7 @@ import type {
   SessionSummary, TurnModel, Entry, Turn,
   SessionInfo, ToolInfo, McpServerInfo, ManagedSessionDetail,
   HarnessConfig, HarnessConfigCustom, Facets,
+  HarnessMeta, ModelOption, SessionConfig,
 } from '@kayushkin/chat-core';
 
 // ---- Provider ----
@@ -99,12 +100,64 @@ export function useFilters(): {
 };
 
 // Optimistic mutations. Each updates the store first, POSTs in the background, reverts on error.
+// `newSession` opens the pending pane (0 network). `model`/`effort` are PRE-START settings:
+// they ride on the pending pane and are applied via POST /sessions/{id}/config right after
+// the real session is lazily created on first send — matching bridge-ui, whose create call
+// carries no model/effort (application is best-effort on that optimistic path; the LOUD path
+// for a live change is `useSessionControls().setConfig`).
 export function useSessionActions(): {
-  newSession: (opts?: { instanceId?: string; harness?: string }) => void; // opens pending pane, 0 network
+  newSession: (opts?: { instanceId?: string; harness?: string; model?: string; effort?: string }) => void;
   archive: (id: string) => void;
   unarchive: (id: string) => void;
   rename: (id: string, name: string) => void;
-};
+}
+
+// ---- Settings / controls bar (dashv2 `bc-controls-bar`) ----
+
+// Live-session controls for the settings bar: compact / fork / switch-mode / model+effort.
+// All are LOUD — the underlying ApiClient methods throw on any non-2xx; each control surfaces
+// the message on `error` and RETHROWS rather than faking a success/idle. `compacting` is set
+// on compact() and cleared only when the canonical `compact_boundary` system entry lands on
+// the session stream (or a 180s safety timeout) — the POST only ACKs, so completion is never
+// faked (mirrors bridge-ui). `forking` is true for the fork request; on success it navigates
+// the store to the new fork (its summary arrives via the list SSE). `setConfig` is the live
+// model/effort change (POST /config). `error` is the last control error, or null.
+export function useSessionControls(sessionId: string | null): {
+  compact: (summary?: string) => Promise<void>;
+  fork: (displayName?: string) => Promise<void>;
+  switchMode: (mode: 'events' | 'pty') => Promise<void>;
+  setConfig: (config: SessionConfig) => Promise<void>;
+  compacting: boolean;
+  forking: boolean;
+  error: string | null;
+}
+
+// The capability set the controls bar gates each control on:
+// `capabilities.has('model' | 'effort' | 'compact' | 'fork' | 'system_prompt' | 'tools')`.
+// Sourced from the CANONICAL `GET /harnesses` registry (never a hardcoded per-harness
+// allowlist), fetched once on first use and cached/shared in the store. Returns an empty set
+// until it loads or when the harness is unknown, so a control simply stays hidden.
+export function useHarnessCapabilities(harnessId: string | null): Set<string>;
+
+// The models for the controls-bar picker, from the CANONICAL `GET /models` registry (enabled
+// rows only), filtered to the harness's `supportedProviders` exactly as bridge-ui's
+// `harnessModels` does. Pass no harnessId (or a harness declaring no providers) for every
+// enabled model. Fetched once on first use, cached/shared; returns `[]` until it loads.
+// `value` is the model id (what the config POST sends).
+export function useModels(harnessId?: string | null): ModelOption[];
+
+// A registered harness type + capabilities, from GET /harnesses (camelCase of msg.HarnessInfo).
+export interface HarnessMeta {
+  name: string; label: string; emoji: string; tint?: string; available: boolean;
+  capabilities: string[];            // the controls-bar gate set (single source of truth)
+  hookEvents?: string[];
+  supportedProviders?: string[];     // scopes the model picker
+  supportedPermissionModes?: string[];
+  pty: boolean;                      // gates the events/pty ModeToggle
+  supportsDisableNetwork?: boolean;
+}
+export interface ModelOption { value: string; label: string; provider: string; }
+export interface SessionConfig { model?: string; effort?: string; maxBudget?: number; disabledTools?: string[]; };
 
 // ---- Session info + cost/context (Phase 2) ----
 
@@ -287,6 +340,29 @@ export function RefChip(props: RefChipProps): JSX.Element;
 //   setPermissionMode(id: string, mode: string): Promise<unknown>;
 // }
 ```
+
+### ApiClient — controls-bar additions (all LOUD: throw on any non-2xx)
+
+Mirror the exact canonical bridge endpoints (verified against bridge-ui `useBridgeSession.ts`).
+`createSession`/`fork` read the id from the canonical `session_id` wire key (POST /sessions and
+/fork return the snake_case `msg.ManagedSession`; there is no `sessionId` on that shape).
+
+```ts
+// class ApiClient {
+//   createSession(opts?: { instanceId?; harness? }): Promise<CreatedSession>; // maps session_id → sessionId
+//   compact(id: string, summary?: string): Promise<unknown>;                   // POST /sessions/{id}/compact — {} or { summary }
+//   fork(id: string, displayName?: string): Promise<CreatedSession>;           // POST /sessions/{id}/fork — { display_name, type:'interactive' }
+//   switchMode(id: string, mode: 'events'|'pty'): Promise<unknown>;            // POST /sessions/{id}/mode — { mode }
+//   setConfig(id: string, config: SessionConfig): Promise<unknown>;           // POST /sessions/{id}/config — { model?, effort?, max_budget?, disabled_tools? }
+//   getHarnesses(): Promise<HarnessMeta[]>;                                     // GET /harnesses (canonical harness registry)
+//   getModels(): Promise<ModelOption[]>;                                       // GET /models (enabled rows → ModelOption)
+// }
+```
+
+Pure, framework-free selectors (exported for non-React consumers/tests):
+`harnessCapabilities(harnesses, harnessId) → Set<string>` and
+`modelsForHarness(models, harnesses, harnessId?) → ModelOption[]` — both read the canonical
+registry lists, never a hardcoded allowlist.
 
 Notes for implementers:
 - All hooks read via Zustand selector subscriptions so only components whose slice changed
