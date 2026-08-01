@@ -17,6 +17,7 @@ export {
   useModels,
   useSessionCost,
   useContextUsage,
+  usePendingPermissions,
   usePrefetch,
 } from './react/hooks.js';
 export { RefChip, type RefChipProps } from './react/RefChip.js';
@@ -39,6 +40,8 @@ export type {
   HarnessConfig,
   HarnessConfigCustom,
   HarnessMeta,
+  PendingHook,
+  HookResolveInput,
   ModelOption,
   SessionConfig,
   ManagedSessionDetail,
@@ -50,9 +53,11 @@ export type {
   SearchHitWire,
   SearchResponse,
 } from './net/types.js';
+export { HOOK_SOURCE_PERMISSION, HOOK_SOURCE_USER_INPUT } from './net/types.js';
 export type {
   WireEvent,
   WireEventData,
+  HookEventWire,
   ManagedSessionWire,
   ManagedSessionDetailWire,
   SessionInfoWire,
@@ -76,8 +81,16 @@ export {
   type FilterState,
   type PendingSession,
   type ContentHits,
+  EMPTY_HOOKS,
 } from './store/ChatStore.js';
 export { changeSessionPermissionMode } from './store/permissionMode.js';
+export {
+  foldHookEvent,
+  pendingHookFromWire,
+  resolvePendingHook,
+  HOOK_PHASE_AWAITING,
+  HOOK_PHASE_COMPLETED,
+} from './store/pendingHooks.js';
 export {
   visibleSessions,
   visibleCount,

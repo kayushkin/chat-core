@@ -5,6 +5,7 @@ import type {
   HarnessMeta,
   ManagedSessionDetail,
   ModelOption,
+  PendingHook,
   SessionInfo,
   SessionSummary,
   Turn,
@@ -12,6 +13,7 @@ import type {
 } from '../net/types.js';
 import type { WireEvent } from '../net/wireEvents.js';
 import { applyEvent, initTailState, type TailState } from '../reduce/TurnReducer.js';
+import { foldHookEvent } from './pendingHooks.js';
 
 // L1 hot store (decision D2). Zustand vanilla store held in `Map`s for the
 // working set. ACTIONS ARE THE ONLY MUTATION PATH — both the SyncEngine and the
@@ -97,6 +99,12 @@ export interface ChatState {
   sessionDetailLoading: Set<string>;
   /** Internal live-tail reducer state per session (not for direct UI reads). */
   tails: Map<string, TailState>;
+  /** Hooks parked on a human decision, `sessionId -> requestId -> PendingHook`. A
+   *  session with an entry here has a tool call frozen mid-turn; nothing else in the
+   *  model shows it, so this map is the ONLY thing standing between a permission ask
+   *  and a chat that hangs with no visible cause. Hydrated per session from
+   *  `GET /sessions/{id}/hooks/pending` and kept live by the session SSE. */
+  pendingHooks: Map<string, Map<string, PendingHook>>;
   activeId: string | null;
   filter: FilterState;
   /** Content-search hits for the current `filter.search`, or null when none have
@@ -158,6 +166,14 @@ export interface ChatActions {
    *  `harnessConfig` (or null) so the caller can revert on a failed PUT. */
   patchHarnessConfig(sessionId: string, patch: Partial<HarnessConfig>): HarnessConfig | null;
 
+  /** Replace a session's parked-hook set (the `/hooks/pending` hydration). */
+  setPendingHooks(sessionId: string, hooks: PendingHook[]): void;
+  /** Insert or refresh one parked hook (an `awaiting_resolution` event, or the revert
+   *  of a refused resolve). */
+  upsertPendingHook(sessionId: string, hook: PendingHook): void;
+  /** Drop one parked hook (a `completed` event, or an optimistic resolve). */
+  clearPendingHook(sessionId: string, requestId: string): void;
+
   appendOptimisticUser(sessionId: string, text: string, clientId: string): void;
 
   setFilter(patch: Partial<FilterState>): void;
@@ -190,6 +206,11 @@ function collectFolders(sessions: Iterable<SessionSummary>): string[] {
   }
   return [...set].sort();
 }
+
+/** One shared empty map for sessions with no parked hook. Reusing the reference keeps
+ *  `usePendingPermissions`'s selector stable, so a session that never parks a hook never
+ *  re-renders the banner. */
+export const EMPTY_HOOKS: ReadonlyMap<string, PendingHook> = new Map();
 
 function getOrInitTail(state: ChatState, sessionId: string): TailState {
   const existing = state.tails.get(sessionId);
@@ -235,10 +256,13 @@ export function createChatStore(): ChatStoreApi {
         sessionDetail.delete(sessionId);
         const sessionDetailLoading = new Set(get().sessionDetailLoading);
         sessionDetailLoading.delete(sessionId);
+        const pendingHooks = new Map(get().pendingHooks);
+        pendingHooks.delete(sessionId);
         set({
           sessions,
           turnsBySession,
           tails,
+          pendingHooks,
           sessionInfo,
           sessionInfoLoading,
           sessionDetail,
@@ -266,6 +290,17 @@ export function createChatStore(): ChatStoreApi {
 
       applyTailEvent(sessionId, event) {
         const state = get();
+        // Parked hooks are folded FIRST and independently of the turn reducer. A hook
+        // event moves no turn, so the reducer returns the same tail and the early
+        // return below would drop it — and with it the only signal that a tool call is
+        // frozen waiting on a human.
+        const priorHooks = state.pendingHooks.get(sessionId) ?? EMPTY_HOOKS;
+        const nextHooks = foldHookEvent(priorHooks, event);
+        if (nextHooks !== priorHooks) {
+          const pendingHooks = new Map(state.pendingHooks);
+          pendingHooks.set(sessionId, nextHooks as Map<string, PendingHook>);
+          set({ pendingHooks });
+        }
         let tail = getOrInitTail(state, sessionId);
         // Strip a matching optimistic user row when the real user_message lands,
         // so the two don't double-show (both are harness-sourced, so the OTel
@@ -357,6 +392,32 @@ export function createChatStore(): ChatStoreApi {
         set({ turnsBySession, tails, moreBySession });
       },
 
+      setPendingHooks(sessionId, hooks) {
+        const pendingHooks = new Map(get().pendingHooks);
+        const forSession = new Map<string, PendingHook>();
+        for (const hook of hooks) forSession.set(hook.requestId, hook);
+        pendingHooks.set(sessionId, forSession);
+        set({ pendingHooks });
+      },
+
+      upsertPendingHook(sessionId, hook) {
+        const pendingHooks = new Map(get().pendingHooks);
+        const forSession = new Map(pendingHooks.get(sessionId) ?? EMPTY_HOOKS);
+        forSession.set(hook.requestId, hook);
+        pendingHooks.set(sessionId, forSession);
+        set({ pendingHooks });
+      },
+
+      clearPendingHook(sessionId, requestId) {
+        const forSession = get().pendingHooks.get(sessionId);
+        if (!forSession?.has(requestId)) return;
+        const next = new Map(forSession);
+        next.delete(requestId);
+        const pendingHooks = new Map(get().pendingHooks);
+        pendingHooks.set(sessionId, next);
+        set({ pendingHooks });
+      },
+
       appendOptimisticUser(sessionId, text, clientId) {
         const state = get();
         const tail = getOrInitTail(state, sessionId);
@@ -442,6 +503,7 @@ export function createChatStore(): ChatStoreApi {
       sessionDetail: new Map(),
       sessionDetailLoading: new Set(),
       tails: new Map(),
+      pendingHooks: new Map(),
       activeId: null,
       filter: { ...EMPTY_FILTER },
       contentHits: null,

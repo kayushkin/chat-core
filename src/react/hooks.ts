@@ -2,15 +2,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from 'zustand';
 import type {
   Entry,
+  HookResolveInput,
   ManagedSessionDetail,
   ModelOption,
+  PendingHook,
   SessionConfig,
   SessionInfo,
   SessionSummary,
   Turn,
 } from '../net/types.js';
-import type { ChatActions, FilterState } from '../store/ChatStore.js';
+import { EMPTY_HOOKS, type ChatActions, type FilterState } from '../store/ChatStore.js';
 import { changeSessionPermissionMode } from '../store/permissionMode.js';
+import { resolvePendingHook } from '../store/pendingHooks.js';
 import {
   activeSummaryEffective,
   contextUsage,
@@ -636,6 +639,63 @@ export function useSessionControls(sessionId: string | null): {
   );
 
   return { compact, fork, switchMode, setConfig, compacting, forking, error };
+}
+
+/**
+ * The hooks this session has parked on a human decision, plus the verb that answers one.
+ *
+ * A permission ask freezes the tool call and produces NO other visible sign — no error,
+ * no state the composer reads, nothing in the turn list. Without this surface the chat
+ * simply stops, which is why the banner is not an optional affordance.
+ *
+ * Hydrates `GET /sessions/{id}/hooks/pending` on session change (the session SSE resumes
+ * from Last-Event-ID, so a hook parked before the client attached is not replayed), then
+ * lets the live stream keep the set current — `awaiting_resolution` inserts, `completed`
+ * clears. A late response for a session the caller has already left is discarded.
+ *
+ * `resolve` clears the card optimistically and RESTORES it if the server refuses, then
+ * rethrows so the caller can show why. The list identity is stable while nothing is
+ * parked, so a session that never asks never re-renders the banner.
+ */
+export function usePendingPermissions(sessionId: string | null): {
+  pending: PendingHook[];
+  resolve: (input: HookResolveInput) => Promise<void>;
+} {
+  const { store, api } = useChatContext();
+  const actions = useActions();
+  const hookMap = useStore(store, (s) =>
+    sessionId ? s.pendingHooks.get(sessionId) ?? EMPTY_HOOKS : EMPTY_HOOKS,
+  );
+
+  useEffect(() => {
+    if (!sessionId) return;
+    let live = true;
+    void api
+      .getPendingHooks(sessionId)
+      .then((hooks) => {
+        if (live) actions.setPendingHooks(sessionId, hooks);
+      })
+      .catch(() => {
+        // Non-fatal: the live stream still delivers anything parked from here on. The
+        // banner just does not pre-populate for a hook parked before this client
+        // attached.
+      });
+    return () => {
+      live = false;
+    };
+  }, [sessionId, api, actions]);
+
+  const pending = useMemo(() => [...hookMap.values()], [hookMap]);
+
+  const resolve = useCallback(
+    async (input: HookResolveInput) => {
+      if (!sessionId) throw new Error('resolve hook: no active session');
+      await resolvePendingHook({ store, api }, sessionId, input);
+    },
+    [sessionId, store, api],
+  );
+
+  return { pending, resolve };
 }
 
 /** Prefetch hint — call on sidebar row hover. Warms a cold session. */

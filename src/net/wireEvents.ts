@@ -49,7 +49,31 @@ export interface WireEventData {
   system?: { subtype?: string; message?: string };
   state?: { state?: string; previous?: string; reason?: string };
   info?: unknown;
-  hook?: { request_id?: string; phase?: string };
+  hook?: HookEventWire;
+}
+
+/** snake_case `msg.HookEvent`, narrowed to the fields the pending-permission surface
+ *  reads. A hook whose resolver is out-of-band (a human, usually) emits
+ *  `phase="awaiting_resolution"` and parks the tool call until a decision arrives at
+ *  `POST /sessions/{id}/hooks/{request_id}/resolve`; the matching `phase="completed"`
+ *  carries the same `request_id`. Those two phases are the whole protocol the banner
+ *  needs — `started`/`progress` are observation-only.
+ *
+ *  `source` picks the card: `permission_prompt` (and the empty default) is a tool-gating
+ *  ask answered allow/deny; `user_input` is the model asking the human a structured
+ *  question, whose answer rides back in the resolve body's `updated_input`. */
+export interface HookEventWire {
+  event?: string;
+  matcher?: string;
+  tool_name?: string;
+  hook_id?: string;
+  source?: string;
+  phase?: string;
+  request_id?: string;
+  /** Raw JSON the harness passed the hook — the tool input, in the harness's own
+   *  dialect. Pass-through: chat-core never reshapes it. */
+  input?: unknown;
+  decision?: string;
 }
 
 /** A managed-session row as it arrives on the global list SSE (`/session-events`).

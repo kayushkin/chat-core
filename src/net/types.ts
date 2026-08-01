@@ -169,6 +169,47 @@ export interface SessionInfo {
   mcpServers?: McpServerInfo[];
 }
 
+/** `HookEvent.source` — a hook that emits `permission_prompt` is the harness asking
+ *  whether a tool call may proceed. The empty source means the same thing to this
+ *  client: an allow/deny card. */
+export const HOOK_SOURCE_PERMISSION = 'permission_prompt';
+
+/** `HookEvent.source` — the model is asking the human a structured question (Claude
+ *  Code's AskUserQuestion, ACP's request_user_input). The answer rides back as the
+ *  resolve body's `updatedInput`, so "allow" carries data and bypass never applies:
+ *  these always park for a human. */
+export const HOOK_SOURCE_USER_INPUT = 'user_input';
+
+/** A hook parked on a human decision — one `awaiting_resolution` HookEvent that no
+ *  matching `completed` has closed yet. camelCase of `HookEventWire`. Hydrated from
+ *  `GET /sessions/{id}/hooks/pending` and kept live by the session SSE; a session with
+ *  one of these has a tool call frozen mid-turn and shows no other sign of it, which is
+ *  why the banner is not optional.
+ *
+ *  `input` is the harness's own raw tool input, carried through untouched. */
+export interface PendingHook {
+  requestId: string;
+  event: string;
+  phase: string;
+  source: string;
+  toolName?: string;
+  matcher?: string;
+  hookId?: string;
+  input?: unknown;
+}
+
+/** A decision for one parked hook, as `POST /sessions/{id}/hooks/{request_id}/resolve`
+ *  takes it. `updatedInput` REPLACES the tool input wholesale — it is how a
+ *  `user_input` hook's answers reach the model. */
+export interface HookResolveInput {
+  requestId: string;
+  behavior: 'allow' | 'deny';
+  updatedInput?: unknown;
+  message?: string;
+  /** Audit label for who decided; defaults to `user`. */
+  resolvedBy?: string;
+}
+
 /** The raw approval/sandbox knobs under `harnessConfig.permissionModeCustom` (the
  *  power-user "custom" permission mode). camelCase of `HarnessConfigCustomWire`. */
 export interface HarnessConfigCustom {

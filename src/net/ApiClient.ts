@@ -1,9 +1,11 @@
 import type {
   HarnessConfig,
   HarnessMeta,
+  HookResolveInput,
   ManagedSessionDetail,
   MessagesResponse,
   ModelOption,
+  PendingHook,
   RecentBundleResponse,
   SearchHit,
   SearchHitWire,
@@ -16,11 +18,13 @@ import type {
 import type {
   HarnessConfigWire,
   HarnessInfoWire,
+  HookEventWire,
   ManagedSessionDetailWire,
   SessionInfoWire,
   StoreModelWire,
 } from './wireEvents.js';
 import { summaryFromManaged } from '../sync/sse.js';
+import { HOOK_PHASE_AWAITING, pendingHookFromWire } from '../store/pendingHooks.js';
 
 /** Map the snake_case `msg.SessionInfo` wire blob to the camelCase `SessionInfo`.
  *  The single source of truth for this mapping — every field is copied explicitly
@@ -420,5 +424,53 @@ export class ApiClient {
    */
   setPermissionMode(id: string, mode: string): Promise<unknown> {
     return this.putJSON(`/sessions/${id}/permission-mode`, { mode });
+  }
+
+  // --- parked hooks (the permission banner) ---
+
+  /**
+   * The hooks this session has parked on a human decision.
+   * GET /sessions/{id}/hooks/pending.
+   *
+   * The server answers with whole `msg.Event`s, so the hook rides under `.hook`; this
+   * unwraps and camelCases them, and keeps only `awaiting_resolution` entries that carry
+   * a request id — the rest cannot be resolved and would be a card with no button.
+   *
+   * Hydration matters because the session SSE resumes from Last-Event-ID, and a hook
+   * parked before the client attached is a tool call frozen with nothing on screen.
+   */
+  async getPendingHooks(id: string): Promise<PendingHook[]> {
+    const events = await this.getJSON<Array<{ hook?: HookEventWire }>>(
+      `/sessions/${id}/hooks/pending`,
+    );
+    if (!Array.isArray(events)) return [];
+    const out: PendingHook[] = [];
+    for (const ev of events) {
+      const hook = pendingHookFromWire(ev?.hook);
+      if (hook && hook.phase === HOOK_PHASE_AWAITING) out.push(hook);
+    }
+    return out;
+  }
+
+  /**
+   * Deliver a decision for a parked hook.
+   * POST /sessions/{id}/hooks/{request_id}/resolve.
+   *
+   * LOUD, like every other mutation here: `postJSON` throws on a non-2xx so the caller
+   * restores the card instead of leaving the user believing a frozen tool call was
+   * answered. `updatedInput` replaces the tool input wholesale (how a `user_input`
+   * hook's answers reach the model) and is omitted when absent — never sent as null.
+   */
+  resolveHook(id: string, input: HookResolveInput): Promise<unknown> {
+    const body: Record<string, unknown> = {
+      behavior: input.behavior,
+      resolved_by: input.resolvedBy || 'user',
+    };
+    if (input.updatedInput !== undefined) body.updated_input = input.updatedInput;
+    if (input.message) body.message = input.message;
+    return this.postJSON(
+      `/sessions/${id}/hooks/${encodeURIComponent(input.requestId)}/resolve`,
+      body,
+    );
   }
 }

@@ -225,6 +225,46 @@ export function useManagedSession(sessionId: string | null): {
   setPermissionMode: (mode: string) => Promise<void>;
 };
 
+// The hooks this session has parked on a human decision, plus the verb that answers one.
+// A permission ask FREEZES the tool call and produces no other visible sign — no error, no
+// state the composer reads, nothing in the turn list — so a client without this surface
+// simply hangs. Hydrates GET /sessions/{id}/hooks/pending on session change (the session
+// SSE resumes from Last-Event-ID and never replays a hook parked before the client
+// attached), then the live stream keeps the set current: phase="awaiting_resolution"
+// inserts, the matching phase="completed" clears. Both directions are idempotent.
+//
+// resolve() POSTs /sessions/{id}/hooks/{request_id}/resolve, clearing the card
+// optimistically and RESTORING it on a non-2xx before rethrowing — the tool call is still
+// parked when the server refuses, so an emptied banner would be a lie. `updatedInput`
+// replaces the tool input wholesale: it is how a source="user_input" hook's answers reach
+// the model.
+export function usePendingPermissions(sessionId: string | null): {
+  pending: PendingHook[];
+  resolve: (input: HookResolveInput) => Promise<void>;
+};
+
+// One hook parked on a decision. `input` is the harness's own raw tool input, carried
+// through untouched. `source` picks the card: HOOK_SOURCE_PERMISSION ("permission_prompt",
+// and the empty default) is an allow/deny tool gate; HOOK_SOURCE_USER_INPUT ("user_input")
+// is the model asking the human a structured question.
+export interface PendingHook {
+  requestId: string;
+  event: string;
+  phase: string;
+  source: string;
+  toolName?: string;
+  matcher?: string;
+  hookId?: string;
+  input?: unknown;
+}
+export interface HookResolveInput {
+  requestId: string;
+  behavior: 'allow' | 'deny';
+  updatedInput?: unknown;
+  message?: string;
+  resolvedBy?: string;   // audit label; defaults to "user"
+}
+
 // The full detail carried by useManagedSession / ApiClient.getSessionDetail. `sessionId`
 // is surfaced at the top level (also on `summary`). `info` / `harnessConfig` are null
 // when the harness has reported / carries none.
@@ -338,6 +378,8 @@ export function RefChip(props: RefChipProps): JSX.Element;
 //   search(q: string): Promise<SearchResponse>;
 //   getSessionDetail(id: string): Promise<ManagedSessionDetail>;  // { sessionId, summary, info, harnessConfig }
 //   setPermissionMode(id: string, mode: string): Promise<unknown>;
+//   getPendingHooks(id: string): Promise<PendingHook[]>;                      // GET /sessions/{id}/hooks/pending — unwraps msg.Event.hook, keeps resolvable awaiting entries
+//   resolveHook(id: string, input: HookResolveInput): Promise<unknown>;       // POST /sessions/{id}/hooks/{request_id}/resolve — { behavior, resolved_by, updated_input?, message? }
 // }
 ```
 
