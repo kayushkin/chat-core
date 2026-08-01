@@ -48,8 +48,21 @@ describe('ApiClient.search', () => {
   it('GETs /sessions/search?q= and returns the hit ids', async () => {
     const seen: string[] = [];
     const api = new ApiClient({
-      fetch: fakeFetch({ ok: true, status: 200, statusText: 'OK', jsonBody: { sessionIds: ['br_2', 'br_9'] } }, (u) =>
-        seen.push(u),
+      // The real log-store shape: a bare array of {session_id, match_count}. This
+      // mock used to send `{ sessionIds: [...] }`, an envelope the backend has never
+      // produced, so the test asserted the client could read a response that does
+      // not exist and passed while content search was broken in the browser.
+      fetch: fakeFetch(
+        {
+          ok: true,
+          status: 200,
+          statusText: 'OK',
+          jsonBody: [
+            { session_id: 'br_2', match_count: 9 },
+            { session_id: 'br_9', match_count: 3 },
+          ],
+        },
+        (u) => seen.push(u),
       ),
       basePath: '/api/bridge',
     });
@@ -410,5 +423,52 @@ describe('ApiClient.setPermissionMode — loud PUT', () => {
       basePath: '/api/bridge',
     });
     await expect(api.setPermissionMode('br_1', 'nonsense')).rejects.toThrow(/400/);
+  });
+});
+
+describe('ApiClient.search — parses the array log-store actually sends', () => {
+  // Regression: SearchResponse used to declare `{ sessionIds, hits }`, an envelope
+  // the backend has never sent. GET /sessions/search answers with a bare array of
+  // store.SearchHit — `{session_id, match_count}`. Reading `.sessionIds` off an
+  // array yielded undefined, `new Set(undefined)` is an empty set rather than a
+  // throw, and so content search matched nothing for every query, silently, while
+  // the local display-name filter kept working and hid the failure.
+  //
+  // test/searchFolding.test.ts passed throughout: it calls setContentHits() with a
+  // hand-written string[], so it asserted the store folds ids it is *given* and
+  // never exercised this parse. The bug lived in the gap between them.
+  const WIRE = [
+    { session_id: 'br_low', match_count: 2 },
+    { session_id: 'br_high', match_count: 40 },
+    { session_id: 'br_mid', match_count: 7 },
+  ];
+
+  it('maps session_id/match_count and ranks by descending match count', async () => {
+    const api = new ApiClient({
+      fetch: fakeFetch({ ok: true, status: 200, statusText: 'OK', jsonBody: WIRE }),
+      basePath: '/api/bridge',
+    });
+    const res = await api.search('needle');
+    expect(res.sessionIds).toEqual(['br_high', 'br_mid', 'br_low']);
+    expect(res.hits[0]).toEqual({ sessionId: 'br_high', matchCount: 40 });
+  });
+
+  it('sends the query and returns an empty result set for no matches', async () => {
+    const seen: string[] = [];
+    const api = new ApiClient({
+      fetch: fakeFetch({ ok: true, status: 200, statusText: 'OK', jsonBody: [] }, (u) => seen.push(u)),
+      basePath: '/api/bridge',
+    });
+    const res = await api.search('a b');
+    expect(seen[0]).toBe('/api/bridge/sessions/search?q=a+b');
+    expect(res.sessionIds).toEqual([]);
+  });
+
+  it('throws rather than degrading to zero hits if the shape is not an array', async () => {
+    const api = new ApiClient({
+      fetch: fakeFetch({ ok: true, status: 200, statusText: 'OK', jsonBody: { sessionIds: ['br_1'] } }),
+      basePath: '/api/bridge',
+    });
+    await expect(api.search('needle')).rejects.toThrow(/expected an array/);
   });
 });

@@ -269,19 +269,31 @@ export interface MessagesResponse {
   model: TurnModel;
 }
 
-/** One content-search hit: the session whose transcript matched, plus an optional
- *  snippet for highlighting. `snippet` is advisory; the list path only needs the id. */
-export interface SearchHit {
-  sessionId: string;
-  snippet?: string;
+/** One content-search hit exactly as log-store sends it (`store.SearchHit`):
+ *  the matching session and how many of its events matched. There is no snippet
+ *  on the wire — an earlier version of this file declared one, and a `hits` array
+ *  wrapped in an envelope, neither of which the backend has ever sent. */
+export interface SearchHitWire {
+  session_id: string;
+  match_count: number;
 }
 
-/** `GET /sessions/search?q=` — the session ids whose materialized transcript text
+/** One content-search hit, camelCased. `matchCount` is the only ranking signal the
+ *  backend offers, so it is carried rather than dropped. */
+export interface SearchHit {
+  sessionId: string;
+  matchCount: number;
+}
+
+/** `GET /sessions/search?q=` — the sessions whose materialized transcript text
  *  matches `q`. This is the async augmentation of the instant local name filter:
  *  the client folds `sessionIds` into the search-filter path so a query matches
- *  transcript content, not just the display name. `hits` (optional) carries the
- *  same ids with snippets when the backend supplies them. */
+ *  transcript content, not just the display name.
+ *
+ *  The server responds with a BARE ARRAY of `SearchHitWire`, not an object. This
+ *  type is what `ApiClient.search` returns after mapping that array; it is not the
+ *  wire shape. `sessionIds` is ordered by descending `matchCount`. */
 export interface SearchResponse {
   sessionIds: string[];
-  hits?: SearchHit[];
+  hits: SearchHit[];
 }

@@ -47,6 +47,7 @@ export type {
   ValidatorsResponse,
   MessagesResponse,
   SearchHit,
+  SearchHitWire,
   SearchResponse,
 } from './net/types.js';
 export type {

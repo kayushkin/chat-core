@@ -5,6 +5,8 @@ import type {
   MessagesResponse,
   ModelOption,
   RecentBundleResponse,
+  SearchHit,
+  SearchHitWire,
   SearchResponse,
   SessionConfig,
   SessionInfo,
@@ -235,10 +237,26 @@ export class ApiClient {
   /** Full-text content search across session transcripts. Returns the matching
    *  session ids so the list/filter path can fold content hits in alongside the
    *  instant local name match. Async augmentation only — the caller must NOT block
-   *  the local name filter on this. Throws loudly on a non-2xx. */
-  search(q: string): Promise<SearchResponse> {
+   *  the local name filter on this. Throws loudly on a non-2xx.
+   *
+   *  The endpoint answers with a BARE ARRAY of `{session_id, match_count}`. This
+   *  used to be read as `SearchResponse.sessionIds`, a property a JSON array does
+   *  not have: the result was `undefined`, `new Set(undefined)` produced an empty
+   *  set without throwing, and content search silently matched nothing for every
+   *  query while the display-name filter went on working. Map the real shape here,
+   *  at the wire edge, and fail loudly if it is not the array the backend promises. */
+  async search(q: string): Promise<SearchResponse> {
     const qs = new URLSearchParams({ q }).toString();
-    return this.getJSON<SearchResponse>(`/sessions/search?${qs}`);
+    const wire = await this.getJSON<SearchHitWire[]>(`/sessions/search?${qs}`);
+    if (!Array.isArray(wire)) {
+      throw new Error(
+        `GET /sessions/search returned ${typeof wire}, expected an array of {session_id, match_count}`,
+      );
+    }
+    const hits: SearchHit[] = wire
+      .map((h) => ({ sessionId: h.session_id, matchCount: h.match_count }))
+      .sort((a, b) => b.matchCount - a.matchCount);
+    return { sessionIds: hits.map((h) => h.sessionId), hits };
   }
 
   /** Full per-session detail (`GET /sessions/{id}`) — the canonical ManagedSession,
