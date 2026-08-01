@@ -209,13 +209,27 @@ export class ApiClient {
     return this.getJSON<ValidatorsResponse>(`/sessions/validators?${qs}`);
   }
 
-  /** Materialized tail (or a page older than `before`) for one session. */
+  /** The server's own default turn count for the bounded shape, mirrored here
+   *  so a caller that names no limit still asks for the same window. */
+  static readonly DEFAULT_MESSAGE_TURNS = 30;
+
+  /**
+   * Materialized tail (or a page older than `before`) for one session.
+   *
+   * A limit always goes on the wire, even when the caller names none. That
+   * endpoint serves two shapes off the same path: with `limit` or `before` it
+   * answers the bounded `{ model }` this method is typed for, and with neither
+   * it answers the legacy unbounded array — every event in the session, which
+   * reached 306MB and 52s for one real session on this box. Omitting the
+   * parameter would therefore return a body that does not match
+   * `MessagesResponse` at all, and `resp.model` would read as undefined with
+   * no error anywhere. There is no case where this client wants that shape.
+   */
   getMessages(id: string, opts?: { limit?: number; before?: string | number }): Promise<MessagesResponse> {
     const params = new URLSearchParams();
-    if (opts?.limit != null) params.set('limit', String(opts.limit));
+    params.set('limit', String(opts?.limit ?? ApiClient.DEFAULT_MESSAGE_TURNS));
     if (opts?.before != null) params.set('before', String(opts.before));
-    const qs = params.toString();
-    return this.getJSON<MessagesResponse>(`/sessions/${id}/messages${qs ? `?${qs}` : ''}`);
+    return this.getJSON<MessagesResponse>(`/sessions/${id}/messages?${params.toString()}`);
   }
 
   /** Full-text content search across session transcripts. Returns the matching
