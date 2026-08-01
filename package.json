@@ -18,7 +18,9 @@
     "prepare": "tsc -b",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "//check": "The assertion the nightly repo-node-guard runs. `test` only, deliberately: tsconfig.json has include:[src] and excludes test/, and dist/ + *.tsbuildinfo are gitignored, so in a clean clone `build` (tsc -b) already type-checks exactly the files `typecheck` (tsc --noEmit) would. Adding typecheck here would re-run the build stage's own check and still not reach the test tree.",
+    "check": "npm run test"
   },
   "peerDependencies": {
     "react": ">=18"
