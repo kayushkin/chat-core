@@ -180,17 +180,41 @@ export function useFilters(): {
 };
 
 // Optimistic mutations. Each updates the store first, POSTs in the background, reverts on error.
-// `newSession` opens the pending pane (0 network). `model`/`effort` are PRE-START settings:
-// they ride on the pending pane and are applied via POST /sessions/{id}/config right after
-// the real session is lazily created on first send — matching bridge-ui, whose create call
-// carries no model/effort (application is best-effort on that optimistic path; the LOUD path
-// for a live change is `useSessionControls().setConfig`).
+// `newSession` opens the pending pane (0 network). `instanceId`/`harness` say WHERE; the other
+// four are PRE-START settings that ride on the pending pane and are applied by ONE
+// POST /sessions/{id}/config right after the real session is lazily created on first send —
+// matching bridge-ui, whose create call carries none of them (application is best-effort on
+// that optimistic path; the LOUD path for a live change is `useSessionControls().setConfig`).
+//
+// The caller resolves the settings and chat-core invents none. Two sources feed them and they
+// are one shape on purpose: the controls bar's pre-start picks, and the caller's saved
+// per-harness defaults (dash reads `bridge-prefs.defaults[harness]`). A pre-start pick beats a
+// saved default, and that precedence belongs to the caller.
+//
+// ⚠️ Two falsy values are real answers and are carried, not dropped: `maxBudget: 0` means NO
+// ceiling on the server (never "halt now"), and `disabledTools: []` means "disable nothing"
+// (which absent does not). Absent fields are omitted from the config body rather than sent as
+// null, and a pane with no settings at all makes no config call — see `pendingSessionConfig`.
+export interface NewSessionOpts {
+  instanceId?: string;
+  harness?: string;
+  model?: string;
+  effort?: string;
+  maxBudget?: number;
+  disabledTools?: string[];
+}
+
 export function useSessionActions(): {
-  newSession: (opts?: { instanceId?: string; harness?: string; model?: string; effort?: string }) => void;
+  newSession: (opts?: NewSessionOpts) => void;
   archive: (id: string) => void;
   unarchive: (id: string) => void;
   rename: (id: string, name: string) => void;
 }
+
+// The config body a lazily-created session owes its pending pane, or null when it owes none
+// and the call should be skipped. Pure and exported so the two falsy-but-real values above can
+// be pinned without a browser.
+export function pendingSessionConfig(opts: NewSessionOpts | null | undefined): SessionConfig | null;
 
 // ---- Settings / controls bar (dashv2 `bc-controls-bar`) ----
 

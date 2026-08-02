@@ -63,16 +63,35 @@ export const EMPTY_FILTER: FilterState = {
   search: '',
 };
 
-/** A pending (not-yet-created) session pane — 0 network until first send. `model` /
- *  `effort` are the controls-bar pre-start settings chosen before the first send; they
- *  are applied via `POST /sessions/{id}/config` right after the real session is lazily
- *  created (bridge-ui parity — create takes no model/effort). */
-export interface PendingSession {
-  clientId: string;
+/** Where a new chat is aimed and what it starts configured with.
+ *
+ *  `instanceId` / `harness` say WHERE the session is created; the other four are
+ *  runtime settings the create call deliberately does not take (bridge-ui parity —
+ *  `POST /sessions` carries the target only). They ride on the pending pane and are
+ *  applied by a single `POST /sessions/{id}/config` right after the real session is
+ *  lazily created on first send.
+ *
+ *  Two sources feed the settings and they are the same shape on purpose: the
+ *  controls bar's pre-start picks, and the caller's saved per-harness defaults
+ *  (dash resolves those from `bridge-prefs`). A pre-start pick beats a saved
+ *  default; that precedence belongs to the caller, not here. */
+export interface NewSessionOpts {
   instanceId?: string;
   harness?: string;
   model?: string;
   effort?: string;
+  /** ⚠️ ZERO IS A REAL VALUE and means NO CEILING on the server — never fold it in
+   *  with absent. Absent means "the server decides"; 0 means "do not stop me". */
+  maxBudget?: number;
+  /** An EMPTY ARRAY is also a real value: "disable nothing", which is not the same
+   *  answer as absent ("inherit whatever the harness does by default"). */
+  disabledTools?: string[];
+}
+
+/** A pending (not-yet-created) session pane — 0 network until first send. Carries the
+ *  `NewSessionOpts` its lazy create and follow-up config call will use. */
+export interface PendingSession extends NewSessionOpts {
+  clientId: string;
 }
 
 /** Content-search augmentation (C6). The set of session ids whose materialized
@@ -304,7 +323,7 @@ export interface ChatActions {
   setDraft(sessionId: string, text: string): void;
   setSending(sessionId: string, sending: boolean): void;
 
-  openPending(opts?: { instanceId?: string; harness?: string; model?: string; effort?: string }): PendingSession;
+  openPending(opts?: NewSessionOpts): PendingSession;
   clearPending(): void;
 
   /** Cache the harness registry (`GET /harnesses`); clears the loading flag. */
@@ -721,12 +740,19 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
       },
 
       openPending(opts) {
+        // Absent keys, not `undefined` ones: `'instanceId' in pending` is what the
+        // create path reads to decide whether a target was chosen at all.
+        // `maxBudget` and `disabledTools` test `!== undefined` rather than
+        // truthiness — 0 (no ceiling) and [] (disable nothing) are both real
+        // answers a truthiness check would silently drop back to "inherit".
         const pending: PendingSession = {
           clientId: `pending_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
           ...(opts?.instanceId ? { instanceId: opts.instanceId } : {}),
           ...(opts?.harness ? { harness: opts.harness } : {}),
           ...(opts?.model ? { model: opts.model } : {}),
           ...(opts?.effort ? { effort: opts.effort } : {}),
+          ...(opts?.maxBudget !== undefined ? { maxBudget: opts.maxBudget } : {}),
+          ...(opts?.disabledTools !== undefined ? { disabledTools: opts.disabledTools } : {}),
         };
         set({ pending, activeId: null });
         return pending;

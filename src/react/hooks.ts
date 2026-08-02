@@ -17,8 +17,10 @@ import {
   type ChatActions,
   type ConnState,
   type FilterState,
+  type NewSessionOpts,
   type PendingSession,
 } from '../store/ChatStore.js';
+import { pendingSessionConfig } from '../store/pendingConfig.js';
 import { changeSessionPermissionState } from '../store/permissionState.js';
 import { setSessionDone } from '../store/markDone.js';
 import {
@@ -425,14 +427,16 @@ export function useComposer(sessionId: string | null): {
             createdId = newId;
             actions.setActive(newId);
             actions.clearPending();
-            // Apply the controls-bar pre-start model/effort via POST /config right after
-            // create (bridge-ui parity — create itself takes no model/effort). Best-effort
-            // on this optimistic, non-blocking send path: a failure must not strand the
-            // message. `useSessionControls().setConfig` is the LOUD path for a live change.
-            if (pending?.model || pending?.effort) {
-              void api
-                .setConfig(newId, { model: pending.model, effort: pending.effort })
-                .catch(() => {});
+            // Apply the pending pane's settings via POST /config right after create
+            // (bridge-ui parity — create itself takes no model/effort/budget/tools).
+            // The pane carries the controls-bar pre-start picks AND the caller's saved
+            // per-harness defaults, already resolved into one record; ONE call, so the
+            // server never sees a half-configured session. Best-effort on this
+            // optimistic, non-blocking send path: a failure must not strand the message.
+            // `useSessionControls().setConfig` is the LOUD path for a live change.
+            const config = pendingSessionConfig(pending);
+            if (config) {
+              void api.setConfig(newId, config).catch(() => {});
             }
             actions.appendOptimisticUser(newId, trimmed, clientId);
             actions.setSending(newId, true);
@@ -583,7 +587,7 @@ export function useFilters(): {
  *  exactly why nobody noticed: the button worked, briefly, and then quietly undid
  *  itself. A revert without a report is indistinguishable from a race. */
 export function useSessionActions(): {
-  newSession: (opts?: { instanceId?: string; harness?: string; model?: string; effort?: string }) => void;
+  newSession: (opts?: NewSessionOpts) => void;
   archive: (id: string) => void;
   unarchive: (id: string) => void;
   rename: (id: string, name: string) => void;
@@ -593,11 +597,14 @@ export function useSessionActions(): {
   const actions = useActions();
   const [error, setError] = useState<string | null>(null);
 
-  // `model` / `effort` are pre-start settings: they ride on the pending pane and are
-  // applied via POST /config right after the real session is lazily created on first
-  // send (see useComposer) — matching bridge-ui, whose create call carries no model/effort.
+  // `model` / `effort` / `maxBudget` / `disabledTools` are pre-start settings: they ride
+  // on the pending pane and are applied via POST /config right after the real session is
+  // lazily created on first send (see useComposer) — matching bridge-ui, whose create
+  // call carries none of them. The caller resolves them; a caller with saved per-harness
+  // defaults (dash reads `bridge-prefs`) passes those in here, having already let any
+  // pre-start pick win. chat-core stores no prefs of its own and invents no value.
   const newSession = useCallback(
-    (opts?: { instanceId?: string; harness?: string; model?: string; effort?: string }) => {
+    (opts?: NewSessionOpts) => {
       actions.openPending(opts);
     },
     [actions],

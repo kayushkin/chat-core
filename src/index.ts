@@ -85,10 +85,12 @@ export {
   type CreateChatStoreOptions,
   type ConnState,
   type FilterState,
+  type NewSessionOpts,
   type PendingSession,
   type ContentHits,
   EMPTY_HOOKS,
 } from './store/ChatStore.js';
+export { pendingSessionConfig } from './store/pendingConfig.js';
 export {
   DraftStore,
   boundDrafts,
