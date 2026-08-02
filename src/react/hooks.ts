@@ -590,6 +590,10 @@ export function useFilters(): {
  *  itself. A revert without a report is indistinguishable from a race. */
 export function useSessionActions(): {
   newSession: (opts?: NewSessionOpts) => void;
+  /** Change settings on the pending pane already open — the pre-start model / effort
+   *  pick. A no-op when nothing is pending; see `ChatActions.patchPending` for why it
+   *  refuses to open a pane and why an empty string clears rather than does nothing. */
+  patchPending: (patch: NewSessionOpts) => void;
   archive: (id: string) => void;
   unarchive: (id: string) => void;
   rename: (id: string, name: string) => void;
@@ -608,6 +612,13 @@ export function useSessionActions(): {
   const newSession = useCallback(
     (opts?: NewSessionOpts) => {
       actions.openPending(opts);
+    },
+    [actions],
+  );
+
+  const patchPending = useCallback(
+    (patch: NewSessionOpts) => {
+      actions.patchPending(patch);
     },
     [actions],
   );
@@ -646,7 +657,7 @@ export function useSessionActions(): {
     [actions, api, store],
   );
 
-  return { newSession, archive, unarchive, rename, error };
+  return { newSession, patchPending, archive, unarchive, rename, error };
 }
 
 /** The folder list plus the four mutations that change it — what a sidebar needs to

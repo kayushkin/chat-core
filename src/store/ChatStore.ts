@@ -336,6 +336,32 @@ export interface ChatActions {
   setSending(sessionId: string, sending: boolean): void;
 
   openPending(opts?: NewSessionOpts): PendingSession;
+  /** Change settings on the pending pane that is ALREADY open, without re-keying it.
+   *
+   *  `openPending` is not a substitute, for two reasons that survive reading it:
+   *
+   *    - it REPLACES rather than merges — the pane it returns is built from the opts it
+   *      was handed and nothing else, so recording a model pick through it would drop
+   *      the instance, harness, ceiling and disabled-tool list the pane already carried;
+   *    - it sets `activeId` to null, because opening a new chat takes the focus.
+   *      Touching a select must not knock the user out of a session they clicked into.
+   *
+   *  It also mints a fresh `clientId`, which is the pane's identity and should not churn
+   *  every time a select moves. (Note that the draft is NOT at risk here, contrary to
+   *  what `9fd9df44` recorded: an unsent pending pane's text is keyed by the CONSTANT
+   *  `PENDING_DRAFT_KEY`, not by `clientId`, so re-opening never moved it. The two
+   *  reasons above are enough on their own.)
+   *
+   *  A key the patch does not mention is left alone. `model` and `effort` given as an
+   *  EMPTY STRING are a deliberate clear — that is the value the placeholder option of a
+   *  select carries, and "no model chosen" has to be expressible or a pre-start pick
+   *  could never be taken back. `maxBudget` and `disabledTools` test `!== undefined`
+   *  instead, because 0 (no ceiling) and [] (disable nothing) are real answers.
+   *
+   *  Returns the patched pane, or null when no pending pane is open — a pane that does
+   *  not exist cannot be configured, and inventing one here would open a new chat as a
+   *  side effect of touching a select. */
+  patchPending(patch: NewSessionOpts): PendingSession | null;
   clearPending(): void;
 
   /** Cache the harness registry (`GET /harnesses`); clears the loading flag. */
@@ -794,6 +820,51 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
         };
         set({ pending, activeId: null });
         return pending;
+      },
+
+      patchPending(patch) {
+        const current = get().pending;
+        // No pane, nothing to patch. Deliberately NOT "open one": a select in a
+        // controls bar must not be able to start a new chat by being touched.
+        if (!current) return null;
+
+        const next: PendingSession = { ...current };
+        // Same absent-key discipline as `openPending`, plus one rule it does not need:
+        // an empty string CLEARS. `openPending` folds '' into "never mentioned" because
+        // its caller resolves saved defaults and has no reason to pass a blank; a select
+        // does, every time the user picks the placeholder row back.
+        const setOrDelete = (key: 'instanceId' | 'harness' | 'model' | 'effort') => {
+          const value = patch[key];
+          if (value === undefined) return;
+          if (value) next[key] = value;
+          else delete next[key];
+        };
+        setOrDelete('instanceId');
+        setOrDelete('harness');
+        setOrDelete('model');
+        setOrDelete('effort');
+        if (patch.maxBudget !== undefined) next.maxBudget = patch.maxBudget;
+        if (patch.disabledTools !== undefined) next.disabledTools = patch.disabledTools;
+
+        // A patch that changes nothing does not re-render. The value identity is what
+        // `usePendingSession` subscribes to, so writing an equal-but-new object would
+        // wake every consumer of the pane for no reason — and a caller that patches
+        // from an effect would loop.
+        const keys = new Set([...Object.keys(current), ...Object.keys(next)]);
+        let changed = false;
+        for (const k of keys) {
+          const a = current[k as keyof PendingSession];
+          const b = next[k as keyof PendingSession];
+          if (Array.isArray(a) && Array.isArray(b)) {
+            if (a.length !== b.length || a.some((v, i) => v !== b[i])) { changed = true; break; }
+          } else if (a !== b) { changed = true; break; }
+        }
+        if (!changed) return current;
+
+        // `activeId` is untouched: patching settings is not selecting anything, and
+        // `openPending`'s `activeId: null` is about OPENING a pane, not configuring one.
+        set({ pending: next });
+        return next;
       },
 
       clearPending() {
