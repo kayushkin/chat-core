@@ -402,7 +402,7 @@ describe('ApiClient.getModels — filters enabled + projects ModelOption', () =>
   });
 });
 
-describe('ApiClient.setPermissionMode — loud PUT', () => {
+describe('ApiClient.setSessionPermissionState — loud, single-body PUT', () => {
   it('PUTs /sessions/{id}/permission-mode with { mode } and resolves on 2xx', async () => {
     const seen: { url: string; init?: RequestInit }[] = [];
     const api = new ApiClient({
@@ -411,10 +411,45 @@ describe('ApiClient.setPermissionMode — loud PUT', () => {
       ),
       basePath: '/api/bridge',
     });
-    await expect(api.setPermissionMode('br_1', 'bypass')).resolves.toBeDefined();
+    await expect(api.setSessionPermissionState('br_1', { mode: 'bypass' })).resolves.toBeDefined();
     expect(seen[0]!.url).toBe('/api/bridge/sessions/br_1/permission-mode');
     expect(seen[0]!.init?.method).toBe('PUT');
     expect(JSON.parse(String(seen[0]!.init?.body))).toEqual({ mode: 'bypass' });
+  });
+
+  it('carries the mode, the network gate and the custom knobs in ONE body', async () => {
+    const seen: { url: string; init?: RequestInit }[] = [];
+    const api = new ApiClient({
+      fetch: fakeFetch({ ok: true, status: 200, statusText: 'OK', jsonBody: { status: 'ok' } }, (url, init) =>
+        seen.push({ url, init }),
+      ),
+      basePath: '/api/bridge',
+    });
+    await api.setSessionPermissionState('br_1', {
+      mode: 'custom',
+      disableNetwork: true,
+      permissionModeCustom: { approval: 'on-request', sandbox: 'workspace-write' },
+    });
+    expect(seen).toHaveLength(1);
+    expect(JSON.parse(String(seen[0]!.init?.body))).toEqual({
+      mode: 'custom',
+      disable_network: true,
+      permission_mode_custom: { approval: 'on-request', sandbox: 'workspace-write' },
+    });
+  });
+
+  it('sends an explicit false for the network gate — that is how it is turned OFF', async () => {
+    const seen: { url: string; init?: RequestInit }[] = [];
+    const api = new ApiClient({
+      fetch: fakeFetch({ ok: true, status: 200, statusText: 'OK', jsonBody: { status: 'ok' } }, (url, init) =>
+        seen.push({ url, init }),
+      ),
+      basePath: '/api/bridge',
+    });
+    // `false` must reach the wire, not be dropped as falsy: the server deletes the
+    // stored key on an explicit false and leaves it alone when the field is absent.
+    await api.setSessionPermissionState('br_1', { mode: 'ask', disableNetwork: false });
+    expect(JSON.parse(String(seen[0]!.init?.body))).toEqual({ mode: 'ask', disable_network: false });
   });
 
   it('throws (does NOT swallow) on a non-2xx — e.g. 400 invalid mode', async () => {
@@ -422,7 +457,7 @@ describe('ApiClient.setPermissionMode — loud PUT', () => {
       fetch: fakeFetch({ ok: false, status: 400, statusText: 'Bad Request', textBody: 'mode must be one of ...' }),
       basePath: '/api/bridge',
     });
-    await expect(api.setPermissionMode('br_1', 'nonsense')).rejects.toThrow(/400/);
+    await expect(api.setSessionPermissionState('br_1', { mode: 'nonsense' })).rejects.toThrow(/400/);
   });
 });
 

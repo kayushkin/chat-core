@@ -42,6 +42,7 @@ export type {
   McpServerInfo,
   HarnessConfig,
   HarnessConfigCustom,
+  SessionPermissionState,
   HarnessMeta,
   PendingHook,
   HookResolveInput,
@@ -97,7 +98,7 @@ export {
   MAX_DRAFT_AGE_MS,
   type DraftStorageLike,
 } from './store/draftStorage.js';
-export { changeSessionPermissionMode } from './store/permissionMode.js';
+export { changeSessionPermissionState } from './store/permissionState.js';
 export { ARCHIVE_FOLDER, setSessionDone } from './store/markDone.js';
 export {
   foldHookEvent,

@@ -8,6 +8,7 @@ import type {
   PendingHook,
   SessionConfig,
   SessionInfo,
+  SessionPermissionState,
   SessionSummary,
   Turn,
 } from '../net/types.js';
@@ -18,7 +19,7 @@ import {
   type FilterState,
   type PendingSession,
 } from '../store/ChatStore.js';
-import { changeSessionPermissionMode } from '../store/permissionMode.js';
+import { changeSessionPermissionState } from '../store/permissionState.js';
 import { setSessionDone } from '../store/markDone.js';
 import { resolvePendingHook } from '../store/pendingHooks.js';
 import { budgetHaltFromRefusal, type BudgetHalt } from '../store/budgetHalt.js';
@@ -660,21 +661,22 @@ export function useSessionInfo(sessionId: string | null): {
   return { info, loading };
 }
 
-/** Full per-session detail (summary + info + `harnessConfig`) plus a permission-mode
- *  mutator — the source for the interactive permission-mode selector. LAZILY fetches
+/** Full per-session detail (summary + info + `harnessConfig`) plus a permission-state
+ *  mutator — the source for the interactive permission controls. LAZILY fetches
  *  `GET /sessions/{id}` on first use, caches the `ManagedSessionDetail` in the store
  *  keyed by id, and returns the cache thereafter. NEVER blocks the hot path: the fetch
  *  is backgrounded and the store update re-renders. `loading` is true only while the
  *  first fetch is in flight.
  *
- *  `setPermissionMode(mode)` OPTIMISTICALLY patches the cached detail's
- *  `harnessConfig.permissionMode`, then PUTs `/sessions/{id}/permission-mode`. On a
- *  non-2xx it REVERTS the cached detail to its prior value and rethrows — a failed
- *  change must be visible, never silently kept. Resolves once persisted. */
+ *  `setPermissionState(state)` OPTIMISTICALLY patches the cached detail's
+ *  `harnessConfig`, then PUTs `/sessions/{id}/permission-mode` with the mode, the
+ *  sandbox network gate and the custom knobs in ONE body. On a non-2xx it REVERTS the
+ *  cached detail to its prior value and rethrows — a failed change must be visible,
+ *  never silently kept. Resolves once persisted. An omitted axis is left alone. */
 export function useManagedSession(sessionId: string | null): {
   session: ManagedSessionDetail | null;
   loading: boolean;
-  setPermissionMode: (mode: string) => Promise<void>;
+  setPermissionState: (state: SessionPermissionState) => Promise<void>;
 } {
   const { store, api } = useChatContext();
   const actions = useActions();
@@ -693,15 +695,15 @@ export function useManagedSession(sessionId: string | null): {
       .catch(() => actions.setSessionDetailLoading(sessionId, false));
   }, [sessionId, store, api, actions]);
 
-  const setPermissionMode = useCallback(
-    async (mode: string) => {
+  const setPermissionState = useCallback(
+    async (state: SessionPermissionState) => {
       if (!sessionId) return;
-      await changeSessionPermissionMode({ store, api }, sessionId, mode);
+      await changeSessionPermissionState({ store, api }, sessionId, state);
     },
     [sessionId, store, api],
   );
 
-  return { session, loading, setPermissionMode };
+  return { session, loading, setPermissionState };
 }
 
 /** A session's rolled-up cost from its cached/active model's `TurnModel.aggregates`.

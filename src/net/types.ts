@@ -217,6 +217,22 @@ export interface HarnessConfigCustom {
   sandbox?: string;
 }
 
+/** The three axes `PUT /sessions/{id}/permission-mode` writes in one body. camelCase
+ *  of the request the bridge accepts (`mode` / `disable_network` /
+ *  `permission_mode_custom`); the mapping to snake_case happens in `ApiClient`.
+ *
+ *  `mode` is required — the endpoint validates it server-side and rejects an empty
+ *  one. The other two are optional and **absent means "leave the stored value alone"**,
+ *  not "false" and not "clear": a caller that renders no network checkbox must not
+ *  silently switch the sandbox back on by changing the mode. To CLEAR the custom knobs,
+ *  send `permissionModeCustom` with both fields empty — that is the server's own
+ *  "empty struct clears" contract, and it is the only way to say it. */
+export interface SessionPermissionState {
+  mode: string;
+  disableNetwork?: boolean;
+  permissionModeCustom?: HarnessConfigCustom;
+}
+
 /** A session's per-harness config bag (`harness_config` on the wire; opaque
  *  `json.RawMessage` on the Go side). The bridge's own well-known keys are surfaced in
  *  camelCase; the index signature carries any harness-specific knob through unchanged so

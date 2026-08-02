@@ -21,7 +21,7 @@ export const ARCHIVE_FOLDER = 'Archive';
  *
  * Shared by `useSessionActions` so the orchestration is exercised directly by tests
  * rather than re-derived in a React-lifecycle harness (single source of truth), the
- * same arrangement as `changeSessionPermissionMode`.
+ * same arrangement as `changeSessionPermissionState`.
  *
  * BOTH halves of the optimistic row matter. `handleMarkSessionDone` broadcasts a
  * state transition AND moves the folder, as one atomic action. The previous code

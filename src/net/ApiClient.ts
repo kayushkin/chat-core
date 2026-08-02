@@ -12,6 +12,7 @@ import type {
   SearchResponse,
   SessionConfig,
   SessionInfo,
+  SessionPermissionState,
   SummaryResponse,
   ValidatorsResponse,
 } from './types.js';
@@ -503,18 +504,34 @@ export class ApiClient {
   }
 
   /**
-   * Set a session's per-session permission mode.
-   * PUT /sessions/{id}/permission-mode with body `{ mode }`.
+   * Set a session's per-session permission state — the mode plus the two side-axes
+   * the same endpoint persists. PUT /sessions/{id}/permission-mode.
    *
-   * The bridge persists this into `harness_config.permission_mode`; the prehook
-   * reads it live, so the change takes effect on the session's NEXT tool call
-   * without a restart. `mode` is one of the canonical `msg.PermissionMode*` values
-   * (ask / auto / bypass / plan / read / ask_all / block_all / custom) — validated
-   * server-side. This is a LOUD call: `putJSON` throws on any non-2xx (e.g. 400 on an
-   * invalid mode, 404 on an unknown session), so an optimistic UI update can revert.
+   * The bridge persists all three into `harness_config`; the prehook reads
+   * `permission_mode` live, so a mode change takes effect on the session's NEXT tool
+   * call without a restart, while `disable_network` and `permission_mode_custom` reach
+   * the harness on its next spawn. `mode` is one of the canonical `msg.PermissionMode*`
+   * values (ask / auto / bypass / plan / read / ask_all / block_all / custom) —
+   * validated server-side.
+   *
+   * ONE PUT carries every axis, deliberately: three separate writes would let a partial
+   * failure leave the UI describing a state the server is not in. An omitted axis means
+   * "leave the stored value alone" (the server reads the field as absent), so callers
+   * that render only some of the controls do not clear the ones they do not show.
+   *
+   * This is a LOUD call: `putJSON` throws on any non-2xx (e.g. 400 on an invalid mode,
+   * 404 on an unknown session), so an optimistic UI update can revert.
    */
-  setPermissionMode(id: string, mode: string): Promise<unknown> {
-    return this.putJSON(`/sessions/${id}/permission-mode`, { mode });
+  setSessionPermissionState(id: string, state: SessionPermissionState): Promise<unknown> {
+    const body: Record<string, unknown> = { mode: state.mode };
+    if (state.disableNetwork !== undefined) body.disable_network = state.disableNetwork;
+    if (state.permissionModeCustom !== undefined) {
+      body.permission_mode_custom = {
+        approval: state.permissionModeCustom.approval ?? '',
+        sandbox: state.permissionModeCustom.sandbox ?? '',
+      };
+    }
+    return this.putJSON(`/sessions/${id}/permission-mode`, body);
   }
 
   // --- parked hooks (the permission banner) ---
