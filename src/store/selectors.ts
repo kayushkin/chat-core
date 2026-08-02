@@ -58,25 +58,52 @@ function byUpdatedDesc(a: SessionSummary, b: SessionSummary): number {
   return 0;
 }
 
-// Simple identity-keyed memo: recompute only when (sessions, filter, contentHits)
-// change. contentHits is part of the key so a content-search response repaints.
+// Simple identity-keyed memo: recompute only when (sessions, filter, contentHits,
+// folders) change. contentHits is part of the key so a content-search response
+// repaints; folders is, so the first `GET /folders` response after boot repaints
+// rather than sitting behind a memo hit.
 let visibleCache: {
   sessions: Map<string, SessionSummary>;
   filter: FilterState;
   contentHits: ContentHits | null;
+  folders: string[];
   result: FolderGroup[];
 } | null = null;
 
-/** Filter → group-by-folder → sort. Groups are ordered by their most-recent
- *  session; sessions within a group are newest-first. Memoized on identity of
- *  the sessions Map + filter object + content-hit set. */
+/** Filter → group-by-folder → order by the SERVER's folder list.
+ *
+ *  Group order is `state.folders`, which is what `GET /folders` returned — the
+ *  order the user arranged, not a recency guess. Every folder the server names
+ *  gets a group **even when it holds no visible session**, because an empty folder
+ *  is a real row the sidebar has to be able to draw (and file into); ordering by
+ *  freshest activity, as this did before, cannot represent one at all.
+ *
+ *  Three rules decide the layout:
+ *
+ *  1. The unfoldered bucket (`''`) goes FIRST, matching bridge-ui's sidebar — but
+ *     only when something is actually in it. An empty NAMED folder is a server row
+ *     and must render; an empty unfoldered bucket is the absence of a folder and
+ *     would be a permanent blank header.
+ *  2. Then every name in `state.folders`, in server order, empty or not.
+ *  3. Then any folder a loaded session claims that the server list does not
+ *     mention, ordered by newest session as before. `SessionSummary.folderName` is
+ *     authoritative too, so a folder created since the last `/folders` read groups
+ *     its sessions under their own name — it does not swallow them into the
+ *     unfoldered bucket (which is what bridge-ui does) or drop them off the list.
+ *
+ *  With no folder list loaded — before the first response, or after a failed one —
+ *  rule 3 covers everything and the result is exactly the old recency ordering.
+ *
+ *  Sessions within a group are newest-first. Memoized on identity of the sessions
+ *  Map + filter object + content-hit set + folder list. */
 export function visibleSessions(state: ChatState): FolderGroup[] {
-  const { sessions, filter, contentHits } = state;
+  const { sessions, filter, contentHits, folders } = state;
   if (
     visibleCache &&
     visibleCache.sessions === sessions &&
     visibleCache.filter === filter &&
-    visibleCache.contentHits === contentHits
+    visibleCache.contentHits === contentHits &&
+    visibleCache.folders === folders
   ) {
     return visibleCache.result;
   }
@@ -91,18 +118,33 @@ export function visibleSessions(state: ChatState): FolderGroup[] {
     }
     arr.push(s);
   }
+  for (const arr of byFolder.values()) arr.sort(byUpdatedDesc);
+
   const groups: FolderGroup[] = [];
-  for (const [folder, arr] of byFolder) {
-    arr.sort(byUpdatedDesc);
-    groups.push({ folder, sessions: arr });
+  // 1. unfoldered, first, only when it has something in it.
+  const unfoldered = byFolder.get('');
+  if (unfoldered && unfoldered.length > 0) groups.push({ folder: '', sessions: unfoldered });
+  // 2. every server folder, in server order, empty or not.
+  const known = new Set<string>();
+  for (const name of folders) {
+    if (name === '' || known.has(name)) continue;
+    known.add(name);
+    groups.push({ folder: name, sessions: byFolder.get(name) ?? [] });
   }
-  // Groups ordered by their newest session (a group's freshest activity).
-  groups.sort((a, b) => {
+  // 3. folders only the loaded sessions know about, newest group first.
+  const unknown: FolderGroup[] = [];
+  for (const [folder, arr] of byFolder) {
+    if (folder === '' || known.has(folder)) continue;
+    unknown.push({ folder, sessions: arr });
+  }
+  unknown.sort((a, b) => {
     const an = a.sessions[0]?.updatedAt ?? '';
     const bn = b.sessions[0]?.updatedAt ?? '';
     return an < bn ? 1 : an > bn ? -1 : 0;
   });
-  visibleCache = { sessions, filter, contentHits, result: groups };
+  groups.push(...unknown);
+
+  visibleCache = { sessions, filter, contentHits, folders, result: groups };
   return groups;
 }
 

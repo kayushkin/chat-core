@@ -109,7 +109,22 @@ export class Prefetcher {
         ? this.api.getValidators(cachedIds).catch(() => null)
         : Promise.resolve(null);
 
-    await Promise.all([summaryP, bundleP, validatorsP]);
+    // The folder list is boot data: it decides the order the sidebar's groups paint
+    // in and which folders exist at all, so it belongs in the parallel fan-out
+    // rather than behind the SSE handshake (which only starts once boot resolves).
+    // A failure leaves `folders` empty, which grouping already treats as "not loaded"
+    // and degrades to the loaded sessions' own folder names — the sidebar never goes
+    // blank over it. The SyncEngine re-reads it on every RECONNECT, so a folder
+    // created elsewhere while the stream was down still arrives.
+    const foldersP = this.api
+      .listFolders()
+      .then((folders) => {
+        actions.setFolders(folders);
+        return folders;
+      })
+      .catch(() => null);
+
+    await Promise.all([summaryP, bundleP, validatorsP, foldersP]);
 
     if (this.cache.isEnabled) void enforceCacheBound(this.cache, this.cacheLimit);
   }

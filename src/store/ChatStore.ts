@@ -144,7 +144,17 @@ export interface ChatState {
    *  transcript search is not zero matches — the list still shows every local name
    *  match — so it is reported rather than folded into an empty hit set. */
   contentSearchError: string | null;
-  /** Known folder names, maintained from session upserts. */
+  /** The folders the server holds, IN THE ORDER IT KEEPS THEM (`GET /folders`).
+   *
+   *  Not derived from the loaded sessions. A folder is a row of its own: it exists
+   *  before anything is filed into it and it survives the last session leaving it,
+   *  so a list scraped off the session window can neither order the folders the way
+   *  the user arranged them nor represent an empty one at all. `visibleSessions`
+   *  reads this to seed its groups.
+   *
+   *  Empty until the first `/folders` response lands (or if that read fails), which
+   *  is a real state and not a bug: grouping falls back to the loaded sessions'
+   *  own folder names in recency order rather than to an empty sidebar. */
   folders: string[];
   connState: ConnState;
   listLoading: boolean;
@@ -201,6 +211,12 @@ export interface ChatActions {
   setOlderSessionsLoading(loading: boolean): void;
   upsertSession(summary: SessionSummary): void;
   removeSession(sessionId: string): void;
+
+  /** Replace the folder list with what `GET /folders` returned, order intact.
+   *  The server's answer is the whole truth here — this never merges with what the
+   *  loaded sessions happen to mention, or a folder deleted on the server would
+   *  live on in the sidebar for as long as one session still pointed at it. */
+  setFolders(folders: string[]): void;
 
   setActive(sessionId: string | null): void;
 
@@ -282,14 +298,6 @@ export interface ChatActions {
 
 export type ChatStoreApi = StoreApi<ChatState>;
 
-function collectFolders(sessions: Iterable<SessionSummary>): string[] {
-  const set = new Set<string>();
-  for (const s of sessions) {
-    if (s.folderName) set.add(s.folderName);
-  }
-  return [...set].sort();
-}
-
 /** One shared empty map for sessions with no parked hook. Reusing the reference keeps
  *  `usePendingPermissions`'s selector stable, so a session that never parks a hook never
  *  re-renders the banner. */
@@ -333,7 +341,6 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
         for (const s of list) sessions.set(s.sessionId, s);
         set({
           sessions,
-          folders: collectFolders(sessions.values()),
           listLoading: false,
           olderSessionsCursor,
           olderSessionsLoading: false,
@@ -352,7 +359,6 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
         }
         set({
           sessions,
-          folders: collectFolders(sessions.values()),
           olderSessionsCursor,
           olderSessionsLoading: false,
         });
@@ -366,7 +372,7 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
         const sessions = new Map(get().sessions);
         const prev = sessions.get(summary.sessionId);
         sessions.set(summary.sessionId, prev ? { ...prev, ...summary } : summary);
-        set({ sessions, folders: collectFolders(sessions.values()) });
+        set({ sessions });
       },
 
       removeSession(sessionId) {
@@ -402,9 +408,12 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
           sessionDetail,
           sessionDetailLoading,
           drafts,
-          folders: collectFolders(sessions.values()),
           activeId: get().activeId === sessionId ? null : get().activeId,
         });
+      },
+
+      setFolders(folders) {
+        set({ folders });
       },
 
       setActive(activeId) {

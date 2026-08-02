@@ -326,6 +326,13 @@ export interface MessagesResponse {
   model: TurnModel;
 }
 
+/** `GET /folders` exactly as the gateway sends it (`msg.FolderList`). The field
+ *  is literally `folder_order` and its ORDER is the payload — the server keeps a
+ *  deliberate folder order and this is the only place it is stated. */
+export interface FolderListWire {
+  folder_order: string[] | null;
+}
+
 /** One content-search hit exactly as log-store sends it (`store.SearchHit`):
  *  the matching session and how many of its events matched. There is no snippet
  *  on the wire — an earlier version of this file declared one, and a `hits` array

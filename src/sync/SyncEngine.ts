@@ -39,6 +39,10 @@ export class SyncEngine {
   private activeAbort: AbortController | null = null;
   private activeStreamId: string | null = null;
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
+  /** Whether the list stream has ever said hello. Distinguishes the first connect
+   *  (boot already read the folders) from a reconnect (they may have changed under
+   *  us while the stream was down). */
+  private listHelloSeen = false;
   private unsubStore: (() => void) | null = null;
   private onVisible: (() => void) | null = null;
   private running = false;
@@ -110,6 +114,14 @@ export class SyncEngine {
           if (frame.type === 'hello') {
             delay = 1000;
             actions.setConn('open');
+            // Folders are not on this stream — it carries session upserts and deletes
+            // only — so a folder created, renamed or deleted while the client was
+            // disconnected is invisible until something re-reads the list. A
+            // reconnect is exactly the moment the sidebar's picture of the server is
+            // in doubt, so it is re-read here. NOT on the first hello: `boot()` has
+            // just fetched it, and sync starts after boot resolves.
+            if (this.listHelloSeen) void this.refreshFolders();
+            this.listHelloSeen = true;
           } else if (frame.type === 'upsert' && frame.summary) {
             actions.upsertSession(frame.summary);
             void this.cache.putSummary(frame.summary);
@@ -125,6 +137,18 @@ export class SyncEngine {
       this.store.getState().actions.setConn('connecting');
       await sleep(delay);
       delay = Math.min(delay * 2, 30000);
+    }
+  }
+
+  /** Re-read `GET /folders` after a reconnect. A failure keeps the folder list the
+   *  client already has rather than clearing it — a stale order is closer to the
+   *  truth than no order, and the next reconnect tries again. */
+  private async refreshFolders(): Promise<void> {
+    try {
+      const folders = await this.api.listFolders();
+      if (this.running) this.store.getState().actions.setFolders(folders);
+    } catch {
+      // Non-fatal: the sidebar keeps grouping with the list it has.
     }
   }
 

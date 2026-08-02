@@ -1,4 +1,5 @@
 import type {
+  FolderListWire,
   HarnessConfig,
   HarnessMeta,
   HookResolveInput,
@@ -281,6 +282,23 @@ export class ApiClient {
     if (opts?.turns != null) params.set('turns', String(opts.turns));
     const qs = params.toString();
     return this.getJSON<RecentBundleResponse>(`/sessions/recent-bundle${qs ? `?${qs}` : ''}`);
+  }
+
+  /** The folder list, in the order the server keeps it (`GET /folders`).
+   *
+   *  This is the single source of truth for BOTH which folders exist and what
+   *  order they go in. Folders are rows in their own right: one can be created
+   *  with nothing in it, and it stays real until it is deleted. Deriving the list
+   *  from the loaded sessions instead — which is what chat-core did — gets both
+   *  facts wrong at once, inventing an order the user never chose and making an
+   *  empty folder unrepresentable.
+   *
+   *  `folder_order` is coerced to `[]` by the handler when the store returns a nil
+   *  slice, but a nil Go slice serializes to JSON `null` in general, so the shape
+   *  is checked here rather than trusted. */
+  async listFolders(): Promise<string[]> {
+    const wire = await this.getJSON<FolderListWire>('/folders');
+    return Array.isArray(wire?.folder_order) ? wire.folder_order : [];
   }
 
   /** The cheap staleness check for a set of session ids. */
