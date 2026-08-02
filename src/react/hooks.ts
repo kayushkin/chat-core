@@ -243,6 +243,46 @@ export function useTurns(
   return { turns, entries, visibleEntryIds, sourcesFor, loading, more, loadOlder };
 }
 
+/** The server-reported session states in which POST /sessions/{id}/resume actually
+ *  succeeds — i.e. the client-visible proxy for "this session has no live harness
+ *  process".
+ *
+ *  The gate is the server's to define and it has defined it: `handleResumeSession`
+ *  (llm-bridge-server `internal/server/sessions.go`) consults the live process
+ *  registry, NOT the denormalised state string — a session with a process is
+ *  "already running" and gets a 409, one without is resumable whatever its state
+ *  reads. `TestResumeSession_AlreadyRunning` pins that 409. These five states are
+ *  the ones a session can only reach by its process being gone.
+ *
+ *  Two things this set is deliberately NOT:
+ *
+ *  - It is not `paused`. Nothing on this box emits `msg.SessionPaused`: the server's
+ *    derivation only passes the value through if a manager injects it, and no site
+ *    does. Zero of the 500 most recent live sessions carry it (measured 2026-08-02).
+ *    A control gated on `paused` is a control that never appears.
+ *  - It is not "the user hit stop". Interrupt leaves the process registered
+ *    (`Manager.Stop` calls `proc.Interrupt()`; only `Kill` and process exit remove
+ *    it from the map), so an interrupted session is idle WITH a live process and
+ *    resuming it is exactly the 409 case.
+ *
+ *  Every other state is ambiguous about the process and so is excluded, each for a
+ *  reason that was checked rather than assumed:
+ *
+ *  - `idle` sits between a live process waiting for the next turn and a dead one
+ *    the state row never caught up with. Offering Resume on the live half would
+ *    surface a routine 409 as an error.
+ *  - `completed` is written both by a PTY child exiting AND by "mark done"
+ *    (`handleSetSessionFolder`), which never touches the process.
+ *  - `error` and `rate_limited` are mid-life states — the process is still there.
+ *
+ *  None of those need a Resume button anyway: `handleSendMessage` starts a process
+ *  when the registry has none, so a dead session of any state revives by being sent
+ *  to. Resume is the way to bring one back WITHOUT putting words in its mouth.
+ *
+ *  When `e1732f61` (SessionPaused on interrupt) is decided and the manager starts
+ *  emitting it, `paused` joins this set; nothing else here changes. */
+const RESUMABLE_STATES = new Set<string>(['aborted', 'disconnected']);
+
 /** Composer + turn controls for a session (or the pending/new pane).
  *
  *  `stop()` interrupts the running turn (POST /sessions/{id}/interrupt). It is a
@@ -252,7 +292,12 @@ export function useTurns(
  *  be visible, never swallowed into a fake-idle. `interrupting` is true for the
  *  duration of the request; `paused` reflects a parked/held session state (checked
  *  as the explicit 'paused' value, never a bare `state === 'running'` — `tool_running`
- *  is also busy, the §5 enum trap). */
+ *  is also busy, the §5 enum trap).
+ *
+ *  `resume()` restarts a session whose harness process is gone (POST
+ *  /sessions/{id}/resume), and is LOUD on the same terms as `stop()`. `resumable`
+ *  says when it will actually work — see RESUMABLE_STATES below for why that is
+ *  NOT `paused`. */
 export function useComposer(sessionId: string | null): {
   send: (text: string) => void;
   draft: string;
@@ -261,6 +306,9 @@ export function useComposer(sessionId: string | null): {
   stop: () => Promise<void>;
   interrupting: boolean;
   paused: boolean;
+  resume: () => Promise<void>;
+  resuming: boolean;
+  resumable: boolean;
   error: string | null;
 } {
   const { store, api } = useChatContext();
@@ -270,7 +318,9 @@ export function useComposer(sessionId: string | null): {
   const sending = useStore(store, (s) => (sessionId ? s.sending.has(sessionId) : false));
   const state = useStore(store, (s) => (sessionId ? s.sessions.get(sessionId)?.state : undefined));
   const paused = state === 'paused';
+  const resumable = !!sessionId && !!state && RESUMABLE_STATES.has(state);
   const [interrupting, setInterrupting] = useState(false);
+  const [resuming, setResuming] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const setDraft = useCallback((t: string) => actions.setDraft(key, t), [actions, key]);
@@ -288,6 +338,24 @@ export function useComposer(sessionId: string | null): {
       throw e;
     } finally {
       setInterrupting(false);
+    }
+  }, [api, sessionId]);
+
+  const resume = useCallback(async () => {
+    if (!sessionId) return;
+    setResuming(true);
+    setError(null);
+    try {
+      // LOUD on the same terms as stop(): `ApiClient.resume` throws on any non-2xx
+      // — the 409 when the session turns out to have a live process after all, the
+      // 500 when it is bound to no instance and so cannot be respawned. Surface it
+      // and rethrow; never pretend the session came back.
+      await api.resume(sessionId);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      throw e;
+    } finally {
+      setResuming(false);
     }
   }, [api, sessionId]);
 
@@ -334,7 +402,19 @@ export function useComposer(sessionId: string | null): {
     [actions, api, store, sessionId, key],
   );
 
-  return { send, draft, setDraft, sending, stop, interrupting, paused, error };
+  return {
+    send,
+    draft,
+    setDraft,
+    sending,
+    stop,
+    interrupting,
+    paused,
+    resume,
+    resuming,
+    resumable,
+    error,
+  };
 }
 
 /** Filters + folders (client-side; switching is sub-10ms).

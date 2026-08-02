@@ -110,7 +110,17 @@ export function useTurns(sessionId: string | null, view?: 'turns' | 'raw'): {
 // a failed stop must be visible, never swallowed into a fake-idle. `interrupting` is
 // true for the request's duration. `paused` reflects a parked/held session (the
 // explicit 'paused' state; never gate on a bare `state === 'running'` — `tool_running`
-// is also busy). `error` is the last send/stop error message, or null.
+// is also busy). `error` is the last send/stop/resume error message, or null.
+//
+// `resume()` restarts a session whose harness process is gone (POST
+// /sessions/{id}/resume), LOUD on the same terms as stop(). `resuming` is true for the
+// request's duration. `resumable` is the gate: the server decides resumability from its
+// live process registry (a session WITH a process gets a 409), and the client-visible
+// proxy for "no process" is the state set in RESUMABLE_STATES — currently
+// aborted/disconnected. It is deliberately NOT `paused`: nothing emits
+// `msg.SessionPaused` today, so a control gated on it never renders. Interrupt also
+// leaves the process registered, so an interrupted session is not resumable — it is
+// idle, and sending to it continues it.
 export function useComposer(sessionId: string | null): {
   send: (text: string) => void;
   draft: string;
@@ -119,6 +129,9 @@ export function useComposer(sessionId: string | null): {
   stop: () => Promise<void>;
   interrupting: boolean;
   paused: boolean;
+  resume: () => Promise<void>;
+  resuming: boolean;
+  resumable: boolean;
   error: string | null;
 };
 
