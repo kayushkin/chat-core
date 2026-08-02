@@ -17,6 +17,8 @@ import { applyEvent, initTailState, type TailState } from '../reduce/TurnReducer
 import { foldHookEvent } from './pendingHooks.js';
 import { budgetHaltFromEvent, type BudgetHalt } from './budgetHalt.js';
 import { DraftStore, defaultDraftStorage, type DraftStorageLike } from './draftStorage.js';
+import { FilterStore, PERSISTED_FILTER_AXES } from './filterStorage.js';
+import { defaultWebStorage, type WebStorageLike } from './webStorage.js';
 
 // L1 hot store (decision D2). Zustand vanilla store held in `Map`s for the
 // working set. ACTIONS ARE THE ONLY MUTATION PATH — both the SyncEngine and the
@@ -333,16 +335,28 @@ export interface CreateChatStoreOptions {
    *  `null` to turn persistence off explicitly, or a `DraftStorageLike` to point it
    *  somewhere else. */
   draftStorage?: DraftStorageLike | null;
+  /** Where the sidebar's filter selection is persisted. Same defaulting as
+   *  `draftStorage`, and kept as a separate option so a caller can persist one and
+   *  not the other. */
+  filterStorage?: WebStorageLike | null;
 }
 
 export function createChatStore(options: CreateChatStoreOptions = {}): ChatStoreApi {
   const draftStore = new DraftStore(
     options.draftStorage === undefined ? defaultDraftStorage() : options.draftStorage,
   );
+  const filterStore = new FilterStore(
+    options.filterStorage === undefined ? defaultWebStorage() : options.filterStorage,
+  );
   // Read synchronously, BEFORE the store exists, so the drafts are in the very first
   // state the UI ever sees. An async hydrate would land after the composer is already
   // typeable and would race the user's keystrokes.
   const persistedDrafts = draftStore.load();
+  // Same reasoning, and it matters more here: a filter applied one paint late means
+  // the list is drawn unfiltered and then rows are pulled out from under a user who
+  // has already started reading it. `search` and `folder` are never restored — see
+  // filterStorage.ts.
+  const persistedFilterAxes = filterStore.load();
 
   return createStore<ChatState>((set, get) => {
     const actions: ChatActions = {
@@ -637,6 +651,13 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
           if (!cur || cur.query !== filter.search.trim()) nextState.contentHits = null;
         }
         set(nextState);
+        // Persist only when the patch actually named a persisted axis. Keying off the
+        // PATCH rather than diffing the result is what keeps every keystroke in the
+        // search box from rewriting the filter record — search is not persisted, and
+        // a save per keystroke would be a stringify per keystroke for no change at all.
+        if (PERSISTED_FILTER_AXES.some((axis) => patch[axis] !== undefined)) {
+          filterStore.save(filter);
+        }
       },
 
       openFolder(folder) {
@@ -740,7 +761,7 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
       pendingHooks: new Map(),
       budgetHalts: new Map(),
       activeId: null,
-      filter: { ...EMPTY_FILTER },
+      filter: { ...EMPTY_FILTER, ...persistedFilterAxes },
       contentHits: null,
       contentSearchInFlight: null,
       contentSearchError: null,

@@ -163,6 +163,16 @@ export function useComposer(sessionId: string | null): {
 // content search (GET /sessions/search) whose hit ids are folded into the list path
 // when they arrive, so the filter matches transcript text too — without ever blocking
 // the local name filter on the network (C6).
+//
+// The six faceted axes PERSIST. They are written to localStorage whenever a patch names
+// one (store/filterStorage.ts) and read back synchronously inside createChatStore, so a
+// reload paints the list already filtered rather than filtering it one frame later. The
+// shape stored is chat-core's own INCLUSION arrays under `chat-core:filters` — NOT
+// bridge-ui's exclusion keys, which mean the opposite and share an origin with dashv2.
+// `search` and `folder` are deliberately never persisted: a restored query re-runs a
+// transcript search on every load, and a restored folder can point at a deleted one.
+// Pass `createChatStore({filterStorage})` to redirect or disable it (null); it is off
+// wherever localStorage is not usable.
 export function useFilters(): {
   filter: FilterState;
   set: (patch: Partial<FilterState>) => void;

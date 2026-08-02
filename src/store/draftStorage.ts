@@ -15,13 +15,12 @@
 // buys back microseconds of a synchronous stringify over a few kilobytes and costs the
 // last words typed before a reload — which is the one thing this file exists to keep.
 
-/** The slice of the DOM `Storage` interface this needs. Narrow on purpose: it makes
- *  the store testable off a plain object, and `localStorage` satisfies it. */
-export interface DraftStorageLike {
-  getItem(key: string): string | null;
-  setItem(key: string, value: string): void;
-  removeItem(key: string): void;
-}
+import { defaultWebStorage, type WebStorageLike } from './webStorage.js';
+
+/** The storage a draft record is kept in. The same narrow `Storage` slice every
+ *  persisted chat-core store takes — named for this caller because it is what the
+ *  option on `createChatStore` is called. */
+export type DraftStorageLike = WebStorageLike;
 
 /** The localStorage key the whole draft record lives under. */
 export const DRAFT_STORAGE_KEY = 'chat-core:drafts';
@@ -73,33 +72,11 @@ export function boundDrafts(
   return Object.fromEntries(live);
 }
 
-/** Resolve the browser's localStorage, or null anywhere it does not work (SSR, a
- *  test, a browser that blocks it by policy).
- *
- *  The probe checks for the METHODS, not for the name. Node 25 binds a
- *  `globalThis.localStorage` that is an empty object unless the process was started
- *  with `--localstorage-file`, so "the name is defined" is not the same question as
- *  "this can store anything". Reading the property can also throw outright when a
- *  browser refuses storage, hence the try. */
+/** Where drafts are kept when the caller names no storage: the browser's
+ *  localStorage, or null anywhere it does not work. The probe itself is shared with
+ *  every other persisted store — see `webStorage.ts` for what it checks and why. */
 export function defaultDraftStorage(): DraftStorageLike | null {
-  try {
-    // Ask whether there is a document first. Node's stub is created lazily on first
-    // read and prints a `--localstorage-file` warning when there is no backing file,
-    // so on a server the cheapest correct answer is not to look at all.
-    if (typeof (globalThis as { window?: unknown }).window === 'undefined') return null;
-    const candidate = (globalThis as { localStorage?: Partial<DraftStorageLike> }).localStorage;
-    if (!candidate) return null;
-    if (
-      typeof candidate.getItem !== 'function' ||
-      typeof candidate.setItem !== 'function' ||
-      typeof candidate.removeItem !== 'function'
-    ) {
-      return null;
-    }
-    return candidate as DraftStorageLike;
-  } catch {
-    return null;
-  }
+  return defaultWebStorage();
 }
 
 /**

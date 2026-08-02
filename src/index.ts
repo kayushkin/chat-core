@@ -99,6 +99,18 @@ export {
   MAX_DRAFT_AGE_MS,
   type DraftStorageLike,
 } from './store/draftStorage.js';
+export { defaultWebStorage, type WebStorageLike } from './store/webStorage.js';
+export {
+  FilterStore,
+  boundFilterValues,
+  emptyPersistedFilterAxes,
+  FILTER_STORAGE_KEY,
+  FILTER_RECORD_VERSION,
+  MAX_PERSISTED_FILTER_VALUES,
+  PERSISTED_FILTER_AXES,
+  type PersistedFilterAxis,
+  type PersistedFilterAxes,
+} from './store/filterStorage.js';
 export { changeSessionPermissionState } from './store/permissionState.js';
 export { ARCHIVE_FOLDER, setSessionDone } from './store/markDone.js';
 export {
