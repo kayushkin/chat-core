@@ -132,6 +132,42 @@ function createdSessionFromWire(w: Record<string, unknown>): CreatedSession {
   return { ...w, sessionId };
 }
 
+/** The error every non-2xx response throws.
+ *
+ *  It carries the HTTP status and the raw response body alongside the message,
+ *  because some refusals mean something specific and a caller has to be able to
+ *  tell them apart. The spend-ceiling gate is the one that forced this: the
+ *  server refuses a send with a 402 whose JSON body names both dollar figures
+ *  (`internal/server/sessions.go` `writeRefusalIfOverBudget`), and the only way
+ *  to read those figures used to be to pick the JSON back out of the English
+ *  message string — which is guessing, not reading.
+ *
+ *  `message` keeps the exact text it always had, so anything already rendering
+ *  `e.message` is unchanged.
+ *
+ *  `body` is the response text, empty when the body could not be read. It is
+ *  passed through unchanged: no parsing, no truncation — the layer that knows
+ *  what shape to expect does the parsing. */
+export class ApiError extends Error {
+  override readonly name = 'ApiError';
+  /** HTTP status of the refused response. */
+  readonly status: number;
+  /** The response body verbatim, or '' when it could not be read. */
+  readonly body: string;
+  /** The request method, e.g. 'POST'. */
+  readonly method: string;
+  /** The path under `basePath`, e.g. '/sessions/br_1/send'. */
+  readonly path: string;
+
+  constructor(init: { message: string; status: number; body: string; method: string; path: string }) {
+    super(init.message);
+    this.status = init.status;
+    this.body = init.body;
+    this.method = init.method;
+    this.path = init.path;
+  }
+}
+
 /** The auth'd fetch + API root the client speaks through. dash passes its
  *  cookie-credentialed `apiFetch` and `basePath = '/api/bridge'`. */
 export interface ApiClientConfig {
@@ -173,7 +209,17 @@ export class ApiClient {
   private async getJSON<T>(path: string, init?: RequestInit): Promise<T> {
     const res = await this.doFetch(`${this.basePath}${path}`, init);
     if (!res.ok) {
-      throw new Error(`GET ${path} failed: ${res.status} ${res.statusText}`);
+      // GET refusals never carried their body in the message and still don't;
+      // reading it here would change nothing a caller sees. It is read onto the
+      // ApiError all the same, so a future caller that needs it has it.
+      const body = await res.text().catch(() => '');
+      throw new ApiError({
+        message: `GET ${path} failed: ${res.status} ${res.statusText}`,
+        status: res.status,
+        body,
+        method: 'GET',
+        path,
+      });
     }
     return (await res.json()) as T;
   }
@@ -186,7 +232,13 @@ export class ApiClient {
     });
     if (!res.ok) {
       const detail = await res.text().catch(() => '');
-      throw new Error(`POST ${path} failed: ${res.status} ${res.statusText} ${detail}`.trim());
+      throw new ApiError({
+        message: `POST ${path} failed: ${res.status} ${res.statusText} ${detail}`.trim(),
+        status: res.status,
+        body: detail,
+        method: 'POST',
+        path,
+      });
     }
     return (await res.json().catch(() => ({}))) as T;
   }
@@ -199,7 +251,13 @@ export class ApiClient {
     });
     if (!res.ok) {
       const detail = await res.text().catch(() => '');
-      throw new Error(`PUT ${path} failed: ${res.status} ${res.statusText} ${detail}`.trim());
+      throw new ApiError({
+        message: `PUT ${path} failed: ${res.status} ${res.statusText} ${detail}`.trim(),
+        status: res.status,
+        body: detail,
+        method: 'PUT',
+        path,
+      });
     }
     return (await res.json().catch(() => ({}))) as T;
   }

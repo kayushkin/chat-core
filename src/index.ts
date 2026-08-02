@@ -20,6 +20,7 @@ export {
   useSessionCost,
   useContextUsage,
   usePendingPermissions,
+  useBudgetHalt,
   usePrefetch,
 } from './react/hooks.js';
 export { RefChip, type RefChipProps } from './react/RefChip.js';
@@ -94,6 +95,12 @@ export {
   HOOK_PHASE_COMPLETED,
 } from './store/pendingHooks.js';
 export {
+  budgetHaltFromEvent,
+  budgetHaltFromRefusal,
+  ERR_CODE_BUDGET_EXCEEDED,
+  type BudgetHalt,
+} from './store/budgetHalt.js';
+export {
   visibleSessions,
   visibleCount,
   activeSummary,
@@ -160,4 +167,4 @@ export { connectListSSE, connectSessionSSE, summaryFromManaged } from './sync/ss
 export { Prefetcher, type PrefetcherConfig } from './boot/Prefetcher.js';
 
 // ---- Net ----
-export { ApiClient, type ApiClientConfig, type CreatedSession, type SendResult } from './net/ApiClient.js';
+export { ApiClient, ApiError, type ApiClientConfig, type CreatedSession, type SendResult } from './net/ApiClient.js';

@@ -104,6 +104,15 @@ export function useTurns(sessionId: string | null, view?: 'turns' | 'raw'): {
 // append() shows the user text instantly and reconciles the message id after POST.
 // Creating the real session is lazy on first send for a pending pane.
 //
+// `send()` returns void and cannot throw, but it is no longer silent. It used to drop
+// every failure — a `.finally()` with no `.catch` on the send path and a bare
+// `.catch(() => {})` on the create path — so a refused message stayed on screen looking
+// sent, the typed text was gone, and the spend-ceiling 402 was discarded before anything
+// could read it. A failed send now puts the text back in the box (only when the box is
+// still empty, so a message typed meanwhile is not clobbered), removes the optimistic row
+// that was never sent, sets `error`, and records a spend halt when that is what the
+// refusal was — read it back with useBudgetHalt().
+//
 // `stop()` interrupts the running turn (POST /sessions/{id}/interrupt). It is a LOUD
 // control: it throws on a non-2xx (e.g. the 409 the server returns while a tool still
 // holds the turn), sets `error`, and does NOT optimistically mark the session idle —
@@ -289,6 +298,45 @@ export function usePendingPermissions(sessionId: string | null): {
   pending: PendingHook[];
   resolve: (input: HookResolveInput) => Promise<void>;
 };
+
+// The session's spend halt, plus the one control that lifts it.
+//
+// llm-bridge-server stops a session that has spent its ceiling and then refuses every
+// send, resume and mode switch with a 402 (writeRefusalIfOverBudget,
+// internal/server/sessions.go). Neither half of that produces anything else a client can
+// see, so without this surface a halted session reads as a hung one — the wrong
+// conclusion, because it is fine and waiting on a number.
+//
+// halt is null for every session under its ceiling, every session without one, and every
+// server that predates the gate. It is set from two places, and only one of them carries
+// numbers: the 402 body names both dollar figures, the mid-turn error event carries a
+// sentence and none.
+//
+// raiseCeiling POSTs /sessions/{id}/config with the new max_budget and clears the halt.
+// It REPORTS the server's refusal text rather than throwing, and clears nothing when the
+// server refused — silence would read as "raised" and the next send would be refused
+// again.
+export function useBudgetHalt(sessionId: string | null): {
+  halt: BudgetHalt | null;
+  raiseCeiling: (maxBudgetUSD: number) => Promise<string | null>;
+};
+
+export interface BudgetHalt {
+  sessionId: string;
+  message: string;      // always present: the server's own words
+  spendUSD?: number;    // the 402 half only
+  maxBudgetUSD?: number;// the 402 half only
+}
+
+// Every non-2xx throws this. `message` is the exact text it always was, so anything
+// rendering e.message is unchanged; `status` and `body` are there because some refusals
+// mean something specific and picking the JSON back out of an English string is guessing.
+export class ApiError extends Error {
+  readonly status: number;
+  readonly body: string;   // response text verbatim, '' when unreadable
+  readonly method: string;
+  readonly path: string;
+}
 
 // One hook parked on a decision. `input` is the harness's own raw tool input, carried
 // through untouched. `source` picks the card: HOOK_SOURCE_PERMISSION ("permission_prompt",

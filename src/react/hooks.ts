@@ -20,6 +20,7 @@ import {
 } from '../store/ChatStore.js';
 import { changeSessionPermissionMode } from '../store/permissionMode.js';
 import { resolvePendingHook } from '../store/pendingHooks.js';
+import { budgetHaltFromRefusal, type BudgetHalt } from '../store/budgetHalt.js';
 import {
   activeSummaryEffective,
   contextUsage,
@@ -352,26 +353,59 @@ export function useComposer(sessionId: string | null): {
       // and rethrow; never pretend the session came back.
       await api.resume(sessionId);
     } catch (e) {
+      // A session that spent its ceiling does not come back by being resumed — the
+      // server refuses this with the same 402 as a send. Record the halt so the
+      // banner names the one thing that will fix it.
+      const halt = budgetHaltFromRefusal(sessionId, e);
+      if (halt) actions.setBudgetHalt(halt);
       setError(e instanceof Error ? e.message : String(e));
       throw e;
     } finally {
       setResuming(false);
     }
-  }, [api, sessionId]);
+  }, [api, actions, sessionId]);
+
+  /** What a failed send undoes, in one place so the create path and the ordinary
+   *  path fail identically.
+   *
+   *  A send used to fail invisibly: the POST's rejection went into a `.finally()`
+   *  with no `.catch`, and the create path had a bare `.catch(() => {})`. The
+   *  optimistic user row stayed on screen looking sent, the draft stayed cleared, and
+   *  the spend-ceiling 402 — the one refusal that tells the user exactly what to do
+   *  about it — was thrown away before anything could read it.
+   *
+   *  So: put the text back in the box, take the row that was never sent back off the
+   *  screen, record a spend halt when that is what this was, and say what happened.
+   *  The draft is only restored when the box is still empty, so a user who typed the
+   *  next message while this one was in flight does not lose it. */
+  const failSend = useCallback(
+    (targetSessionId: string | null, clientId: string | null, text: string, thrown: unknown) => {
+      if (targetSessionId && clientId) actions.dropOptimisticUser(targetSessionId, clientId);
+      if ((store.getState().drafts.get(key) ?? '') === '') actions.setDraft(key, text);
+      const halt = targetSessionId ? budgetHaltFromRefusal(targetSessionId, thrown) : null;
+      if (halt) actions.setBudgetHalt(halt);
+      setError(thrown instanceof Error ? thrown.message : String(thrown));
+    },
+    [actions, store, key],
+  );
 
   const send = useCallback(
     (text: string) => {
       const trimmed = text.trim();
       if (!trimmed) return;
       actions.setDraft(key, '');
+      setError(null);
 
       // Lazy-create a real session for the pending pane on first send.
       if (!sessionId) {
         const pending = store.getState().pending;
+        const clientId = `c_${Date.now()}`;
+        let createdId: string | null = null;
         void api
           .createSession(pending ? { instanceId: pending.instanceId, harness: pending.harness } : undefined)
           .then((created) => {
             const newId = created.sessionId;
+            createdId = newId;
             actions.setActive(newId);
             actions.clearPending();
             // Apply the controls-bar pre-start model/effort via POST /config right after
@@ -383,11 +417,11 @@ export function useComposer(sessionId: string | null): {
                 .setConfig(newId, { model: pending.model, effort: pending.effort })
                 .catch(() => {});
             }
-            actions.appendOptimisticUser(newId, trimmed, `c_${Date.now()}`);
+            actions.appendOptimisticUser(newId, trimmed, clientId);
             actions.setSending(newId, true);
             return api.send(newId, trimmed).finally(() => actions.setSending(newId, false));
           })
-          .catch(() => {});
+          .catch((e: unknown) => failSend(createdId, createdId ? clientId : null, trimmed, e));
         return;
       }
 
@@ -397,9 +431,10 @@ export function useComposer(sessionId: string | null): {
       actions.setSending(sessionId, true);
       void api
         .send(sessionId, trimmed)
+        .catch((e: unknown) => failSend(sessionId, clientId, trimmed, e))
         .finally(() => actions.setSending(sessionId, false));
     },
-    [actions, api, store, sessionId, key],
+    [actions, api, store, sessionId, key, failSend],
   );
 
   return {
@@ -875,6 +910,52 @@ export function usePendingPermissions(sessionId: string | null): {
   );
 
   return { pending, resolve };
+}
+
+/**
+ * The session's spend halt, plus the one control that lifts it.
+ *
+ * llm-bridge-server stops a session that has spent its ceiling and then refuses every
+ * send, resume and mode switch with a 402 until the ceiling moves. Neither half of
+ * that produces anything else a client can see: the mid-turn interrupt is an error
+ * event among many, and the 402 was, until this landed, swallowed whole by
+ * `useComposer.send`. A halt with no visible cause reads as a hung session, which is
+ * exactly the wrong conclusion — the session is fine and waiting on a number.
+ *
+ * `halt` is null for every session under its ceiling, every session without one, and
+ * every server that predates the gate — none of those can produce the 402 or the
+ * error code that sets it.
+ *
+ * `raiseCeiling` sets a new ceiling on the halted session and clears the halt. It
+ * REPORTS the server's refusal text rather than throwing, and clears nothing when the
+ * server refused: silence here would read as "raised" and the very next send would be
+ * refused again. It works on a session whose process the gate already killed —
+ * bridge-server persists the ceiling itself and only forwards to a harness when there
+ * is one.
+ */
+export function useBudgetHalt(sessionId: string | null): {
+  halt: BudgetHalt | null;
+  raiseCeiling: (maxBudgetUSD: number) => Promise<string | null>;
+} {
+  const { store, api } = useChatContext();
+  const actions = useActions();
+  const halt = useStore(store, (s) => (sessionId ? s.budgetHalts.get(sessionId) ?? null : null));
+
+  const raiseCeiling = useCallback(
+    async (maxBudgetUSD: number): Promise<string | null> => {
+      if (!sessionId) return 'no active session';
+      try {
+        await api.setConfig(sessionId, { maxBudget: maxBudgetUSD });
+      } catch (e) {
+        return e instanceof Error ? e.message : String(e);
+      }
+      actions.clearBudgetHalt(sessionId);
+      return null;
+    },
+    [api, actions, sessionId],
+  );
+
+  return { halt, raiseCeiling };
 }
 
 /** Prefetch hint — call on sidebar row hover. Warms a cold session. */

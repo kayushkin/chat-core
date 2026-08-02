@@ -14,6 +14,7 @@ import type {
 import type { WireEvent } from '../net/wireEvents.js';
 import { applyEvent, initTailState, type TailState } from '../reduce/TurnReducer.js';
 import { foldHookEvent } from './pendingHooks.js';
+import { budgetHaltFromEvent, type BudgetHalt } from './budgetHalt.js';
 
 // L1 hot store (decision D2). Zustand vanilla store held in `Map`s for the
 // working set. ACTIONS ARE THE ONLY MUTATION PATH — both the SyncEngine and the
@@ -118,6 +119,12 @@ export interface ChatState {
    *  and a chat that hangs with no visible cause. Hydrated per session from
    *  `GET /sessions/{id}/hooks/pending` and kept live by the session SSE. */
   pendingHooks: Map<string, Map<string, PendingHook>>;
+  /** Sessions stopped at their spend ceiling, `sessionId -> BudgetHalt`. A halted
+   *  session refuses every send, resume and mode switch with a 402 until its ceiling
+   *  moves, and nothing else in the model records that — the session just stops
+   *  answering. Set from the 402 a refused request throws and from the mid-turn
+   *  `budget_exceeded` error event; cleared when the ceiling is raised. */
+  budgetHalts: Map<string, BudgetHalt>;
   activeId: string | null;
   filter: FilterState;
   /** Content-search hits for the current `filter.search`, or null when none have
@@ -206,7 +213,20 @@ export interface ChatActions {
   /** Drop one parked hook (a `completed` event, or an optimistic resolve). */
   clearPendingHook(sessionId: string, requestId: string): void;
 
+  /** Record that a session stopped at its spend ceiling. Replaces any halt already
+   *  held for that session: raising the ceiling and breaching the new one later is a
+   *  different halt with different figures. */
+  setBudgetHalt(halt: BudgetHalt): void;
+  /** Drop a session's spend halt — the ceiling moved and the session can run again.
+   *  No-op when that session has no halt. */
+  clearBudgetHalt(sessionId: string): void;
+
   appendOptimisticUser(sessionId: string, text: string, clientId: string): void;
+  /** Remove the optimistic user row `appendOptimisticUser` added, when the send it
+   *  was betting on failed. Without this a refused message stays on screen looking
+   *  sent. No-op when the row is already gone (the real `user_message` landed and
+   *  reconciled it). */
+  dropOptimisticUser(sessionId: string, clientId: string): void;
 
   setFilter(patch: Partial<FilterState>): void;
   openFolder(folder: string): void;
@@ -362,6 +382,12 @@ export function createChatStore(): ChatStoreApi {
           pendingHooks.set(sessionId, nextHooks as Map<string, PendingHook>);
           set({ pendingHooks });
         }
+        // A spend halt is folded FIRST for the same reason: the gate interrupts the
+        // turn and emits an error event, and an error event that the turn reducer
+        // treats as a no-op would hit the early return below and be lost — leaving a
+        // session that stopped mid-answer with no visible cause.
+        const halt = budgetHaltFromEvent(sessionId, event);
+        if (halt) actions.setBudgetHalt(halt);
         let tail = getOrInitTail(state, sessionId);
         // Strip a matching optimistic user row when the real user_message lands,
         // so the two don't double-show (both are harness-sourced, so the OTel
@@ -490,6 +516,33 @@ export function createChatStore(): ChatStoreApi {
         set({ tails, turnsBySession });
       },
 
+      dropOptimisticUser(sessionId, clientId) {
+        const state = get();
+        const tail = state.tails.get(sessionId);
+        if (!tail) return;
+        const next = removeOptimistic(tail, clientId);
+        if (next === tail) return;
+        const tails = new Map(state.tails);
+        tails.set(sessionId, next);
+        const turnsBySession = new Map(state.turnsBySession);
+        turnsBySession.set(sessionId, next.model);
+        set({ tails, turnsBySession });
+      },
+
+      setBudgetHalt(halt) {
+        const budgetHalts = new Map(get().budgetHalts);
+        budgetHalts.set(halt.sessionId, halt);
+        set({ budgetHalts });
+      },
+
+      clearBudgetHalt(sessionId) {
+        const state = get();
+        if (!state.budgetHalts.has(sessionId)) return;
+        const budgetHalts = new Map(state.budgetHalts);
+        budgetHalts.delete(sessionId);
+        set({ budgetHalts });
+      },
+
       setFilter(patch) {
         const filter = { ...get().filter, ...patch };
         // A changed search query invalidates the prior content-search hits until
@@ -571,6 +624,7 @@ export function createChatStore(): ChatStoreApi {
       sessionDetailLoading: new Set(),
       tails: new Map(),
       pendingHooks: new Map(),
+      budgetHalts: new Map(),
       activeId: null,
       filter: { ...EMPTY_FILTER },
       contentHits: null,
@@ -661,9 +715,25 @@ function stripOptimisticUser(tail: TailState, event: WireEvent): TailState {
     }
   }
   if (!removedId) return tail;
+  return removeEntryAndItsTurn(tail, removedId);
+}
+
+/** Drop the optimistic row for `clientId`, or report the tail unchanged when there is
+ *  none. The id-based half of `stripOptimisticUser`, addressed directly: the caller
+ *  here IS the code that minted the client id, so there is nothing to correlate. */
+function removeOptimistic(tail: TailState, clientId: string): TailState {
+  const entryId = `optim_${clientId}`;
+  if (!tail.model.entries[entryId]) return tail;
+  return removeEntryAndItsTurn(tail, entryId);
+}
+
+/** Remove one entry and the turn it was the whole of, re-deriving the turn index.
+ *  Shared by the reconcile path (the real message landed) and the failure path (the
+ *  send was refused), so the two can never drift into removing it differently. */
+function removeEntryAndItsTurn(tail: TailState, entryId: string): TailState {
   const entries = { ...tail.model.entries };
-  const removed = entries[removedId];
-  delete entries[removedId];
+  const removed = entries[entryId];
+  delete entries[entryId];
   const turns = tail.model.turns.filter((t) => t.id !== removed?.turnId);
   const turnIndex = new Map<string, number>();
   turns.forEach((t, i) => turnIndex.set(t.id, i));
