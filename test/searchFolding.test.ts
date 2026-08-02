@@ -162,3 +162,114 @@ describe('content-search reach — the shortfall must be reportable', () => {
     expect(selectContentSearchReach(store.getState())!.truncated).toBe(true);
   });
 });
+
+// The in-flight marker is deliberately its own state and not derived from
+// `contentHits === null`. Hits are null in three different situations — before
+// anyone typed, while a search is out, and after one failed — and only one of them
+// means "searching". Every case below pins one of the three.
+describe('content-search in-flight state', () => {
+  it('is idle before anything is typed', () => {
+    const store = createChatStore();
+    expect(store.getState().contentSearchInFlight).toBeNull();
+    expect(store.getState().contentSearchError).toBeNull();
+  });
+
+  it('reports the query it is running for, and stops when its hits land', () => {
+    const store = createChatStore();
+    store.getState().actions.setSessions([summary({ sessionId: 'a' })]);
+    store.getState().actions.setFilter({ search: 'kubernetes' });
+    store.getState().actions.startContentSearch('kubernetes');
+    expect(store.getState().contentSearchInFlight).toBe('kubernetes');
+
+    store.getState().actions.setContentHits('kubernetes', ['a']);
+    expect(store.getState().contentSearchInFlight).toBeNull();
+  });
+
+  it('keeps the newer search running when an older one lands late', () => {
+    const store = createChatStore();
+    store.getState().actions.setSessions([summary({ sessionId: 'a' })]);
+    // 'kube' goes out, then the user finishes typing and 'kubernetes' goes out.
+    store.getState().actions.setFilter({ search: 'kubernetes' });
+    store.getState().actions.startContentSearch('kube');
+    store.getState().actions.startContentSearch('kubernetes');
+    // Now 'kube' answers. Its hits are dropped (query mismatch) and — the point of
+    // this case — it must not report the live search as finished either.
+    store.getState().actions.setContentHits('kube', ['a']);
+    expect(store.getState().contentSearchInFlight).toBe('kubernetes');
+  });
+
+  it('keeps the newer search running when an older one FAILS late', () => {
+    const store = createChatStore();
+    store.getState().actions.startContentSearch('kube');
+    store.getState().actions.startContentSearch('kubernetes');
+    store.getState().actions.endContentSearch('kube', 'search failed: 502');
+    expect(store.getState().contentSearchInFlight).toBe('kubernetes');
+    expect(store.getState().contentSearchError).toBeNull();
+  });
+
+  it('stops searching and records why when the search fails', () => {
+    const store = createChatStore();
+    store.getState().actions.setSessions([summary({ sessionId: 'a', displayName: 'Alpha' })]);
+    store.getState().actions.setFilter({ search: 'kubernetes' });
+    store.getState().actions.startContentSearch('kubernetes');
+    store.getState().actions.endContentSearch('kubernetes', 'search failed: 502');
+
+    expect(store.getState().contentSearchInFlight).toBeNull();
+    expect(store.getState().contentSearchError).toBe('search failed: 502');
+    // A failed transcript search must NOT masquerade as an empty one: hits stay
+    // null rather than becoming an empty set, so nothing claims the server looked
+    // and found nothing.
+    expect(store.getState().contentHits).toBeNull();
+    expect(selectContentSearchReach(store.getState())).toBeNull();
+  });
+
+  it('cancels without an error when a scheduled search never fires', () => {
+    const store = createChatStore();
+    store.getState().actions.startContentSearch('kubernetes');
+    store.getState().actions.endContentSearch('kubernetes', null);
+    expect(store.getState().contentSearchInFlight).toBeNull();
+    expect(store.getState().contentSearchError).toBeNull();
+  });
+
+  it('clears a previous failure when the next search starts', () => {
+    const store = createChatStore();
+    store.getState().actions.startContentSearch('kube');
+    store.getState().actions.endContentSearch('kube', 'search failed: 502');
+    expect(store.getState().contentSearchError).toBe('search failed: 502');
+
+    store.getState().actions.startContentSearch('kubernetes');
+    expect(store.getState().contentSearchError).toBeNull();
+  });
+
+  // The narrow race `startContentSearch` does NOT cover, found by a sabotage round
+  // that came back green: one query can have two requests out at once, because a
+  // trailing space re-fires it under the same trimmed query. If the first answer is
+  // a failure and the second is hits, only `setContentHits` can take the failure
+  // notice back down — otherwise the sidebar shows results and "search failed" at
+  // the same time.
+  it('takes the failure notice down when a second request for the SAME query succeeds', () => {
+    const store = createChatStore();
+    store.getState().actions.setSessions([summary({ sessionId: 'a' })]);
+    store.getState().actions.setFilter({ search: 'kubernetes' });
+    // Two requests for 'kubernetes' are out; only one startContentSearch precedes
+    // both answers, so nothing re-clears the error between them.
+    store.getState().actions.startContentSearch('kubernetes');
+    store.getState().actions.endContentSearch('kubernetes', 'search failed: 502');
+    store.getState().actions.setContentHits('kubernetes', ['a']);
+    expect(store.getState().contentSearchError).toBeNull();
+    expect(ids(store)).toEqual(['a']);
+  });
+
+  it('clears a previous failure when a later search succeeds', () => {
+    const store = createChatStore();
+    store.getState().actions.setSessions([summary({ sessionId: 'a' })]);
+    store.getState().actions.setFilter({ search: 'kubernetes' });
+    store.getState().actions.startContentSearch('kubernetes');
+    store.getState().actions.endContentSearch('kubernetes', 'search failed: 502');
+    // A retry for the same query answers.
+    store.getState().actions.startContentSearch('kubernetes');
+    store.getState().actions.setContentHits('kubernetes', ['a']);
+    expect(store.getState().contentSearchError).toBeNull();
+    expect(store.getState().contentSearchInFlight).toBeNull();
+  });
+});

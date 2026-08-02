@@ -131,6 +131,19 @@ export interface ChatState {
   /** Content-search hits for the current `filter.search`, or null when none have
    *  been fetched (or the query changed and the prior set was invalidated). */
   contentHits: ContentHits | null;
+  /** The TRIMMED query a content search is currently running for — counting its
+   *  debounce wait, because from the user's side the search has already been asked
+   *  for — or null when none is running.
+   *
+   *  `contentHits === null` is NOT the same fact and cannot stand in for it: hits
+   *  are also null before anyone has typed, and they stay null after a search that
+   *  failed. Deriving "searching" from them would leave the sidebar saying
+   *  "searching…" forever the first time the gateway refuses a query. */
+  contentSearchInFlight: string | null;
+  /** Why the last content search for the live query failed, or null. A failed
+   *  transcript search is not zero matches — the list still shows every local name
+   *  match — so it is reported rather than folded into an empty hit set. */
+  contentSearchError: string | null;
   /** Known folder names, maintained from session upserts. */
   folders: string[];
   connState: ConnState;
@@ -240,6 +253,16 @@ export interface ChatActions {
    *  stale response can't override a newer search. `truncated` says the backend
    *  had more matches than it returned. */
   setContentHits(query: string, ids: string[], truncated?: boolean): void;
+  /** Record that a content search for the TRIMMED `query` has been asked for. Call
+   *  it when the query is typed, not when the request leaves — the debounce wait is
+   *  part of the wait the user is looking at. `null` means no search is running.
+   *  Clears any previous error. */
+  startContentSearch(query: string | null): void;
+  /** Record that the content search for `query` ended with no hits to fold in:
+   *  `error` non-null when it failed, null when it was cancelled before firing.
+   *  Ignored unless `query` is still the one in flight, so a late failure can never
+   *  clear the search that replaced it. */
+  endContentSearch(query: string, error: string | null): void;
 
   /** Record unsent composer text and persist it. Setting `''` deletes the persisted
    *  copy — an empty box is the absence of a draft, not a draft that is empty. */
@@ -600,7 +623,29 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
         // raw dropped the hits for any query the user typed with a stray space.
         if (get().filter.search.trim() !== query) return;
         const set_ = new Set(ids);
-        set({ contentHits: { query, ids: set_, hitCount: set_.size, truncated } });
+        // Hits landing ends the search they were asked for, and clears any failure
+        // recorded for it. Both are unconditional because the drop above has already
+        // established that `query` IS the live query — a second guard on
+        // `contentSearchInFlight` was tried here and proved unreachable.
+        //
+        // Clearing the error is not redundant with `startContentSearch`. A query can
+        // have two requests out at once (a trailing space re-fires it under the same
+        // trimmed query); if the first fails and the second succeeds, this is the only
+        // thing that takes the failure notice back down.
+        set({
+          contentHits: { query, ids: set_, hitCount: set_.size, truncated },
+          contentSearchInFlight: null,
+          contentSearchError: null,
+        });
+      },
+
+      startContentSearch(query) {
+        set({ contentSearchInFlight: query, contentSearchError: null });
+      },
+
+      endContentSearch(query, error) {
+        if (get().contentSearchInFlight !== query) return;
+        set({ contentSearchInFlight: null, contentSearchError: error });
       },
 
       setDraft(sessionId, text) {
@@ -662,6 +707,8 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
       activeId: null,
       filter: { ...EMPTY_FILTER },
       contentHits: null,
+      contentSearchInFlight: null,
+      contentSearchError: null,
       folders: [],
       connState: 'idle',
       listLoading: false,

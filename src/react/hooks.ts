@@ -478,19 +478,37 @@ export function useFilters(): {
    *  the sidebar is showing fewer results than the backend found — surface it,
    *  because the shortfall is otherwise invisible. */
   contentSearchReach: ContentSearchReach | null;
+  /** True while a content search for the live query is outstanding, counting the
+   *  debounce wait. The local name filter has already been applied by then, so a
+   *  count rendered while this is true is a floor, not an answer. */
+  searching: boolean;
+  /** Why the content search for the live query failed, or null. Non-null means the
+   *  list is showing name matches only — say so, because a transcript search that
+   *  errored is indistinguishable from one that found nothing. */
+  searchError: string | null;
 } {
   const { store, api } = useChatContext();
   const filter = useStore(store, (s) => s.filter);
   const contentSearchReach = useStore(store, selectContentSearchReach);
+  const inFlight = useStore(store, (s) => s.contentSearchInFlight);
+  const searchError = useStore(store, (s) => s.contentSearchError);
   const actions = useActions();
   const searchDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The query a scheduled-but-unfired search is for, so the unmount cleanup below
+  // can retract exactly that one and nothing newer.
+  const scheduledQuery = useRef<string | null>(null);
   // Cancel a pending search when the component goes away, so a debounced request
-  // never fires into an unmounted tree.
+  // never fires into an unmounted tree. A search that has already left is left
+  // alone: its response still lands in the store, which outlives this component.
+  // The scheduled one has to retract its in-flight marker too, or the next mount
+  // reads a search that will never fire as one still running.
   useEffect(
     () => () => {
-      if (searchDebounce.current) clearTimeout(searchDebounce.current);
+      if (!searchDebounce.current) return;
+      clearTimeout(searchDebounce.current);
+      if (scheduledQuery.current) actions.endContentSearch(scheduledQuery.current, null);
     },
-    [],
+    [actions],
   );
   const set = useCallback(
     (patch: Partial<FilterState>) => {
@@ -503,14 +521,27 @@ export function useFilters(): {
         // filter above is unaffected and stays instant.
         if (searchDebounce.current) clearTimeout(searchDebounce.current);
         if (q) {
+          // Marked in flight NOW, not when the request leaves. The 250ms wait is
+          // still time the user is staring at a list that has only been name-matched.
+          actions.startContentSearch(q);
+          scheduledQuery.current = q;
           searchDebounce.current = setTimeout(() => {
+            scheduledQuery.current = null;
             // Async augmentation; setContentHits ignores a stale response.
             void api
               .search(q)
               .then((r) => actions.setContentHits(q, r.sessionIds, r.truncated))
-              .catch(() => {});
+              // A failed transcript search is NOT an empty one. Folding it into an
+              // empty hit set — which is what this catch used to do by doing nothing
+              // at all — reports the gateway being down as "your words appear in no
+              // transcript", and the sidebar silently drops every content-only match.
+              .catch((e: unknown) =>
+                actions.endContentSearch(q, e instanceof Error ? e.message : String(e)),
+              );
           }, SEARCH_DEBOUNCE_MS);
         } else {
+          scheduledQuery.current = null;
+          actions.startContentSearch(null);
           actions.setContentHits('', []);
         }
       }
@@ -518,7 +549,14 @@ export function useFilters(): {
     [actions, api],
   );
   const openFolder = useCallback((folder: string) => actions.openFolder(folder), [actions]);
-  return { filter, set, openFolder, contentSearchReach };
+  return {
+    filter,
+    set,
+    openFolder,
+    contentSearchReach,
+    searching: inFlight !== null,
+    searchError,
+  };
 }
 
 /** Optimistic mutations: update the store first, POST in the background, revert
