@@ -76,9 +76,14 @@ export interface HookEventWire {
   decision?: string;
 }
 
-/** A managed-session row as it arrives on the global list SSE (`/session-events`).
- *  snake_case, as emitted by llm-bridge-server. Projected to SessionSummary by
- *  `summaryFromManaged` in sync/sse.ts. */
+/** A managed-session row as it arrives on the global list SSE (`/session-events`) and
+ *  from `GET /sessions/{id}`. snake_case, as emitted by llm-bridge-server.
+ *
+ *  The first block is what `summaryFromManaged` (sync/sse.ts) projects onto
+ *  `SessionSummary` — the sidebar row. The second block is the per-session identity,
+ *  lineage and spend the server already writes on every one of these rows and that
+ *  only `ManagedSessionDetail` surfaces; it is deliberately NOT projected onto
+ *  `SessionSummary`, because the sidebar list query must not widen to carry it. */
 export interface ManagedSessionWire {
   session_id: string;
   state?: string;
@@ -92,6 +97,32 @@ export interface ManagedSessionWire {
   agent_id?: string;
   updated_at?: string;
   created_at?: string;
+
+  /** Which service or script created this session (frontend-dash, autoworker, …). */
+  origin?: string;
+  /** OS process id of the harness process, while one is running. */
+  pid?: number;
+  /** The harness's OWN session id, which rotates on resume/fork. Never equal to
+   *  `session_id` — the server discards an event that claims it is. */
+  harness_session_id?: string;
+  /** ⚠️ Deprecated on the server (`msg.ManagedSession.ParentID`): this is the FORK
+   *  parent's `harness_session_id`, a harness UUID fed to `--fork` — not a session id
+   *  and not a general parent. `forked_from_session_id` is its honest replacement.
+   *  Carried so a consumer can still read old rows; label it for what it is. */
+  parent_id?: string;
+  /** The session this one was forked from, as a bridge session id. */
+  forked_from_session_id?: string;
+  /** The managing session in the team tree (bridge session id); empty = top-level. */
+  manager_session_id?: string;
+  /** The directory the harness runs in. Empty inherits the instance's, then the
+   *  machine's — an empty string is "inherit", never "unknown". */
+  working_dir?: string;
+  /** Total derived API spend for this session, in US dollars. Absent when the server
+   *  predates the spend gate — absent is NOT zero, and must not render as $0.00. */
+  spend_usd?: number;
+  /** The server-side spend ceiling. ⚠️ ZERO MEANS NO CEILING, not "halt now" — the
+   *  same convention as Claude Code's `--max-budget-usd`. */
+  max_budget_usd?: number;
 }
 
 /** snake_case `msg.ToolInfo` — a tool the agent reports (SessionInfoWire.tools[]). */

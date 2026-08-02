@@ -256,12 +256,45 @@ export interface HarnessConfig {
  *  with its snake_case `info` mapped to camelCase `SessionInfo` and `harness_config`
  *  mapped to `HarnessConfig`. `info` / `harnessConfig` are null when the harness has not
  *  reported / carries none. `sessionId` is surfaced at the top level (it also lives on
- *  `summary`) so a consumer holding just the detail can identify the session. */
+ *  `summary`) so a consumer holding just the detail can identify the session.
+ *
+ *  The nine fields after `harnessConfig` are the identity, lineage and spend the endpoint
+ *  has always returned and this type used to drop at the boundary. They live HERE and not
+ *  on `summary`: `SessionSummary` is the sidebar row, and widening it would widen the
+ *  session-list query for data only one session at a time ever needs.
+ *
+ *  Every one of them is optional and ABSENT MEANS ABSENT — the server omits what it has
+ *  no value for, and a reader must render that as unknown rather than substituting a
+ *  zero, an empty string or a dollar figure nobody reported. */
 export interface ManagedSessionDetail {
   sessionId: string;
   summary: SessionSummary;
   info: SessionInfo | null;
   harnessConfig: HarnessConfig | null;
+
+  /** Which service or script created this session (frontend-dash, autoworker, …). */
+  origin?: string;
+  /** OS process id of the harness process, while one is running. */
+  pid?: number;
+  /** The harness's OWN session id, which rotates on resume/fork. Never equal to
+   *  `sessionId`. */
+  harnessSessionId?: string;
+  /** ⚠️ The FORK parent's `harnessSessionId` — a harness UUID, not a session id.
+   *  Deprecated on the server in favour of `forkedFromSessionId`; do not label it
+   *  simply "parent" in a UI, because it is not one. */
+  forkParentHarnessSessionId?: string;
+  /** The session this one was forked from, as a bridge session id. */
+  forkedFromSessionId?: string;
+  /** The managing session in the team tree (bridge session id); absent = top-level. */
+  managerSessionId?: string;
+  /** The directory the harness runs in. Absent inherits the instance's, then the
+   *  machine's — it means "inherit", never "unknown". */
+  workingDir?: string;
+  /** Total derived API spend for this session, in US dollars. Absent when the server
+   *  predates the spend gate; absent is NOT zero. */
+  spendUsd?: number;
+  /** The server-side spend ceiling. ⚠️ ZERO MEANS NO CEILING, not "halt now". */
+  maxBudgetUsd?: number;
 }
 
 /** A registered harness type and its capabilities, from `GET /harnesses` (camelCase of

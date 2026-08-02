@@ -151,6 +151,84 @@ describe('ApiClient.getSessionDetail — snake_case info → camelCase SessionIn
   });
 });
 
+describe('ApiClient.getSessionDetail — the identity, lineage and spend block', () => {
+  it('carries all nine fields the endpoint returns, none of them onto the summary', async () => {
+    const wire = {
+      session_id: 'br_11',
+      state: 'running',
+      harness: 'claudecode',
+      updated_at: '2026-08-02T10:00:00-07:00',
+      created_at: '2026-08-02T09:00:00-07:00',
+      origin: 'frontend-dash',
+      pid: 4242,
+      harness_session_id: 'cc-9f3a',
+      parent_id: 'cc-parent-uuid',
+      forked_from_session_id: 'br_10',
+      manager_session_id: 'br_1',
+      working_dir: '/home/u/repos/dash',
+      spend_usd: 1.25,
+      max_budget_usd: 5,
+    };
+    const api = new ApiClient({
+      fetch: fakeFetch({ ok: true, status: 200, statusText: 'OK', jsonBody: wire }),
+      basePath: '/api/bridge',
+    });
+    const detail = await api.getSessionDetail('br_11');
+    expect(detail.origin).toBe('frontend-dash');
+    expect(detail.pid).toBe(4242);
+    expect(detail.harnessSessionId).toBe('cc-9f3a');
+    // The deprecated `parent_id` is a harness uuid, so it does NOT land on a field
+    // called "parent" — the name has to say which id it holds.
+    expect(detail.forkParentHarnessSessionId).toBe('cc-parent-uuid');
+    expect(detail.forkedFromSessionId).toBe('br_10');
+    expect(detail.managerSessionId).toBe('br_1');
+    expect(detail.workingDir).toBe('/home/u/repos/dash');
+    expect(detail.spendUsd).toBe(1.25);
+    expect(detail.maxBudgetUsd).toBe(5);
+    // The sidebar row must not have grown: SessionSummary still has its 12 keys.
+    expect(Object.keys(detail.summary).sort()).toEqual([
+      'agentId', 'createdAt', 'displayName', 'folderName', 'harness', 'instanceId',
+      'mode', 'purpose', 'sessionId', 'state', 'type', 'updatedAt',
+    ]);
+  });
+
+  it('leaves an omitted field absent rather than defaulting it', async () => {
+    // A server that predates the spend gate sends neither money field. Absent must
+    // stay absent: a `spendUsd` of 0 would read as "measured $0.00" and a
+    // `maxBudgetUsd` of 0 means NO ceiling, so defaulting either invents a fact.
+    const api = new ApiClient({
+      fetch: fakeFetch({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        jsonBody: { session_id: 'br_12', state: 'idle' },
+      }),
+      basePath: '/api/bridge',
+    });
+    const detail = await api.getSessionDetail('br_12');
+    expect('spendUsd' in detail).toBe(false);
+    expect('maxBudgetUsd' in detail).toBe(false);
+    expect('origin' in detail).toBe(false);
+    expect('pid' in detail).toBe(false);
+    expect('workingDir' in detail).toBe(false);
+  });
+
+  it('keeps a reported zero, which is the opposite of an absent one', async () => {
+    const api = new ApiClient({
+      fetch: fakeFetch({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        jsonBody: { session_id: 'br_13', state: 'idle', spend_usd: 0, max_budget_usd: 0 },
+      }),
+      basePath: '/api/bridge',
+    });
+    const detail = await api.getSessionDetail('br_13');
+    expect(detail.spendUsd).toBe(0);
+    expect(detail.maxBudgetUsd).toBe(0);
+  });
+});
+
 describe('ApiClient.getSessionDetail — harness_config → camelCase harnessConfig', () => {
   it('maps the well-known keys and carries opaque knobs through', async () => {
     const wire = {

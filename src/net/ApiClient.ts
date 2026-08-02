@@ -446,7 +446,14 @@ export class ApiClient {
    *  with its snake_case `info` mapped to a camelCase `SessionInfo`. This endpoint
    *  already exists and is live; the summary list deliberately omits `info`, so this
    *  is the lazy fetch that backs `useSessionInfo`. `info` is null when the harness
-   *  has not reported one yet. Throws loudly on a non-2xx (getJSON). */
+   *  has not reported one yet. Throws loudly on a non-2xx (getJSON).
+   *
+   *  The identity, lineage and spend fields ride through to the top level of the
+   *  detail rather than onto `summary` — see `ManagedSessionDetail`. They are copied
+   *  ONLY when the server sent them: an absent field stays absent, so a reader can
+   *  tell "no ceiling reported" from "a ceiling of zero", which mean opposite
+   *  things. That is why this maps key by key instead of defaulting like
+   *  `summaryFromManaged` does. */
   async getSessionDetail(id: string): Promise<ManagedSessionDetail> {
     const wire = await this.getJSON<ManagedSessionDetailWire>(`/sessions/${id}`);
     const summary = summaryFromManaged(wire);
@@ -455,6 +462,23 @@ export class ApiClient {
       summary,
       info: wire.info ? sessionInfoFromWire(wire.info) : null,
       harnessConfig: wire.harness_config ? harnessConfigFromWire(wire.harness_config) : null,
+      ...(wire.origin !== undefined ? { origin: wire.origin } : {}),
+      ...(wire.pid !== undefined ? { pid: wire.pid } : {}),
+      ...(wire.harness_session_id !== undefined
+        ? { harnessSessionId: wire.harness_session_id }
+        : {}),
+      ...(wire.parent_id !== undefined
+        ? { forkParentHarnessSessionId: wire.parent_id }
+        : {}),
+      ...(wire.forked_from_session_id !== undefined
+        ? { forkedFromSessionId: wire.forked_from_session_id }
+        : {}),
+      ...(wire.manager_session_id !== undefined
+        ? { managerSessionId: wire.manager_session_id }
+        : {}),
+      ...(wire.working_dir !== undefined ? { workingDir: wire.working_dir } : {}),
+      ...(wire.spend_usd !== undefined ? { spendUsd: wire.spend_usd } : {}),
+      ...(wire.max_budget_usd !== undefined ? { maxBudgetUsd: wire.max_budget_usd } : {}),
     };
   }
 
