@@ -111,7 +111,21 @@ export function useTurns(sessionId: string | null, view?: 'turns' | 'raw'): {
 // could read it. A failed send now puts the text back in the box (only when the box is
 // still empty, so a message typed meanwhile is not clobbered), removes the optimistic row
 // that was never sent, sets `error`, and records a spend halt when that is what the
-// refusal was — read it back with useBudgetHalt().
+// refusal was — read it back with useBudgetHalt(). On the create path the restore goes
+// to the session the send TARGETED, not to the pending pane: createSession succeeded and
+// setActive already moved the pane, so restoring under the pending key would put the text
+// in a box nobody is looking at.
+//
+// `draft`/`setDraft` PERSIST. The draft map is written to localStorage on every keystroke
+// (store/draftStorage.ts) and read back synchronously inside createChatStore, so a reload
+// does not eat a half-typed message and the text is there in the first paint. The pending
+// pane's draft is keyed under PENDING_DRAFT_KEY and cleared on send, so a sent new chat
+// does not reappear in the next one. Setting '' deletes the persisted copy. The record is
+// bounded by recency (MAX_PERSISTED_DRAFTS drafts, MAX_DRAFT_AGE_MS old) and by
+// removeSession, NOT by "is this session in the sidebar" — the sidebar is paged, so a
+// draft for a session outside the loaded window is still live. Pass
+// `createChatStore({draftStorage})` to redirect or disable it (null); it is off wherever
+// there is no working localStorage.
 //
 // `stop()` interrupts the running turn (POST /sessions/{id}/interrupt). It is a LOUD
 // control: it throws on a non-2xx (e.g. the 409 the server returns while a tool still

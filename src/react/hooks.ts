@@ -377,11 +377,20 @@ export function useComposer(sessionId: string | null): {
    *  So: put the text back in the box, take the row that was never sent back off the
    *  screen, record a spend halt when that is what this was, and say what happened.
    *  The draft is only restored when the box is still empty, so a user who typed the
-   *  next message while this one was in flight does not lose it. */
+   *  next message while this one was in flight does not lose it.
+   *
+   *  Restore it under the key of the session the send actually TARGETED, not under
+   *  this hook's `key`. On the create path those differ: `createSession` succeeded,
+   *  `setActive(newId)` already moved the pane onto the real session, and only the
+   *  `POST /send` failed. Restoring under `PENDING_DRAFT_KEY` there would put the
+   *  text in a box nobody is looking at — and, now that drafts are persisted, leave
+   *  it on disk to reappear in the NEXT new chat. When `createSession` itself failed
+   *  there is no session id, the pane is still pending, and `key` is right. */
   const failSend = useCallback(
     (targetSessionId: string | null, clientId: string | null, text: string, thrown: unknown) => {
       if (targetSessionId && clientId) actions.dropOptimisticUser(targetSessionId, clientId);
-      if ((store.getState().drafts.get(key) ?? '') === '') actions.setDraft(key, text);
+      const restoreKey = targetSessionId ?? key;
+      if ((store.getState().drafts.get(restoreKey) ?? '') === '') actions.setDraft(restoreKey, text);
       const halt = targetSessionId ? budgetHaltFromRefusal(targetSessionId, thrown) : null;
       if (halt) actions.setBudgetHalt(halt);
       setError(thrown instanceof Error ? thrown.message : String(thrown));

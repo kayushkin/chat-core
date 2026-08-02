@@ -15,6 +15,8 @@ dedup (every source is kept and auditable — dedup only annotates the collapsed
 L0 render memo   virtualization + per-turn React.memo
 L1 hot store     Zustand Maps: working set of sessions' TurnModels — every action renders here
 L2 IndexedDB     persists L1 → cold boot paints with 0 network
+   localStorage  composer drafts only — read SYNCHRONOUSLY at store construction, because a
+                 draft has to be in the first paint and an async hydrate races the typing
    sync engine   1 list-SSE + 1 active-SSE + validator sweep → applies deltas, silent repair
 L3 server cache  (in llm-bridge-server) serialized+compressed list & bundle
 L4 SQLite        bridge.db + log-store events.db — source of truth
@@ -22,7 +24,7 @@ L4 SQLite        bridge.db + log-store events.db — source of truth
 
 ## Modules
 ```
-src/store/   ChatStore (Zustand) + selectors
+src/store/   ChatStore (Zustand) + selectors + draftStorage (composer drafts → localStorage)
 src/reduce/  TurnReducer (live tail, Map-indexed) + otelDedup (annotator) + refChips
 src/cache/   SessionCache (IndexedDB via idb) + evict (LRU ~50 sessions)
 src/sync/    SyncEngine + sse

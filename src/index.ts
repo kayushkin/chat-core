@@ -80,12 +80,23 @@ export {
   type ChatState,
   type ChatActions,
   type ChatStoreApi,
+  type CreateChatStoreOptions,
   type ConnState,
   type FilterState,
   type PendingSession,
   type ContentHits,
   EMPTY_HOOKS,
 } from './store/ChatStore.js';
+export {
+  DraftStore,
+  boundDrafts,
+  defaultDraftStorage,
+  DRAFT_STORAGE_KEY,
+  DRAFT_RECORD_VERSION,
+  MAX_PERSISTED_DRAFTS,
+  MAX_DRAFT_AGE_MS,
+  type DraftStorageLike,
+} from './store/draftStorage.js';
 export { changeSessionPermissionMode } from './store/permissionMode.js';
 export {
   foldHookEvent,

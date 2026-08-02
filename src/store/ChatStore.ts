@@ -15,6 +15,7 @@ import type { WireEvent } from '../net/wireEvents.js';
 import { applyEvent, initTailState, type TailState } from '../reduce/TurnReducer.js';
 import { foldHookEvent } from './pendingHooks.js';
 import { budgetHaltFromEvent, type BudgetHalt } from './budgetHalt.js';
+import { DraftStore, defaultDraftStorage, type DraftStorageLike } from './draftStorage.js';
 
 // L1 hot store (decision D2). Zustand vanilla store held in `Map`s for the
 // working set. ACTIONS ARE THE ONLY MUTATION PATH — both the SyncEngine and the
@@ -145,6 +146,10 @@ export interface ChatState {
   olderSessionsLoading: boolean;
   turnsLoading: Set<string>;
   moreBySession: Map<string, boolean>;
+  /** Unsent composer text, keyed by session id — plus one entry under the pending
+   *  pane's key (`PENDING_DRAFT_KEY` in react/hooks.ts) for a chat that has no session
+   *  yet. Persisted to localStorage by `draftStorage.ts` and read back synchronously
+   *  at store construction, so a reload does not eat a half-typed message. */
   drafts: Map<string, string>;
   sending: Set<string>;
   pending: PendingSession | null;
@@ -236,6 +241,8 @@ export interface ChatActions {
    *  had more matches than it returned. */
   setContentHits(query: string, ids: string[], truncated?: boolean): void;
 
+  /** Record unsent composer text and persist it. Setting `''` deletes the persisted
+   *  copy — an empty box is the absence of a draft, not a draft that is empty. */
   setDraft(sessionId: string, text: string): void;
   setSending(sessionId: string, sending: boolean): void;
 
@@ -271,7 +278,24 @@ function getOrInitTail(state: ChatState, sessionId: string): TailState {
   return initTailState(sessionId, state.turnsBySession.get(sessionId));
 }
 
-export function createChatStore(): ChatStoreApi {
+/** Options for `createChatStore`. */
+export interface CreateChatStoreOptions {
+  /** Where composer drafts are persisted. Defaults to the browser's `localStorage`
+   *  (and to no persistence anywhere it does not exist — node, SSR, a test). Pass
+   *  `null` to turn persistence off explicitly, or a `DraftStorageLike` to point it
+   *  somewhere else. */
+  draftStorage?: DraftStorageLike | null;
+}
+
+export function createChatStore(options: CreateChatStoreOptions = {}): ChatStoreApi {
+  const draftStore = new DraftStore(
+    options.draftStorage === undefined ? defaultDraftStorage() : options.draftStorage,
+  );
+  // Read synchronously, BEFORE the store exists, so the drafts are in the very first
+  // state the UI ever sees. An async hydrate would land after the composer is already
+  // typeable and would race the user's keystrokes.
+  const persistedDrafts = draftStore.load();
+
   return createStore<ChatState>((set, get) => {
     const actions: ChatActions = {
       setConn(connState) {
@@ -339,6 +363,12 @@ export function createChatStore(): ChatStoreApi {
         sessionDetailLoading.delete(sessionId);
         const pendingHooks = new Map(get().pendingHooks);
         pendingHooks.delete(sessionId);
+        // The one authoritative "this session is gone" signal there is, so it is the
+        // one place a draft can be dropped for a reason rather than for age. Persist
+        // the removal too, or the draft comes straight back on the next reload.
+        const drafts = new Map(get().drafts);
+        const hadDraft = drafts.delete(sessionId);
+        if (hadDraft) draftStore.save(drafts);
         set({
           sessions,
           turnsBySession,
@@ -348,6 +378,7 @@ export function createChatStore(): ChatStoreApi {
           sessionInfoLoading,
           sessionDetail,
           sessionDetailLoading,
+          drafts,
           folders: collectFolders(sessions.values()),
           activeId: get().activeId === sessionId ? null : get().activeId,
         });
@@ -576,6 +607,9 @@ export function createChatStore(): ChatStoreApi {
         const drafts = new Map(get().drafts);
         drafts.set(sessionId, text);
         set({ drafts });
+        // Synchronous, on every keystroke. See draftStorage.ts for why this is not
+        // debounced: the words at risk are the ones typed just before the reload.
+        draftStore.save(drafts);
       },
 
       setSending(sessionId, sending) {
@@ -635,7 +669,7 @@ export function createChatStore(): ChatStoreApi {
       olderSessionsLoading: false,
       turnsLoading: new Set(),
       moreBySession: new Map(),
-      drafts: new Map(),
+      drafts: persistedDrafts,
       sending: new Set(),
       pending: null,
       harnesses: null,
