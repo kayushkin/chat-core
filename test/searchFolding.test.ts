@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createChatStore } from '../src/store/ChatStore.js';
 import { selectContentSearchReach, visibleSessions, visibleCount } from '../src/store/selectors.js';
-import type { SessionSummary } from '../src/net/types.js';
+import type { SearchHit, SessionSummary } from '../src/net/types.js';
 
 function summary(over: Partial<SessionSummary> & Pick<SessionSummary, 'sessionId'>): SessionSummary {
   return {
@@ -18,6 +18,13 @@ function summary(over: Partial<SessionSummary> & Pick<SessionSummary, 'sessionId
     createdAt: '2026-07-27T10:00:00-07:00',
     ...over,
   };
+}
+
+/** A `SearchHit[]` from ids alone, for the cases below where only membership
+ *  matters. Counts descend so the list arrives in the order `ApiClient.search`
+ *  sorts it into; ranking itself is pinned in test/searchRanking.test.ts. */
+function hitsOf(...sessionIds: string[]): SearchHit[] {
+  return sessionIds.map((sessionId, i) => ({ sessionId, matchCount: sessionIds.length - i }));
 }
 
 function ids(store: ReturnType<typeof createChatStore>): string[] {
@@ -49,7 +56,7 @@ describe('content-search folding (C6)', () => {
     expect(visibleCount(store.getState())).toBe(0);
 
     // The async content search says b + c mention it in their transcripts.
-    store.getState().actions.setContentHits('kubernetes', ['b', 'c']);
+    store.getState().actions.setContentHits('kubernetes', hitsOf('b', 'c'));
     expect(ids(store)).toEqual(['b', 'c']);
   });
 
@@ -57,7 +64,7 @@ describe('content-search folding (C6)', () => {
     const store = createChatStore();
     store.getState().actions.setSessions([summary({ sessionId: 'a', displayName: 'Alpha' })]);
     store.getState().actions.setFilter({ search: 'kubernetes' });
-    store.getState().actions.setContentHits('docker', ['a']); // query mismatch → ignored
+    store.getState().actions.setContentHits('docker', hitsOf('a')); // query mismatch → ignored
     expect(visibleCount(store.getState())).toBe(0);
   });
 
@@ -65,7 +72,7 @@ describe('content-search folding (C6)', () => {
     const store = createChatStore();
     store.getState().actions.setSessions([summary({ sessionId: 'b', displayName: 'Beta' })]);
     store.getState().actions.setFilter({ search: 'kubernetes' });
-    store.getState().actions.setContentHits('kubernetes', ['b']);
+    store.getState().actions.setContentHits('kubernetes', hitsOf('b'));
     expect(ids(store)).toEqual(['b']);
     // Change the query — the stale 'kubernetes' hits must not leak into 'docker'.
     store.getState().actions.setFilter({ search: 'docker' });
@@ -83,7 +90,7 @@ describe('content-search folding (C6)', () => {
       summary({ sessionId: 'b', displayName: 'Beta' }),
     ]);
     store.getState().actions.setFilter({ search: '  kubernetes  ' });
-    store.getState().actions.setContentHits('kubernetes', ['b']);
+    store.getState().actions.setContentHits('kubernetes', hitsOf('b'));
     expect(ids(store)).toEqual(['b']);
   });
 
@@ -114,7 +121,7 @@ describe('content-search reach — the shortfall must be reportable', () => {
     // Only `b` is loaded; the backend matched three sessions.
     store.getState().actions.setSessions([summary({ sessionId: 'b', displayName: 'Beta' })]);
     store.getState().actions.setFilter({ search: 'kubernetes' });
-    store.getState().actions.setContentHits('kubernetes', ['b', 'offscreen1', 'offscreen2']);
+    store.getState().actions.setContentHits('kubernetes', hitsOf('b', 'offscreen1', 'offscreen2'));
     const reach = selectContentSearchReach(store.getState());
     expect(reach).not.toBeNull();
     expect(reach!.hitCount).toBe(3);
@@ -130,7 +137,7 @@ describe('content-search reach — the shortfall must be reportable', () => {
       summary({ sessionId: 'b', displayName: 'Beta' }),
     ]);
     store.getState().actions.setFilter({ search: 'kubernetes' });
-    store.getState().actions.setContentHits('kubernetes', ['a', 'b']);
+    store.getState().actions.setContentHits('kubernetes', hitsOf('a', 'b'));
     const reach = selectContentSearchReach(store.getState());
     expect(reach!.hitCount).toBe(2);
     expect(reach!.shownHitCount).toBe(2);
@@ -147,7 +154,7 @@ describe('content-search reach — the shortfall must be reportable', () => {
       summary({ sessionId: 'b', displayName: 'Beta', harness: 'codex' }),
     ]);
     store.getState().actions.setFilter({ search: 'kubernetes', harness: ['claudecode'] });
-    store.getState().actions.setContentHits('kubernetes', ['a', 'b']);
+    store.getState().actions.setContentHits('kubernetes', hitsOf('a', 'b'));
     const reach = selectContentSearchReach(store.getState());
     expect(reach!.hitCount).toBe(2);
     expect(reach!.shownHitCount).toBe(1);
@@ -158,7 +165,7 @@ describe('content-search reach — the shortfall must be reportable', () => {
     const store = createChatStore();
     store.getState().actions.setSessions([summary({ sessionId: 'a', displayName: 'Alpha' })]);
     store.getState().actions.setFilter({ search: 'kubernetes' });
-    store.getState().actions.setContentHits('kubernetes', ['a'], true);
+    store.getState().actions.setContentHits('kubernetes', hitsOf('a'), true);
     expect(selectContentSearchReach(store.getState())!.truncated).toBe(true);
   });
 });
@@ -181,7 +188,7 @@ describe('content-search in-flight state', () => {
     store.getState().actions.startContentSearch('kubernetes');
     expect(store.getState().contentSearchInFlight).toBe('kubernetes');
 
-    store.getState().actions.setContentHits('kubernetes', ['a']);
+    store.getState().actions.setContentHits('kubernetes', hitsOf('a'));
     expect(store.getState().contentSearchInFlight).toBeNull();
   });
 
@@ -194,7 +201,7 @@ describe('content-search in-flight state', () => {
     store.getState().actions.startContentSearch('kubernetes');
     // Now 'kube' answers. Its hits are dropped (query mismatch) and — the point of
     // this case — it must not report the live search as finished either.
-    store.getState().actions.setContentHits('kube', ['a']);
+    store.getState().actions.setContentHits('kube', hitsOf('a'));
     expect(store.getState().contentSearchInFlight).toBe('kubernetes');
   });
 
@@ -255,7 +262,7 @@ describe('content-search in-flight state', () => {
     // both answers, so nothing re-clears the error between them.
     store.getState().actions.startContentSearch('kubernetes');
     store.getState().actions.endContentSearch('kubernetes', 'search failed: 502');
-    store.getState().actions.setContentHits('kubernetes', ['a']);
+    store.getState().actions.setContentHits('kubernetes', hitsOf('a'));
     expect(store.getState().contentSearchError).toBeNull();
     expect(ids(store)).toEqual(['a']);
   });
@@ -268,7 +275,7 @@ describe('content-search in-flight state', () => {
     store.getState().actions.endContentSearch('kubernetes', 'search failed: 502');
     // A retry for the same query answers.
     store.getState().actions.startContentSearch('kubernetes');
-    store.getState().actions.setContentHits('kubernetes', ['a']);
+    store.getState().actions.setContentHits('kubernetes', hitsOf('a'));
     expect(store.getState().contentSearchError).toBeNull();
     expect(store.getState().contentSearchInFlight).toBeNull();
   });

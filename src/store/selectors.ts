@@ -21,9 +21,9 @@ export interface FolderGroup {
  *  axis matches `SessionSummary.instanceId` (there is no machine field on the summary;
  *  the dash resolves instanceId → machine and passes instanceId values here).
  *
- *  `folder` is a scalar exact match; `search` matches the display name case-insensitively
- *  AND, when `contentHits` is supplied (C6 content search), any session whose transcript
- *  text matched the same query. Name matching stays instant/local; the content-hit set is
+ *  `folder` is a scalar exact match; `search` matches the display name OR the session
+ *  id case-insensitively AND, when `contentHits` is supplied (C6 content search), any
+ *  session whose transcript text matched the same query. Name matching stays instant/local; the content-hit set is
  *  an async augmentation folded in when it arrives (see `useFilters`). */
 export function matchesFilter(
   s: SessionSummary,
@@ -43,13 +43,65 @@ export function matchesFilter(
   const search = f.search.trim();
   if (search) {
     const q = search.toLowerCase();
-    const name = (s.displayName || s.sessionId).toLowerCase();
-    const nameHit = name.includes(q);
+    // Name OR id, always both. This used to read `s.displayName || s.sessionId`,
+    // so the id was only searchable on a session that had no name — pasting a
+    // `br_…` id matched nothing whenever the session it belonged to was named,
+    // which is the one case where someone pastes an id on purpose.
+    const nameHit =
+      (s.displayName ?? '').toLowerCase().includes(q) || s.sessionId.toLowerCase().includes(q);
     const contentHit =
-      !!contentHits && contentHits.query === search && contentHits.ids.has(s.sessionId);
+      !!contentHits &&
+      contentHits.query === search &&
+      contentHits.matchCountBySessionId.has(s.sessionId);
     if (!nameHit && !contentHit) return false;
   }
   return true;
+}
+
+/** How well a session answers `query`, lower is better — a port of bridge-ui's
+ *  `rankOf` (`SessionList.tsx:164-172`).
+ *
+ *  `0` an exact session-id paste, `1` a name-or-id substring, `2` a content-only
+ *  hit. Without the tiers a pasted id sinks under every transcript that merely
+ *  mentions it. `query` must already be TRIMMED — the same string `matchesFilter`
+ *  compares against `contentHits.query`. */
+function searchRankOf(s: SessionSummary, query: string): number {
+  const q = query.toLowerCase();
+  const id = s.sessionId.toLowerCase();
+  if (id === q) return 0;
+  if ((s.displayName ?? '').toLowerCase().includes(q) || id.includes(q)) return 1;
+  return 2;
+}
+
+/** Order the sessions matching an active `query`: rank tier, then how much of the
+ *  transcript matched, then recency.
+ *
+ *  `matchCount` is the ranking the search endpoint already computed and
+ *  `ApiClient.search` already sorted by; before this it reached the store and was
+ *  discarded, so content hits came out in `byUpdatedDesc` order and a session with
+ *  one incidental match outranked the session the query was about whenever it had
+ *  been touched more recently.
+ *
+ *  A session with no content hit scores 0 here, which only ever compares against
+ *  other rank-1 rows — a rank-2 row is a content hit by definition.
+ *
+ *  ⚠️ This orders sessions WITHIN a folder group. dashv2 keeps its folder grouping
+ *  while a query is active (bridge-ui flattens instead — `SessionList.tsx:504-510`),
+ *  so the best hit still sits under whatever folder sorts first. Whether dashv2
+ *  should flatten on query is a product choice, tracked as its own todo. */
+function bySearchRank(
+  query: string,
+  contentHits: ContentHits | null,
+): (a: SessionSummary, b: SessionSummary) => number {
+  const counts =
+    contentHits && contentHits.query === query ? contentHits.matchCountBySessionId : null;
+  return (a, b) => {
+    const rank = searchRankOf(a, query) - searchRankOf(b, query);
+    if (rank !== 0) return rank;
+    const byMatches = (counts?.get(b.sessionId) ?? 0) - (counts?.get(a.sessionId) ?? 0);
+    if (byMatches !== 0) return byMatches;
+    return byUpdatedDesc(a, b);
+  };
 }
 
 function byUpdatedDesc(a: SessionSummary, b: SessionSummary): number {
@@ -94,8 +146,10 @@ let visibleCache: {
  *  With no folder list loaded — before the first response, or after a failed one —
  *  rule 3 covers everything and the result is exactly the old recency ordering.
  *
- *  Sessions within a group are newest-first. Memoized on identity of the sessions
- *  Map + filter object + content-hit set + folder list. */
+ *  Sessions within a group are newest-first, EXCEPT while a search query is active:
+ *  then they are ordered by `bySearchRank` — id match, then name match, then how
+ *  many transcript events matched, then recency. Memoized on identity of the
+ *  sessions Map + filter object + content-hit set + folder list. */
 export function visibleSessions(state: ChatState): FolderGroup[] {
   const { sessions, filter, contentHits, folders } = state;
   if (
@@ -118,7 +172,12 @@ export function visibleSessions(state: ChatState): FolderGroup[] {
     }
     arr.push(s);
   }
-  for (const arr of byFolder.values()) arr.sort(byUpdatedDesc);
+  // Newest-first normally; while a query is active, by how well each session
+  // answers it (see `bySearchRank`). Both comparators are total and fall back to
+  // recency, so the ordering never depends on the Map's insertion order.
+  const query = filter.search.trim();
+  const order = query ? bySearchRank(query, contentHits) : byUpdatedDesc;
+  for (const arr of byFolder.values()) arr.sort(order);
 
   const groups: FolderGroup[] = [];
   // 1. unfoldered, first, only when it has something in it.
@@ -137,9 +196,17 @@ export function visibleSessions(state: ChatState): FolderGroup[] {
     if (folder === '' || known.has(folder)) continue;
     unknown.push({ folder, sessions: arr });
   }
+  // Newest session in the group, computed rather than read off `sessions[0]`:
+  // that shortcut was only true while every group was sorted newest-first, and a
+  // search-ranked group puts the best hit at index 0 instead.
+  const newestIn = (g: FolderGroup): string => {
+    let newest = '';
+    for (const s of g.sessions) if (s.updatedAt > newest) newest = s.updatedAt;
+    return newest;
+  };
   unknown.sort((a, b) => {
-    const an = a.sessions[0]?.updatedAt ?? '';
-    const bn = b.sessions[0]?.updatedAt ?? '';
+    const an = newestIn(a);
+    const bn = newestIn(b);
     return an < bn ? 1 : an > bn ? -1 : 0;
   });
   groups.push(...unknown);
@@ -157,7 +224,7 @@ export function visibleCount(state: ChatState): number {
  *
  *  `visibleSessions` can only ever render sessions present in `state.sessions`,
  *  the pages that have been loaded. A content hit for a session outside that
- *  window has its id in `contentHits.ids` and no summary to paint, so it matches
+ *  window has its id in `contentHits.matchCountBySessionId` and no summary to paint, so it matches
  *  nothing and disappears — search returns fewer results than the server found
  *  and, until this selector existed, said nothing about it.
  *
@@ -203,7 +270,8 @@ export function selectContentSearchReach(state: ChatState): ContentSearchReach |
   if (query && contentHits && contentHits.query === query) {
     let shown = 0;
     for (const group of visibleSessions(state)) {
-      for (const s of group.sessions) if (contentHits.ids.has(s.sessionId)) shown++;
+      for (const s of group.sessions)
+        if (contentHits.matchCountBySessionId.has(s.sessionId)) shown++;
     }
     result = {
       query,

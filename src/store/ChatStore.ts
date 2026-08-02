@@ -6,6 +6,7 @@ import type {
   ManagedSessionDetail,
   ModelOption,
   PendingHook,
+  SearchHit,
   SessionInfo,
   SessionSummary,
   Turn,
@@ -84,10 +85,22 @@ export interface PendingSession {
  *  and its hits were dropped on arrival with no error. */
 export interface ContentHits {
   query: string;
-  ids: Set<string>;
-  /** How many hits the backend returned for `query` — `ids.size`, kept explicitly
-   *  because it is a count of what the SERVER found, while the number of rows the
-   *  list can actually paint is bounded by the loaded window and is always ≤ this. */
+  /** How many events of that session's transcript matched, by session id — the
+   *  whole `SearchHit` list, keyed for lookup rather than reduced to membership.
+   *
+   *  This used to be a bare `Set<string>` of the ids, which threw away the only
+   *  ranking signal the backend offers: `ApiClient.search` sorts the hits by
+   *  descending `match_count` and the store dropped the counts one call later, so
+   *  the sidebar ordered content hits by recency and a session with one incidental
+   *  match outranked the session the query was actually about.
+   *
+   *  A `Map` answers membership with `.has` and size with `.size` exactly as the
+   *  Set did, so nothing that only asked "did this session match?" had to change. */
+  matchCountBySessionId: Map<string, number>;
+  /** How many hits the backend returned for `query` — `matchCountBySessionId.size`,
+   *  kept explicitly because it is a count of what the SERVER found, while the
+   *  number of rows the list can actually paint is bounded by the loaded window and
+   *  is always ≤ this. */
   hitCount: number;
   /** True when the backend filled a whole page, so there are more matches it never
    *  sent. See `SearchResponse.truncated` — this is "at least", not a total. */
@@ -267,8 +280,12 @@ export interface ChatActions {
   /** Record async content-search hits for a query. `query` must be the TRIMMED
    *  search string; it is compared against the trimmed live filter, so a late or
    *  stale response can't override a newer search. `truncated` says the backend
-   *  had more matches than it returned. */
-  setContentHits(query: string, ids: string[], truncated?: boolean): void;
+   *  had more matches than it returned.
+   *
+   *  Takes the whole `SearchHit[]`, not just the ids: `match_count` is the only
+   *  ranking signal the search endpoint reports, and the sidebar cannot order
+   *  content-only hits without it. */
+  setContentHits(query: string, hits: SearchHit[], truncated?: boolean): void;
   /** Record that a content search for the TRIMMED `query` has been asked for. Call
    *  it when the query is typed, not when the request leaves — the debounce wait is
    *  part of the wait the user is looking at. `null` means no search is running.
@@ -626,12 +643,16 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
         set({ filter: { ...get().filter, folder } });
       },
 
-      setContentHits(query, ids, truncated = false) {
+      setContentHits(query, hits, truncated = false) {
         // Drop a stale response whose query no longer matches the live filter.
         // `query` is trimmed by the caller, so trim this side too — comparing it
         // raw dropped the hits for any query the user typed with a stray space.
         if (get().filter.search.trim() !== query) return;
-        const set_ = new Set(ids);
+        // Keyed by session id, keeping the count. Duplicate ids collapse the same
+        // way the old Set collapsed them; last one wins, which for a sorted list
+        // is the smaller count and is the conservative read.
+        const matchCountBySessionId = new Map<string, number>();
+        for (const h of hits) matchCountBySessionId.set(h.sessionId, h.matchCount);
         // Hits landing ends the search they were asked for, and clears any failure
         // recorded for it. Both are unconditional because the drop above has already
         // established that `query` IS the live query — a second guard on
@@ -642,7 +663,12 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
         // trimmed query); if the first fails and the second succeeds, this is the only
         // thing that takes the failure notice back down.
         set({
-          contentHits: { query, ids: set_, hitCount: set_.size, truncated },
+          contentHits: {
+            query,
+            matchCountBySessionId,
+            hitCount: matchCountBySessionId.size,
+            truncated,
+          },
           contentSearchInFlight: null,
           contentSearchError: null,
         });

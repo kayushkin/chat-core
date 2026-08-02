@@ -537,7 +537,10 @@ export function useFilters(): {
             // Async augmentation; setContentHits ignores a stale response.
             void api
               .search(q)
-              .then((r) => actions.setContentHits(q, r.sessionIds, r.truncated))
+              // `r.hits`, not `r.sessionIds`: the hits carry the `matchCount` the
+              // sidebar ranks content-only matches by. Passing the id list alone is
+              // what threw the server's ranking away.
+              .then((r) => actions.setContentHits(q, r.hits, r.truncated))
               // A failed transcript search is NOT an empty one. Folding it into an
               // empty hit set — which is what this catch used to do by doing nothing
               // at all — reports the gateway being down as "your words appear in no
