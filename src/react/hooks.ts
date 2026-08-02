@@ -19,6 +19,7 @@ import {
   type PendingSession,
 } from '../store/ChatStore.js';
 import { changeSessionPermissionMode } from '../store/permissionMode.js';
+import { setSessionDone } from '../store/markDone.js';
 import { resolvePendingHook } from '../store/pendingHooks.js';
 import { budgetHaltFromRefusal, type BudgetHalt } from '../store/budgetHalt.js';
 import {
@@ -521,15 +522,28 @@ export function useFilters(): {
 }
 
 /** Optimistic mutations: update the store first, POST in the background, revert
- *  the store on error. None await the network on the UI-update path. */
+ *  the store on error. None await the network on the UI-update path.
+ *
+ *  `error` is the last failed mutation's message, or null — the same arrangement
+ *  `useSessionControls` uses. These callbacks stay void-returning because every caller
+ *  fires them from a click handler, so a rethrow would only become an unhandled
+ *  rejection; the message has to land somewhere a component can read it instead.
+ *
+ *  That channel is not decoration. Archive and unarchive spent their whole life
+ *  POSTing to `/sessions/{id}/archive` and `/sessions/{id}/unarchive`, routes the
+ *  gateway has never registered, and the bare `.catch` that reverted the row is
+ *  exactly why nobody noticed: the button worked, briefly, and then quietly undid
+ *  itself. A revert without a report is indistinguishable from a race. */
 export function useSessionActions(): {
   newSession: (opts?: { instanceId?: string; harness?: string; model?: string; effort?: string }) => void;
   archive: (id: string) => void;
   unarchive: (id: string) => void;
   rename: (id: string, name: string) => void;
+  error: string | null;
 } {
   const { store, api } = useChatContext();
   const actions = useActions();
+  const [error, setError] = useState<string | null>(null);
 
   // `model` / `effort` are pre-start settings: they ride on the pending pane and are
   // applied via POST /config right after the real session is lazily created on first
@@ -543,26 +557,22 @@ export function useSessionActions(): {
 
   const archive = useCallback(
     (id: string) => {
-      const prev = store.getState().sessions.get(id);
-      if (!prev) return;
-      actions.upsertSession({ ...prev, folderName: 'archive' });
-      void api.archive(id).catch(() => {
-        if (prev) actions.upsertSession(prev);
+      setError(null);
+      void setSessionDone({ store, api }, id, true).catch((e: unknown) => {
+        setError(e instanceof Error ? e.message : String(e));
       });
     },
-    [actions, api, store],
+    [api, store],
   );
 
   const unarchive = useCallback(
     (id: string) => {
-      const prev = store.getState().sessions.get(id);
-      if (!prev) return;
-      actions.upsertSession({ ...prev, folderName: '' });
-      void api.unarchive(id).catch(() => {
-        if (prev) actions.upsertSession(prev);
+      setError(null);
+      void setSessionDone({ store, api }, id, false).catch((e: unknown) => {
+        setError(e instanceof Error ? e.message : String(e));
       });
     },
-    [actions, api, store],
+    [api, store],
   );
 
   const rename = useCallback(
@@ -570,14 +580,16 @@ export function useSessionActions(): {
       const prev = store.getState().sessions.get(id);
       if (!prev) return;
       actions.upsertSession({ ...prev, displayName: name });
-      void api.rename(id, name).catch(() => {
-        if (prev) actions.upsertSession(prev);
+      setError(null);
+      void api.rename(id, name).catch((e: unknown) => {
+        actions.upsertSession(prev);
+        setError(e instanceof Error ? e.message : String(e));
       });
     },
     [actions, api, store],
   );
 
-  return { newSession, archive, unarchive, rename };
+  return { newSession, archive, unarchive, rename, error };
 }
 
 /** Session detail info (system prompt, model, permission mode, tools, slash commands,

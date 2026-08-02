@@ -98,6 +98,7 @@ export {
   type DraftStorageLike,
 } from './store/draftStorage.js';
 export { changeSessionPermissionMode } from './store/permissionMode.js';
+export { ARCHIVE_FOLDER, setSessionDone } from './store/markDone.js';
 export {
   foldHookEvent,
   pendingHookFromWire,

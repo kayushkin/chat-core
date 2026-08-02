@@ -465,12 +465,23 @@ export class ApiClient {
     return this.postJSON(`/sessions/${id}/rename`, { display_name: displayName });
   }
 
-  archive(id: string): Promise<unknown> {
-    return this.postJSON(`/sessions/${id}/archive`, {});
-  }
-
-  unarchive(id: string): Promise<unknown> {
-    return this.postJSON(`/sessions/${id}/unarchive`, {});
+  /**
+   * Mark a session done (or undo it).
+   *
+   * `done: true` sets state=completed and moves the session into the canonical
+   * `Archive` folder; `done: false` reverses both. The two halves are ONE atomic
+   * action server-side (`handleMarkSessionDone`), which is why there is a single
+   * route taking a boolean rather than an archive/unarchive pair.
+   *
+   * This replaces `archive()` / `unarchive()`, which POSTed to
+   * `/sessions/{id}/archive` and `/sessions/{id}/unarchive`. Neither route has ever
+   * existed: the gateway registers `PUT /sessions/{id}/folder` and
+   * `POST /sessions/{id}/mark-done`, and "unarchive" appears in no Go source at all.
+   * Probed live 2026-08-02 against one session id — archive 404, unarchive 404,
+   * mark-done 204.
+   */
+  markSessionDone(id: string, done: boolean): Promise<unknown> {
+    return this.postJSON(`/sessions/${id}/mark-done`, { done });
   }
 
   resume(id: string): Promise<unknown> {
