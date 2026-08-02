@@ -4,6 +4,7 @@
 // ---- Public React surface (docs/PUBLIC-API.md) ----
 export { ChatProvider, type ChatProviderProps } from './react/Provider.js';
 export {
+  useConnState,
   useSessionList,
   useActiveSession,
   useTurns,

@@ -27,6 +27,18 @@ export function ChatProvider(props: ChatProviderProps): JSX.Element;
 
 // ---- Selectors / hooks (all read from the in-memory store; no network on the hot path) ----
 
+// Liveness of the global session-list SSE stream, as SyncEngine reports it. Separates
+// "still connecting" from "you genuinely have no sessions", and says when the client has
+// stopped receiving updates at all.
+//
+// The four values are not evenly likely: 'idle' is the window between mount and
+// SyncEngine.start() (the boot prime runs first); 'connecting' covers the first attach AND
+// every backoff reconnect, so a dropped stream reads as connecting; 'closed' is set only by
+// SyncEngine.stop(), i.e. on unmount. The honest test for "updates are flowing" is
+// `=== 'open'`, NOT `!== 'closed'`.
+export function useConnState(): ConnState;
+export type ConnState = 'idle' | 'connecting' | 'open' | 'closed';
+
 // Sidebar list, already filtered + grouped + sorted by the current filter/folder state.
 // `effectiveState(sessionId)` returns the tail-reconciled state for a row's status dot: a
 // session the server still reports as running/holding but whose warm tail is terminal reads

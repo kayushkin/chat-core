@@ -11,7 +11,7 @@ import type {
   SessionSummary,
   Turn,
 } from '../net/types.js';
-import { EMPTY_HOOKS, type ChatActions, type FilterState } from '../store/ChatStore.js';
+import { EMPTY_HOOKS, type ChatActions, type ConnState, type FilterState } from '../store/ChatStore.js';
 import { changeSessionPermissionMode } from '../store/permissionMode.js';
 import { resolvePendingHook } from '../store/pendingHooks.js';
 import {
@@ -51,6 +51,24 @@ const SEARCH_DEBOUNCE_MS = 250;
 function useActions(): ChatActions {
   const { store } = useChatContext();
   return useStore(store, (s) => s.actions);
+}
+
+/** Liveness of the global session-list SSE stream, as `SyncEngine` reports it.
+ *
+ *  This is the only signal that separates "still connecting" from "you genuinely have
+ *  no sessions", and the only one that says the client has stopped receiving updates.
+ *  Without it a cold load and an empty account render identically, and the composer
+ *  accepts a message into a stream that will never carry the reply back.
+ *
+ *  The four values are not evenly likely. `'idle'` is the window between mount and
+ *  `SyncEngine.start()` — the boot prime runs first, so a slow boot sits here.
+ *  `'connecting'` covers both the first attach and every backoff reconnect, so a
+ *  dropped stream reads as connecting, never as closed. `'closed'` is set only by
+ *  `SyncEngine.stop()`, i.e. on unmount. So the honest test for "updates are flowing"
+ *  is `=== 'open'`, not `!== 'closed'`. */
+export function useConnState(): ConnState {
+  const { store } = useChatContext();
+  return useStore(store, (s) => s.connState);
 }
 
 /** Sidebar list, already filtered + grouped + sorted by the current filter/folder.
