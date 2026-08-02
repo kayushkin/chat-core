@@ -27,6 +27,14 @@ export const ARCHIVE_FOLDER = 'Archive';
  * state transition AND moves the folder, as one atomic action. The previous code
  * moved the folder alone, so even against a working route the row would have shown a
  * state the server never agreed with until the next SSE upsert corrected it.
+ *
+ * The folder LIST is a third thing the same action changes. `handleMarkSessionDone`
+ * finishes through `Store.SetSessionFolder`, which INSERTs the folder when it is not
+ * there yet — so marking the first session done CREATES the `Archive` folder. Without
+ * mirroring that, the row moves into a folder the sidebar's group order does not know,
+ * and `visibleSessions` draws it as a trailing session-derived group instead of in the
+ * server's own order. Un-marking does NOT delete the folder server-side, so the list
+ * keeps it.
  */
 export async function setSessionDone(
   deps: { store: ChatStoreApi; api: ApiClient },
@@ -36,8 +44,13 @@ export async function setSessionDone(
   const { store, api } = deps;
   const prior = store.getState().sessions.get(sessionId);
   if (!prior) return;
+  const priorFolders = store.getState().folders;
 
-  store.getState().actions.upsertSession({
+  const { actions } = store.getState();
+  if (done && !priorFolders.includes(ARCHIVE_FOLDER)) {
+    actions.setFolders([...priorFolders, ARCHIVE_FOLDER]);
+  }
+  actions.upsertSession({
     ...prior,
     state: done ? 'completed' : 'idle',
     folderName: done ? ARCHIVE_FOLDER : '',
@@ -46,6 +59,7 @@ export async function setSessionDone(
   try {
     await api.markSessionDone(sessionId, done);
   } catch (e) {
+    store.getState().actions.setFolders(priorFolders);
     store.getState().actions.upsertSession(prior);
     throw e;
   }

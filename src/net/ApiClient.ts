@@ -264,6 +264,26 @@ export class ApiClient {
     return (await res.json().catch(() => ({}))) as T;
   }
 
+  /** DELETE with no body either way.
+   *
+   *  The routes this serves answer 204, so there is nothing to parse and nothing is
+   *  returned. It is LOUD on the same terms as the other three: a refusal throws an
+   *  `ApiError` carrying the status and the server's message, so an optimistic caller
+   *  can put back what it removed. */
+  private async deleteRequest(path: string): Promise<void> {
+    const res = await this.doFetch(`${this.basePath}${path}`, { method: 'DELETE' });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      throw new ApiError({
+        message: `DELETE ${path} failed: ${res.status} ${res.statusText} ${detail}`.trim(),
+        status: res.status,
+        body: detail,
+        method: 'DELETE',
+        path,
+      });
+    }
+  }
+
   // --- dashv2 read endpoints ---
 
   /** Projected sidebar list, newest first, paginated. */
@@ -299,6 +319,66 @@ export class ApiClient {
   async listFolders(): Promise<string[]> {
     const wire = await this.getJSON<FolderListWire>('/folders');
     return Array.isArray(wire?.folder_order) ? wire.folder_order : [];
+  }
+
+  /** Create a folder (`POST /folders`, body `{name}`).
+   *
+   *  A folder is a row of its own, so it can be created empty and stays real until
+   *  it is deleted. The server INSERTs at `MAX(position)+1` with
+   *  `ON CONFLICT(name) DO NOTHING`, so creating one that already exists is a
+   *  no-op rather than an error — but a blank name is a 400.
+   *
+   *  LOUD: `postJSON` throws on any non-2xx so the caller reverts its optimistic
+   *  list instead of showing a folder the server never took. */
+  createFolder(name: string): Promise<unknown> {
+    return this.postJSON('/folders', { name });
+  }
+
+  /** Delete a folder (`DELETE /folders/{name}`).
+   *
+   *  ⚠️ This is TWO writes in one transaction, and the second one is easy to miss:
+   *  `Store.DeleteFolder` first runs `UPDATE sessions SET folder_name='' WHERE
+   *  folder_name=?` and only then drops the row. Every session in the folder is
+   *  un-filed, not deleted — a caller mirroring this optimistically has to move
+   *  those rows too, or the sidebar keeps drawing a header for a folder the server
+   *  no longer holds.
+   *
+   *  LOUD: throws on any non-2xx. */
+  deleteFolder(name: string): Promise<unknown> {
+    return this.deleteRequest(`/folders/${encodeURIComponent(name)}`);
+  }
+
+  /** Rename a folder (`PUT /folders/{name}`, body `{new_name}`).
+   *
+   *  ⚠️ Also two writes, and the second has two shapes. `Store.RenameFolder` moves
+   *  every session (`UPDATE sessions SET folder_name=new WHERE folder_name=old`),
+   *  then — if `new_name` ALREADY EXISTS — deletes the old row and lets its
+   *  sessions join the existing folder at that folder's own position (a merge).
+   *  Only when the new name is free is the row itself renamed, keeping its place.
+   *
+   *  The server treats an empty name or `old === new` as a no-op and answers 400
+   *  for a blank body, so callers should not send those at all.
+   *
+   *  LOUD: throws on any non-2xx. */
+  renameFolder(name: string, newName: string): Promise<unknown> {
+    return this.putJSON(`/folders/${encodeURIComponent(name)}`, { new_name: newName });
+  }
+
+  /** File a session into a folder, or un-file it (`PUT /sessions/{id}/folder`,
+   *  body `{folder}`). An empty string clears the assignment.
+   *
+   *  ⚠️ A move into a folder that does not exist CREATES it: `Store.SetSessionFolder`
+   *  INSERTs the name (`ON CONFLICT DO NOTHING`) before updating the session row, so
+   *  this one call is both halves of "new folder, and put this in it" and callers do
+   *  not need a separate create first.
+   *
+   *  Unlike the folder routes, this one calls `notifyChanged`, so the session-list
+   *  stream re-broadcasts the row and the server confirms the move on its own. The
+   *  optimistic patch is what makes the click feel instant, not what makes it stick.
+   *
+   *  LOUD: `putJSON` throws on any non-2xx (404 when the session id is unknown). */
+  setSessionFolder(sessionId: string, folder: string): Promise<unknown> {
+    return this.putJSON(`/sessions/${sessionId}/folder`, { folder });
   }
 
   /** The cheap staleness check for a set of session ids. */

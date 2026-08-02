@@ -21,6 +21,12 @@ import {
 } from '../store/ChatStore.js';
 import { changeSessionPermissionState } from '../store/permissionState.js';
 import { setSessionDone } from '../store/markDone.js';
+import {
+  createFolder as createFolderMutation,
+  deleteFolder as deleteFolderMutation,
+  moveSessionToFolder as moveSessionToFolderMutation,
+  renameFolder as renameFolderMutation,
+} from '../store/folders.js';
 import { resolvePendingHook } from '../store/pendingHooks.js';
 import { budgetHaltFromRefusal, type BudgetHalt } from '../store/budgetHalt.js';
 import {
@@ -629,6 +635,82 @@ export function useSessionActions(): {
   );
 
   return { newSession, archive, unarchive, rename, error };
+}
+
+/** The folder list plus the four mutations that change it — what a sidebar needs to
+ *  move a session into a folder, take it out again, and create, rename or delete the
+ *  folders themselves.
+ *
+ *  `folders` is the server's own list in the server's own order (`GET /folders`, read
+ *  at boot and re-read on reconnect). It is deliberately the SAME array
+ *  `visibleSessions` groups by, so a "Move to" menu can only ever offer folders the
+ *  sidebar can actually draw.
+ *
+ *  There is no `createFolderAndMove`: `moveSessionToFolder` into a name that does not
+ *  exist yet creates it, because `PUT /sessions/{id}/folder` INSERTs the folder in the
+ *  same transaction as the move. Two calls would open a window where the folder exists
+ *  and holds nothing.
+ *
+ *  Every mutation is optimistic and reverts on refusal, and — like `useSessionActions`
+ *  — the callbacks return void and the refusal lands in `error` instead. A click
+ *  handler cannot await, so a rethrow would only become an unhandled rejection; the
+ *  message has to land somewhere a component can render it. */
+export function useFolders(): {
+  /** The server's folder list, in the server's order. Empty until the first
+   *  `GET /folders` lands, or if that read failed. */
+  folders: string[];
+  createFolder: (name: string) => void;
+  /** Deletes the folder and un-files every session in it — no session is lost. */
+  deleteFolder: (name: string) => void;
+  /** Renames, or MERGES when `newName` is a folder that already exists. */
+  renameFolder: (oldName: string, newName: string) => void;
+  /** Files a session into `folder`, creating that folder if it is new. An empty
+   *  `folder` un-files the session. */
+  moveSessionToFolder: (sessionId: string, folder: string) => void;
+  /** The last refused mutation's message, or null. */
+  error: string | null;
+} {
+  const { store, api } = useChatContext();
+  const folders = useStore(store, (s) => s.folders);
+  const [error, setError] = useState<string | null>(null);
+
+  const report = useCallback((e: unknown) => {
+    setError(e instanceof Error ? e.message : String(e));
+  }, []);
+
+  const createFolder = useCallback(
+    (name: string) => {
+      setError(null);
+      void createFolderMutation({ store, api }, name).catch(report);
+    },
+    [api, store, report],
+  );
+
+  const deleteFolder = useCallback(
+    (name: string) => {
+      setError(null);
+      void deleteFolderMutation({ store, api }, name).catch(report);
+    },
+    [api, store, report],
+  );
+
+  const renameFolder = useCallback(
+    (oldName: string, newName: string) => {
+      setError(null);
+      void renameFolderMutation({ store, api }, oldName, newName).catch(report);
+    },
+    [api, store, report],
+  );
+
+  const moveSessionToFolder = useCallback(
+    (sessionId: string, folder: string) => {
+      setError(null);
+      void moveSessionToFolderMutation({ store, api }, sessionId, folder).catch(report);
+    },
+    [api, store, report],
+  );
+
+  return { folders, createFolder, deleteFolder, renameFolder, moveSessionToFolder, error };
 }
 
 /** Session detail info (system prompt, model, permission mode, tools, slash commands,

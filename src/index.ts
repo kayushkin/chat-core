@@ -12,6 +12,7 @@ export {
   useComposer,
   useFilters,
   useSessionActions,
+  useFolders,
   useSessionInfo,
   useManagedSession,
   useSessionControls,
@@ -100,6 +101,13 @@ export {
 } from './store/draftStorage.js';
 export { changeSessionPermissionState } from './store/permissionState.js';
 export { ARCHIVE_FOLDER, setSessionDone } from './store/markDone.js';
+export {
+  createFolder,
+  deleteFolder,
+  moveSessionToFolder,
+  renameFolder,
+  type FolderMutationDeps,
+} from './store/folders.js';
 export {
   foldHookEvent,
   pendingHookFromWire,
