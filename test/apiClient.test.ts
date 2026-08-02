@@ -460,8 +460,33 @@ describe('ApiClient.search — parses the array log-store actually sends', () =>
       basePath: '/api/bridge',
     });
     const res = await api.search('a b');
-    expect(seen[0]).toBe('/api/bridge/sessions/search?q=a+b');
+    // The limit is sent EXPLICITLY. It used to be omitted, which left the bound as
+    // log-store's own default (100) — the same number, but arrived at by nobody,
+    // and with no way for the client to tell a full result from a truncated one.
+    expect(seen[0]).toBe('/api/bridge/sessions/search?q=a+b&limit=100');
     expect(res.sessionIds).toEqual([]);
+    expect(res.truncated).toBe(false);
+  });
+
+  it('reports truncated when the backend fills the whole page', async () => {
+    const full = Array.from({ length: 3 }, (_, i) => ({ session_id: `br_${i}`, match_count: 1 }));
+    const api = new ApiClient({
+      fetch: fakeFetch({ ok: true, status: 200, statusText: 'OK', jsonBody: full }),
+      basePath: '/api/bridge',
+    });
+    const res = await api.search('needle', { limit: 3 });
+    expect(res.limit).toBe(3);
+    expect(res.truncated).toBe(true);
+  });
+
+  it('does not report truncated on a short page', async () => {
+    const api = new ApiClient({
+      fetch: fakeFetch({ ok: true, status: 200, statusText: 'OK', jsonBody: WIRE }),
+      basePath: '/api/bridge',
+    });
+    const res = await api.search('needle', { limit: 50 });
+    expect(res.hits).toHaveLength(3);
+    expect(res.truncated).toBe(false);
   });
 
   it('throws rather than degrading to zero hits if the shape is not an array', async () => {

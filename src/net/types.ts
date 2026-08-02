@@ -337,4 +337,12 @@ export interface SearchHit {
 export interface SearchResponse {
   sessionIds: string[];
   hits: SearchHit[];
+  /** The hit cap this response was fetched under — echoed back so a caller can
+   *  report the bound it is subject to without re-deriving it from the request. */
+  limit: number;
+  /** True when the backend returned a FULL page, i.e. `hits.length === limit`.
+   *  The search endpoint reports no total, so a full page is the only evidence
+   *  that hits were dropped; there is no way to say how many. Callers must read
+   *  this as "at least this many, probably more", never as an exact count. */
+  truncated: boolean;
 }

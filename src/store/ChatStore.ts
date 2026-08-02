@@ -73,10 +73,23 @@ export interface PendingSession {
 /** Content-search augmentation (C6). The set of session ids whose materialized
  *  transcript text matched `query`, fetched async via `ApiClient.search`. `query`
  *  pins the hits to the filter they were fetched for, so a stale set is never
- *  folded into a newer search. The instant local name match never waits on this. */
+ *  folded into a newer search. The instant local name match never waits on this.
+ *
+ *  `query` is always the TRIMMED search string. `filter.search` keeps whatever the
+ *  user typed, spaces and all; every comparison against it here and in
+ *  `matchesFilter` trims first. They used to be compared raw against a trimmed
+ *  `query`, so a query with a leading or trailing space failed the equality check
+ *  and its hits were dropped on arrival with no error. */
 export interface ContentHits {
   query: string;
   ids: Set<string>;
+  /** How many hits the backend returned for `query` — `ids.size`, kept explicitly
+   *  because it is a count of what the SERVER found, while the number of rows the
+   *  list can actually paint is bounded by the loaded window and is always ≤ this. */
+  hitCount: number;
+  /** True when the backend filled a whole page, so there are more matches it never
+   *  sent. See `SearchResponse.truncated` — this is "at least", not a total. */
+  truncated: boolean;
 }
 
 export interface ChatState {
@@ -197,10 +210,11 @@ export interface ChatActions {
 
   setFilter(patch: Partial<FilterState>): void;
   openFolder(folder: string): void;
-  /** Record async content-search hits for a query. Ignored (a no-op) if the
-   *  current filter's search no longer equals `query`, so a late/stale response
-   *  can't override a newer search. */
-  setContentHits(query: string, ids: string[]): void;
+  /** Record async content-search hits for a query. `query` must be the TRIMMED
+   *  search string; it is compared against the trimmed live filter, so a late or
+   *  stale response can't override a newer search. `truncated` says the backend
+   *  had more matches than it returned. */
+  setContentHits(query: string, ids: string[], truncated?: boolean): void;
 
   setDraft(sessionId: string, text: string): void;
   setSending(sessionId: string, sending: boolean): void;
@@ -484,7 +498,10 @@ export function createChatStore(): ChatStoreApi {
         const nextState: Partial<ChatState> = { filter };
         if (patch.search !== undefined) {
           const cur = get().contentHits;
-          if (!cur || cur.query !== filter.search) nextState.contentHits = null;
+          // Trimmed on both sides: `contentHits.query` is always trimmed, so an
+          // untrimmed compare invalidated a still-valid hit set on every keystroke
+          // that only added whitespace.
+          if (!cur || cur.query !== filter.search.trim()) nextState.contentHits = null;
         }
         set(nextState);
       },
@@ -493,10 +510,13 @@ export function createChatStore(): ChatStoreApi {
         set({ filter: { ...get().filter, folder } });
       },
 
-      setContentHits(query, ids) {
+      setContentHits(query, ids, truncated = false) {
         // Drop a stale response whose query no longer matches the live filter.
-        if (get().filter.search !== query) return;
-        set({ contentHits: { query, ids: new Set(ids) } });
+        // `query` is trimmed by the caller, so trim this side too — comparing it
+        // raw dropped the hits for any query the user typed with a stray space.
+        if (get().filter.search.trim() !== query) return;
+        const set_ = new Set(ids);
+        set({ contentHits: { query, ids: set_, hitCount: set_.size, truncated } });
       },
 
       setDraft(sessionId, text) {

@@ -20,6 +20,7 @@ import {
   effectiveState,
   harnessCapabilities,
   modelsForHarness,
+  selectContentSearchReach,
   selectFacets,
   sessionCost,
   sourcesForEntry,
@@ -27,6 +28,7 @@ import {
   visibleCount,
   visibleSessions,
   visibleEntryIdsFor,
+  type ContentSearchReach,
   type ContextUsage,
   type Facets,
   type SessionCost,
@@ -37,6 +39,14 @@ import { useChatContext } from './context.js';
 // slice changed re-render. select() / filter changes / newSession / archive
 // NEVER await the network on the path that updates the UI — a fetch, if needed,
 // is fired in the background.
+
+/** How long to wait after the last keystroke before asking the backend for
+ *  content hits. Only the NETWORK half of search is delayed — the local display-name
+ *  filter still runs on the keystroke, so the list never feels slower.
+ *
+ *  `GET /sessions/search` is a full-text scan over every materialized transcript on
+ *  the box; it was previously fired once per keystroke. */
+const SEARCH_DEBOUNCE_MS = 250;
 
 function useActions(): ChatActions {
   const { store } = useChatContext();
@@ -299,21 +309,43 @@ export function useFilters(): {
   filter: FilterState;
   set: (patch: Partial<FilterState>) => void;
   openFolder: (folder: string) => void;
+  /** How much of the active content search the list can actually paint, or null
+   *  when no content search is active. Non-null with `hiddenHitCount > 0` means
+   *  the sidebar is showing fewer results than the backend found — surface it,
+   *  because the shortfall is otherwise invisible. */
+  contentSearchReach: ContentSearchReach | null;
 } {
   const { store, api } = useChatContext();
   const filter = useStore(store, (s) => s.filter);
+  const contentSearchReach = useStore(store, selectContentSearchReach);
   const actions = useActions();
+  const searchDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Cancel a pending search when the component goes away, so a debounced request
+  // never fires into an unmounted tree.
+  useEffect(
+    () => () => {
+      if (searchDebounce.current) clearTimeout(searchDebounce.current);
+    },
+    [],
+  );
   const set = useCallback(
     (patch: Partial<FilterState>) => {
       actions.setFilter(patch); // instant/local — never awaits the network.
       if (patch.search !== undefined) {
         const q = patch.search.trim();
+        // Debounced: this used to fire one GET /sessions/search per KEYSTROKE,
+        // so typing a ten-character query cost ten full-text scans of every
+        // transcript and left ten responses racing to land. The local name
+        // filter above is unaffected and stays instant.
+        if (searchDebounce.current) clearTimeout(searchDebounce.current);
         if (q) {
-          // Async augmentation; setContentHits ignores a stale response.
-          void api
-            .search(q)
-            .then((r) => actions.setContentHits(q, r.sessionIds))
-            .catch(() => {});
+          searchDebounce.current = setTimeout(() => {
+            // Async augmentation; setContentHits ignores a stale response.
+            void api
+              .search(q)
+              .then((r) => actions.setContentHits(q, r.sessionIds, r.truncated))
+              .catch(() => {});
+          }, SEARCH_DEBOUNCE_MS);
         } else {
           actions.setContentHits('', []);
         }
@@ -322,7 +354,7 @@ export function useFilters(): {
     [actions, api],
   );
   const openFolder = useCallback((folder: string) => actions.openFolder(folder), [actions]);
-  return { filter, set, openFolder };
+  return { filter, set, openFolder, contentSearchReach };
 }
 
 /** Optimistic mutations: update the store first, POST in the background, revert

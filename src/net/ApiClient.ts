@@ -26,6 +26,22 @@ import type {
 import { summaryFromManaged } from '../sync/sse.js';
 import { HOOK_PHASE_AWAITING, pendingHookFromWire } from '../store/pendingHooks.js';
 
+/** How many content-search hits to ask `GET /sessions/search` for.
+ *
+ *  This is the cap log-store has always applied (`handleSearch` defaults `limit`
+ *  to 100). It used to apply because the client sent no `limit` at all, so the
+ *  bound was the server's fallback rather than anyone's choice, and the client
+ *  could not tell a complete result from a truncated one. Sending it explicitly
+ *  changes no behaviour and makes `truncated` answerable.
+ *
+ *  Raising it is NOT free, and the reason is not the request. Measured on this
+ *  host 2026-08-02: a broad query matches thousands of sessions (`the` 11,124,
+ *  `noteboard` 8,110, `deploy` 3,635), and of a 100-hit page only 8–45 sessions
+ *  are in the loaded sidebar window, so 55–92% of hits already render nothing.
+ *  Every extra hit is another row the list cannot paint until summaries can be
+ *  fetched by id. Raise this together with that fetch, never before it. */
+export const SEARCH_HIT_LIMIT = 100;
+
 /** Map the snake_case `msg.SessionInfo` wire blob to the camelCase `SessionInfo`.
  *  The single source of truth for this mapping — every field is copied explicitly
  *  (never spread), so a wire rename fails the type-check here instead of leaking a
@@ -249,8 +265,9 @@ export class ApiClient {
    *  set without throwing, and content search silently matched nothing for every
    *  query while the display-name filter went on working. Map the real shape here,
    *  at the wire edge, and fail loudly if it is not the array the backend promises. */
-  async search(q: string): Promise<SearchResponse> {
-    const qs = new URLSearchParams({ q }).toString();
+  async search(q: string, opts?: { limit?: number }): Promise<SearchResponse> {
+    const limit = opts?.limit ?? SEARCH_HIT_LIMIT;
+    const qs = new URLSearchParams({ q, limit: String(limit) }).toString();
     const wire = await this.getJSON<SearchHitWire[]>(`/sessions/search?${qs}`);
     if (!Array.isArray(wire)) {
       throw new Error(
@@ -260,7 +277,12 @@ export class ApiClient {
     const hits: SearchHit[] = wire
       .map((h) => ({ sessionId: h.session_id, matchCount: h.match_count }))
       .sort((a, b) => b.matchCount - a.matchCount);
-    return { sessionIds: hits.map((h) => h.sessionId), hits };
+    return {
+      sessionIds: hits.map((h) => h.sessionId),
+      hits,
+      limit,
+      truncated: hits.length >= limit,
+    };
   }
 
   /** Full per-session detail (`GET /sessions/{id}`) — the canonical ManagedSession,

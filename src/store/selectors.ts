@@ -37,12 +37,16 @@ export function matchesFilter(
   if (f.mode.length && !f.mode.includes(s.mode)) return false;
   if (f.machine.length && !f.machine.includes(s.instanceId)) return false;
   if (f.folder && s.folderName !== f.folder) return false;
-  if (f.search) {
-    const q = f.search.toLowerCase();
+  // Trimmed: the user's raw `filter.search` may carry surrounding spaces, which no
+  // display name contains and which `contentHits.query` (always trimmed) never
+  // matched. Comparing raw made a query with a stray space match nothing at all.
+  const search = f.search.trim();
+  if (search) {
+    const q = search.toLowerCase();
     const name = (s.displayName || s.sessionId).toLowerCase();
     const nameHit = name.includes(q);
     const contentHit =
-      !!contentHits && contentHits.query === f.search && contentHits.ids.has(s.sessionId);
+      !!contentHits && contentHits.query === search && contentHits.ids.has(s.sessionId);
     if (!nameHit && !contentHit) return false;
   }
   return true;
@@ -105,6 +109,70 @@ export function visibleSessions(state: ChatState): FolderGroup[] {
 /** Total visible session count across all groups. */
 export function visibleCount(state: ChatState): number {
   return visibleSessions(state).reduce((n, g) => n + g.sessions.length, 0);
+}
+
+/** How much of a content search the sidebar is actually able to show.
+ *
+ *  `visibleSessions` can only ever render sessions present in `state.sessions`,
+ *  the pages that have been loaded. A content hit for a session outside that
+ *  window has its id in `contentHits.ids` and no summary to paint, so it matches
+ *  nothing and disappears — search returns fewer results than the server found
+ *  and, until this selector existed, said nothing about it.
+ *
+ *  Measured on this host 2026-08-02: for a 100-hit page, 55–92% of hits fell
+ *  outside the loaded window. This is the normal case, not an edge case. */
+export interface ContentSearchReach {
+  /** The trimmed query these numbers describe. */
+  query: string;
+  /** Sessions the backend matched on transcript text (capped — see `truncated`). */
+  hitCount: number;
+  /** Of those, how many are loaded AND survive the other filter axes, so are on
+   *  screen. Counted against the rendered groups, not against `state.sessions`,
+   *  so a hit filtered out by a chip is honestly reported as not shown. */
+  shownHitCount: number;
+  /** `hitCount - shownHitCount`: matches the server found that the list cannot
+   *  paint. Zero means search is showing everything it was given. */
+  hiddenHitCount: number;
+  /** The backend had more matches than it returned; `hitCount` is a floor. */
+  truncated: boolean;
+}
+
+let reachCache: {
+  sessions: Map<string, SessionSummary>;
+  filter: FilterState;
+  contentHits: ContentHits | null;
+  result: ContentSearchReach | null;
+} | null = null;
+
+/** The reach of the active content search, or null when none is active (no query,
+ *  or the hits for it have not landed yet). */
+export function selectContentSearchReach(state: ChatState): ContentSearchReach | null {
+  const { sessions, filter, contentHits } = state;
+  if (
+    reachCache &&
+    reachCache.sessions === sessions &&
+    reachCache.filter === filter &&
+    reachCache.contentHits === contentHits
+  ) {
+    return reachCache.result;
+  }
+  let result: ContentSearchReach | null = null;
+  const query = filter.search.trim();
+  if (query && contentHits && contentHits.query === query) {
+    let shown = 0;
+    for (const group of visibleSessions(state)) {
+      for (const s of group.sessions) if (contentHits.ids.has(s.sessionId)) shown++;
+    }
+    result = {
+      query,
+      hitCount: contentHits.hitCount,
+      shownHitCount: shown,
+      hiddenHitCount: Math.max(0, contentHits.hitCount - shown),
+      truncated: contentHits.truncated,
+    };
+  }
+  reachCache = { sessions, filter, contentHits, result };
+  return result;
 }
 
 /** Cross-axis facet counts: for each faceted filter axis, a `value → count` map over
