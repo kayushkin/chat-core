@@ -48,18 +48,37 @@ function useActions(): ChatActions {
  *  indicator: a session the server still reports as running/holding but whose warm
  *  tail is terminal reads as completed/failed, so a stale spinner self-heals on open
  *  (F1). The function's identity changes when the tails or session maps change, so a
- *  settling tail re-renders the affected rows. */
+ *  settling tail re-renders the affected rows.
+ *
+ *  The list is ONE page deep on boot. `moreSessions` is true while the server holds
+ *  older sessions the sidebar has not loaded, and `loadOlderSessions()` pulls the next
+ *  page — the sidebar must offer both, or every session past the first page is
+ *  unreachable. Note `total` counts the LOADED-and-filter-passing rows, never a server
+ *  total: the summary endpoint reports no count, so "at least one more page" is the
+ *  strongest claim available.
+ *
+ *  Filtering and the chip facets are computed over the loaded window only, so paging
+ *  widens what a filter can match — that is the intended relationship, and why the
+ *  affordance must stay reachable even when the current filter matches nothing. */
 export function useSessionList(): {
   groups: { folder: string; sessions: SessionSummary[] }[];
   total: number;
   loading: boolean;
   effectiveState: (sessionId: string) => string;
   facets: Facets;
+  moreSessions: boolean;
+  loadingOlderSessions: boolean;
+  loadOlderSessions: () => void;
 } {
-  const { store } = useChatContext();
+  const { store, prefetcher } = useChatContext();
   const groups = useStore(store, visibleSessions);
   const total = useStore(store, visibleCount);
   const loading = useStore(store, (s) => s.listLoading);
+  const moreSessions = useStore(store, (s) => s.olderSessionsCursor !== null);
+  const loadingOlderSessions = useStore(store, (s) => s.olderSessionsLoading);
+  const loadOlderSessions = useCallback(() => {
+    void prefetcher.loadOlderSessions();
+  }, [prefetcher]);
   // Cross-axis facet counts over the FULL loaded set (independent of the active filter),
   // so the sidebar can render every available option with its count. Memoized on the
   // sessions Map identity (see selectFacets).
@@ -70,7 +89,16 @@ export function useSessionList(): {
     (sessionId: string) => effectiveState(store.getState(), sessionId),
     [store, turnsBySession, sessions],
   );
-  return { groups, total, loading, effectiveState: effState, facets };
+  return {
+    groups,
+    total,
+    loading,
+    effectiveState: effState,
+    facets,
+    moreSessions,
+    loadingOlderSessions,
+    loadOlderSessions,
+  };
 }
 
 /** Active session id + a synchronous setter. */

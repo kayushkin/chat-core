@@ -114,6 +114,15 @@ export interface ChatState {
   folders: string[];
   connState: ConnState;
   listLoading: boolean;
+  /** The opaque cursor for the page of sessions OLDER than everything loaded, taken
+   *  from the last summary response's `next`. `null` means there is no older page —
+   *  either the server said so (a short page), or no page has landed yet. This is the
+   *  only "is the sidebar truncated?" signal that exists: the summary endpoint reports
+   *  no total, so a non-null cursor means "at least one more page", never "N more". */
+  olderSessionsCursor: string | null;
+  /** True while the older-sessions page fetch is in flight. Guards the fetch against a
+   *  second scroll/click firing before the first lands. */
+  olderSessionsLoading: boolean;
   turnsLoading: Set<string>;
   moreBySession: Map<string, boolean>;
   drafts: Map<string, string>;
@@ -141,7 +150,17 @@ export interface ChatActions {
   setConn(state: ConnState): void;
   setListLoading(loading: boolean): void;
 
-  setSessions(list: SessionSummary[]): void;
+  /** Replace the loaded window with `list` and re-anchor the older-sessions cursor to
+   *  `olderSessionsCursor`. Replace, not merge, is deliberate: the first page IS the
+   *  window, so a session the server no longer returns must leave the sidebar. That
+   *  also means any older page loaded earlier is dropped — correct, because its cursor
+   *  is re-anchored in the same call and the user can page down again. */
+  setSessions(list: SessionSummary[], olderSessionsCursor?: string | null): void;
+  /** Merge one page of OLDER sessions into the loaded window and advance the cursor.
+   *  Merges (never replaces) so the newer pages already on screen survive, and clears
+   *  `olderSessionsLoading`. */
+  appendOlderSessions(list: SessionSummary[], olderSessionsCursor: string | null): void;
+  setOlderSessionsLoading(loading: boolean): void;
   upsertSession(summary: SessionSummary): void;
   removeSession(sessionId: string): void;
 
@@ -228,10 +247,38 @@ export function createChatStore(): ChatStoreApi {
         set({ listLoading });
       },
 
-      setSessions(list) {
+      setSessions(list, olderSessionsCursor = null) {
         const sessions = new Map<string, SessionSummary>();
         for (const s of list) sessions.set(s.sessionId, s);
-        set({ sessions, folders: collectFolders(sessions.values()), listLoading: false });
+        set({
+          sessions,
+          folders: collectFolders(sessions.values()),
+          listLoading: false,
+          olderSessionsCursor,
+          olderSessionsLoading: false,
+        });
+      },
+
+      appendOlderSessions(list, olderSessionsCursor) {
+        // One Map copy and one folder scan for the whole page — a per-row
+        // `upsertSession` loop would do both 100 times over.
+        const sessions = new Map(get().sessions);
+        for (const s of list) {
+          const prev = sessions.get(s.sessionId);
+          // A row that arrived live over SSE while the page was in flight is newer
+          // than the page; keep the live fields on top.
+          sessions.set(s.sessionId, prev ? { ...s, ...prev } : s);
+        }
+        set({
+          sessions,
+          folders: collectFolders(sessions.values()),
+          olderSessionsCursor,
+          olderSessionsLoading: false,
+        });
+      },
+
+      setOlderSessionsLoading(olderSessionsLoading) {
+        set({ olderSessionsLoading });
       },
 
       upsertSession(summary) {
@@ -510,6 +557,8 @@ export function createChatStore(): ChatStoreApi {
       folders: [],
       connState: 'idle',
       listLoading: false,
+      olderSessionsCursor: null,
+      olderSessionsLoading: false,
       turnsLoading: new Set(),
       moreBySession: new Map(),
       drafts: new Map(),

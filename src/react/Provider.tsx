@@ -12,6 +12,7 @@ export interface ChatProviderProps {
   basePath: string; // '/api/bridge'
   recentN?: number; // warm-cache size, default 20
   turnsPerBundle?: number; // last-N turns per bundled session, default 30
+  sessionsPerPage?: number; // sidebar sessions per page, default 100
   cache?: boolean; // enable IndexedDB persistence, default true
   children: ReactNode;
 }
@@ -22,7 +23,15 @@ export interface ChatProviderProps {
  * prime). Everything is created exactly once for the provider's lifetime.
  */
 export function ChatProvider(props: ChatProviderProps): JSX.Element {
-  const { fetch: fetchFn, basePath, recentN = 20, turnsPerBundle = 30, cache = true, children } = props;
+  const {
+    fetch: fetchFn,
+    basePath,
+    recentN = 20,
+    turnsPerBundle = 30,
+    sessionsPerPage,
+    cache = true,
+    children,
+  } = props;
 
   const ctxRef = useRef<ChatContextValue | null>(null);
   if (ctxRef.current === null) {
@@ -35,6 +44,7 @@ export function ChatProvider(props: ChatProviderProps): JSX.Element {
       cache: sessionCache,
       recentN,
       turnsPerBundle,
+      sessionsPerPage,
     });
     const sync = new SyncEngine({ store, api, cache: sessionCache });
     ctxRef.current = { store, api, cache: sessionCache, sync, prefetcher };

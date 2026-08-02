@@ -5,8 +5,13 @@ import type { ChatStoreApi } from '../store/ChatStore.js';
 
 // Boot sequence (§6) + hover/idle prefetch. The boot order is the whole latency
 // story: hydrate from cache and PAINT first (0 network), THEN fan out the three
-// parallel reads, THEN background-page the rest of the list. Hover/idle prefetch
-// warms a cold session before the click so a select() is a Map read.
+// parallel reads. Hover/idle prefetch warms a cold session before the click so a
+// select() is a Map read.
+//
+// Boot deliberately loads ONE page of sessions and stops. Pages past the first are
+// pulled by `loadOlderSessions()` when the user scrolls to the end of the sidebar —
+// this box has over 5,000 sessions, and background-paging them all is the unbounded
+// list load the whole rewrite exists to kill.
 
 export interface PrefetcherConfig {
   store: ChatStoreApi;
@@ -15,15 +20,22 @@ export interface PrefetcherConfig {
   recentN?: number;
   turnsPerBundle?: number;
   cacheLimit?: number;
+  /** Sessions per sidebar page, for the boot page and every older page after it. */
+  sessionsPerPage?: number;
 }
 
 export class Prefetcher {
+  /** Default sessions per sidebar page. Mirrors the summary endpoint's own default
+   *  so a boot that names no page size asks for exactly what the server would give. */
+  static readonly DEFAULT_SESSIONS_PER_PAGE = 100;
+
   private readonly store: ChatStoreApi;
   private readonly api: ApiClient;
   private readonly cache: SessionCache;
   private readonly recentN: number;
   private readonly turnsPerBundle: number;
   private readonly cacheLimit: number;
+  private readonly sessionsPerPage: number;
   private readonly inFlight = new Set<string>();
 
   constructor(config: PrefetcherConfig) {
@@ -33,6 +45,7 @@ export class Prefetcher {
     this.recentN = config.recentN ?? 20;
     this.turnsPerBundle = config.turnsPerBundle ?? 30;
     this.cacheLimit = config.cacheLimit ?? 50;
+    this.sessionsPerPage = config.sessionsPerPage ?? Prefetcher.DEFAULT_SESSIONS_PER_PAGE;
   }
 
   /** Step 1: hydrate the store from IndexedDB and paint. 0 network. Resolves
@@ -42,7 +55,14 @@ export class Prefetcher {
     const actions = this.store.getState().actions;
     try {
       const hydrated = await this.cache.hydrate();
-      if (hydrated.list.length > 0) actions.setSessions(hydrated.list);
+      // Bounded to one page. The cache's list store is append-only — every session
+      // ever seen live is written to it by the SyncEngine and nothing evicts a list
+      // row — so an unbounded paint would show hundreds of rows and then SHRINK back
+      // to one page the moment the network's first page replaced them. The cached
+      // list is sorted newest-first, so the head of it is the same window page one
+      // is about to confirm.
+      const painted = hydrated.list.slice(0, this.sessionsPerPage);
+      if (painted.length > 0) actions.setSessions(painted);
       for (const [id, model] of hydrated.turns) actions.setTurns(id, model);
     } catch {
       // Cold cache / disabled — the network paint below covers it.
@@ -58,9 +78,12 @@ export class Prefetcher {
     const cachedIds = [...this.store.getState().turnsBySession.keys()];
 
     const summaryP = this.api
-      .getSummary({ limit: 100 })
+      .getSummary({ limit: this.sessionsPerPage })
       .then((resp) => {
-        actions.setSessions(resp.sessions);
+        // `resp.next` is the only truncation signal the endpoint offers (it carries no
+        // total), so carrying it into the store is what lets the sidebar say "there is
+        // more" and page down. Dropping it was the whole 100-session cap.
+        actions.setSessions(resp.sessions, resp.next ?? null);
         void this.cache.putList(resp.sessions);
         return resp;
       })
@@ -95,6 +118,38 @@ export class Prefetcher {
   async boot(): Promise<void> {
     await this.hydrateFromCache();
     await this.prime();
+  }
+
+  /** Pull the next page of OLDER sessions and merge it into the sidebar's window.
+   *
+   *  No-op when the store holds no cursor (the server said there is nothing older) or
+   *  when a page is already in flight — the in-flight flag is set synchronously before
+   *  the fetch, so a scroll event and a button click firing in the same tick cannot
+   *  both start a request.
+   *
+   *  These pages are NOT written to the IndexedDB cache. The cache exists for the cold
+   *  first paint, which is bounded to one page; persisting every page the user scrolled
+   *  through would grow the cached list without bound and slow every subsequent boot,
+   *  for a window that a reload resets anyway. Re-fetching a page is one cheap
+   *  projected request.
+   *
+   *  Resolves when the page has landed or failed. A failure leaves the cursor in place
+   *  so the affordance stays and the user can retry, and is logged rather than
+   *  swallowed — an older page that silently never arrives reads as "that is all the
+   *  sessions there are", which is the exact lie this method exists to fix. */
+  async loadOlderSessions(): Promise<void> {
+    const state = this.store.getState();
+    const cursor = state.olderSessionsCursor;
+    if (!cursor || state.olderSessionsLoading) return;
+    const actions = state.actions;
+    actions.setOlderSessionsLoading(true);
+    try {
+      const resp = await this.api.getSummary({ limit: this.sessionsPerPage, before: cursor });
+      actions.appendOlderSessions(resp.sessions, resp.next ?? null);
+    } catch (err) {
+      actions.setOlderSessionsLoading(false);
+      console.error('chat-core: older sessions page failed', err);
+    }
   }
 
   /** Hover/idle hint: warm a cold session so the next click is a Map read.

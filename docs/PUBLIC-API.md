@@ -19,6 +19,7 @@ export interface ChatProviderProps {
   basePath: string;             // '/api/bridge'
   recentN?: number;             // warm-cache size, default 20
   turnsPerBundle?: number;      // last-N turns per bundled session, default 30
+  sessionsPerPage?: number;     // sidebar sessions per page, default 100
   cache?: boolean;              // enable IndexedDB persistence, default true
   children: ReactNode;
 }
@@ -34,12 +35,25 @@ export function ChatProvider(props: ChatProviderProps): JSX.Element;
 // active filter), so the sidebar can render every available option + count and offer
 // multi-select. Memoized on the sessions Map identity. (A `useFacets()` hook was NOT
 // added — facets ride on `useSessionList` since the sidebar renders both together.)
+//
+// The list is ONE PAGE deep on boot (`sessionsPerPage`, default 100), because this box
+// carries thousands of sessions and loading them all is the unbounded list the rewrite
+// exists to kill. `moreSessions` is true while the server holds older sessions the client
+// has not loaded, and `loadOlderSessions()` pulls the next cursor page and MERGES it —
+// a sidebar that renders neither leaves every session past the first page unreachable.
+// `total` counts the loaded-and-filter-passing rows and is never a server total: the
+// summary endpoint reports no count, so "at least one more page" is the strongest honest
+// claim. Filtering and `facets` are computed over the loaded window only, so paging is
+// also what widens what a filter can reach.
 export function useSessionList(): {
   groups: { folder: string; sessions: SessionSummary[] }[];
   total: number;
   loading: boolean;
   effectiveState: (sessionId: string) => string;
   facets: Facets;
+  moreSessions: boolean;
+  loadingOlderSessions: boolean;
+  loadOlderSessions: () => void;
 };
 
 // Active session id + setter. select() is synchronous: it swaps the active id and renders
