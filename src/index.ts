@@ -7,6 +7,7 @@ export {
   useConnState,
   useSessionList,
   useActiveSession,
+  usePendingSession,
   useTurns,
   useComposer,
   useFilters,

@@ -11,7 +11,13 @@ import type {
   SessionSummary,
   Turn,
 } from '../net/types.js';
-import { EMPTY_HOOKS, type ChatActions, type ConnState, type FilterState } from '../store/ChatStore.js';
+import {
+  EMPTY_HOOKS,
+  type ChatActions,
+  type ConnState,
+  type FilterState,
+  type PendingSession,
+} from '../store/ChatStore.js';
 import { changeSessionPermissionMode } from '../store/permissionMode.js';
 import { resolvePendingHook } from '../store/pendingHooks.js';
 import {
@@ -161,6 +167,21 @@ export function useActiveSession(): {
   );
 
   return { id, select, summary };
+}
+
+/** The pending (not-yet-created) session pane, or null when none is open.
+ *
+ *  `activeId === null` covers two different situations that a UI has to draw
+ *  differently: nothing is selected, and a new chat is open but has not been sent yet.
+ *  `openPending` already sets `activeId` to null, so without this selector the two are
+ *  indistinguishable and a freshly opened new chat renders as an empty pane.
+ *
+ *  The value is the store's, not a guess: it carries the instance/harness the first
+ *  send will create the session on, so a header can name the target BEFORE the session
+ *  exists. It is null again the moment the real session is created (`clearPending`). */
+export function usePendingSession(): PendingSession | null {
+  const { store } = useChatContext();
+  return useStore(store, (s) => s.pending);
 }
 
 /** Turns for a session, honoring the collapsed/raw view. */

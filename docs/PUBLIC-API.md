@@ -78,6 +78,14 @@ export function useActiveSession(): {
   summary: SessionSummary | null;
 };
 
+// The pending (not-yet-created) session pane, or null. `openPending` sets `activeId` to
+// null, so "nothing is selected" and "a new chat is open, unsent" look identical through
+// useActiveSession alone — a UI that cannot tell them apart draws a freshly opened new
+// chat as an empty pane. The value carries the instance/harness the first send will create
+// the session on, so a header can name the target before the session exists, and it goes
+// back to null the moment the real session is created.
+export function usePendingSession(): PendingSession | null;
+
 // Turns for a session. `view: 'turns'` = collapsed (dupes hidden); `view: 'raw'` = every
 // entry incl. duplicates, ordered by eventId. `sourcesFor(entryId)` returns the group's
 // members for the sources badge. Never throws on a cold session — returns loading + triggers
