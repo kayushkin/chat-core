@@ -22,6 +22,7 @@ export {
   useContextUsage,
   usePendingPermissions,
   useBudgetHalt,
+  useActivity,
   usePrefetch,
 } from './react/hooks.js';
 export { RefChip, type RefChipProps } from './react/RefChip.js';
@@ -130,6 +131,13 @@ export {
   HOOK_PHASE_COMPLETED,
 } from './store/pendingHooks.js';
 export {
+  activityFromEvent,
+  sameActivity,
+  IDLE_ACTIVITY,
+  type ActivityKind,
+} from './store/activity.js';
+export { RUNNING_STATES, isRunningState } from './store/sessionStates.js';
+export {
   budgetHaltFromEvent,
   budgetHaltFromRefusal,
   ERR_CODE_BUDGET_EXCEEDED,
@@ -141,6 +149,8 @@ export {
   activeSummary,
   activeSummaryEffective,
   effectiveState,
+  selectActivity,
+  activeActivity,
   turnsFor,
   turnList,
   entriesFor,
@@ -178,7 +188,11 @@ export {
   groupMembers,
   isOTelSourced,
 } from './reduce/otelDedup.js';
-export { terminalStateFromTail } from './reduce/terminalState.js';
+export {
+  terminalStateFromTail,
+  TERMINAL_ERROR_CODES,
+  TERMINAL_EVENT_TYPES,
+} from './reduce/terminalState.js';
 export {
   parseRefChips,
   remarkRefChips,

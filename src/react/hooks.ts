@@ -31,8 +31,10 @@ import {
 } from '../store/folders.js';
 import { resolvePendingHook } from '../store/pendingHooks.js';
 import { budgetHaltFromRefusal, type BudgetHalt } from '../store/budgetHalt.js';
+import type { ActivityKind } from '../store/activity.js';
 import {
   activeSummaryEffective,
+  selectActivity,
   contextUsage,
   effectiveState,
   harnessCapabilities,
@@ -1109,6 +1111,30 @@ export function useBudgetHalt(sessionId: string | null): {
   );
 
   return { halt, raiseCeiling };
+}
+
+/**
+ * What a session is doing at this instant — `{kind:'thinking'}`, `{kind:'streaming'}`,
+ * `{kind:'tool', name}` or `{kind:'idle'}`.
+ *
+ * This is the live half of a status label. `useSessionList().effectiveState` answers
+ * "what phase is this session in", which is a row the server writes and can strand;
+ * this answers "what is it doing right now", read off the event that just arrived.
+ * A header chip wants both: the state as the word, the activity as the suffix.
+ *
+ * ⚠️ Do NOT gate the suffix on the session's state. bridge-ui does, on
+ * `starting`/`model_generating`/`tool_running`/`compacting`, and three of those four
+ * are emitted zero times — its own suffix has therefore never rendered in anger. An
+ * activity that is not `idle` is itself the evidence that work is happening, because
+ * the only thing that can produce one is an event that just arrived; render on that
+ * alone.
+ *
+ * ⚠️ Meaningful for the ACTIVE session only. Every other session reports idle,
+ * because chat-core opens no stream for it — see `ChatState.activity`.
+ */
+export function useActivity(sessionId: string | null): ActivityKind {
+  const { store } = useChatContext();
+  return useStore(store, (s) => selectActivity(s, sessionId));
 }
 
 /** Prefetch hint — call on sidebar row hover. Warms a cold session. */

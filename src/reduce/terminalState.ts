@@ -13,10 +13,17 @@ import type { TurnModel } from '../net/types.js';
 /** Error codes that terminate a turn (per the OTel consumer contract). Distinct from
  *  api_error / api_retries_exhausted, which are INFORMATIONAL chips and must NOT clear
  *  the running state. */
-const TERMINAL_ERROR_CODES = new Set(['TURN_IDLE_TIMEOUT', 'PROCESS_DIED']);
+export const TERMINAL_ERROR_CODES: ReadonlySet<string> = new Set([
+  'TURN_IDLE_TIMEOUT',
+  'PROCESS_DIED',
+]);
 
 /** Raw event types that terminate a turn: the normal completion signals. */
-const TERMINAL_EVENT_TYPES = new Set(['turn_complete', 'close', 'result']);
+export const TERMINAL_EVENT_TYPES: ReadonlySet<string> = new Set([
+  'turn_complete',
+  'close',
+  'result',
+]);
 
 /**
  * Scan a materialized tail for a terminal signal and report the state it implies:

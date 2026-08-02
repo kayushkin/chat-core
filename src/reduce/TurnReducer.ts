@@ -61,7 +61,13 @@ function sourceOf(data: WireEventData): 'harness' | 'otel' {
 
 // The entry kind + role an event maps to. Mirrors bridge-ui's rowKindOf/actorFor,
 // projected onto the chat-core Entry vocabulary.
-function kindOf(ev: WireEvent): EntryKind {
+//
+// Exported because the activity fold (store/activity.ts) needs exactly this
+// discrimination — is a stream delta thinking or plain text, is a block a thinking
+// block — and a second copy of it would drift. Note it deliberately collapses
+// `tool_call` and `tool_result` onto one kind; a caller that has to tell those two
+// apart still switches on `ev.type` itself.
+export function kindOf(ev: WireEvent): EntryKind {
   switch (ev.type) {
     case 'user_message':
       return 'text';

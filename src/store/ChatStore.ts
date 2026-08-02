@@ -15,6 +15,7 @@ import type {
 import type { WireEvent } from '../net/wireEvents.js';
 import { applyEvent, initTailState, type TailState } from '../reduce/TurnReducer.js';
 import { foldHookEvent } from './pendingHooks.js';
+import { activityFromEvent, sameActivity, type ActivityKind } from './activity.js';
 import { budgetHaltFromEvent, type BudgetHalt } from './budgetHalt.js';
 import { DraftStore, defaultDraftStorage, type DraftStorageLike } from './draftStorage.js';
 import { FilterStore, PERSISTED_FILTER_AXES } from './filterStorage.js';
@@ -160,6 +161,17 @@ export interface ChatState {
    *  answering. Set from the 402 a refused request throws and from the mid-turn
    *  `budget_exceeded` error event; cleared when the ceiling is raised. */
   budgetHalts: Map<string, BudgetHalt>;
+  /** What a session is doing right now, `sessionId -> ActivityKind` — thinking,
+   *  streaming, or the tool it is running. Folded off the live event stream by
+   *  `applyTailEvent`; see `store/activity.ts` for why this is not the same fact as
+   *  `SessionSummary.state`.
+   *
+   *  ⚠️ Holds at most the ACTIVE session, and `setActive` clears it. Only the active
+   *  session has a live stream (`sync/SyncEngine.ts`), so an entry left behind for a
+   *  session the user has navigated away from cannot be refreshed and would sit there
+   *  naming a tool that finished minutes ago. A sub-label on non-active SIDEBAR rows
+   *  is not reachable from this map by design — it needs a field on the summary wire. */
+  activity: Map<string, ActivityKind>;
   activeId: string | null;
   filter: FilterState;
   /** Content-search hits for the current `filter.search`, or null when none have
@@ -442,6 +454,8 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
         sessionDetailLoading.delete(sessionId);
         const pendingHooks = new Map(get().pendingHooks);
         pendingHooks.delete(sessionId);
+        const activity = new Map(get().activity);
+        activity.delete(sessionId);
         // The one authoritative "this session is gone" signal there is, so it is the
         // one place a draft can be dropped for a reason rather than for age. Persist
         // the removal too, or the draft comes straight back on the next reload.
@@ -453,6 +467,7 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
           turnsBySession,
           tails,
           pendingHooks,
+          activity,
           sessionInfo,
           sessionInfoLoading,
           sessionDetail,
@@ -467,7 +482,15 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
       },
 
       setActive(activeId) {
-        set({ activeId });
+        // Dropping the whole activity map on every switch, rather than the outgoing
+        // session's entry: the incoming session's entry is just as stale. Only the
+        // active session has a live stream, so an entry for any other session was
+        // last written the previous time it WAS active and has had no way to move
+        // since — coming back to a session it had left mid-tool, the label would say
+        // `· Bash` for a tool that finished an hour ago. An empty map reads as idle
+        // and the first event of the new stream fills it in.
+        const activity = get().activity.size ? new Map<string, ActivityKind>() : get().activity;
+        set({ activeId, activity });
       },
 
       setTurns(sessionId, model) {
@@ -501,6 +524,21 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
         // session that stopped mid-answer with no visible cause.
         const halt = budgetHaltFromEvent(sessionId, event);
         if (halt) actions.setBudgetHalt(halt);
+        // Activity is folded FIRST for a third version of the same reason, and this
+        // one is the sharpest: a `stream` delta that repeats an eventId the reducer
+        // has already folded is an exact no-op for the transcript and still the best
+        // evidence there is that the model is generating RIGHT NOW. Behind the early
+        // return it would be dropped, and the label would freeze on whatever came
+        // before. `sameActivity` keeps the per-token churn from reaching subscribers.
+        const nextActivity = activityFromEvent(event);
+        if (nextActivity) {
+          const prior = state.activity.get(sessionId);
+          if (!prior || !sameActivity(prior, nextActivity)) {
+            const activity = new Map(state.activity);
+            activity.set(sessionId, nextActivity);
+            set({ activity });
+          }
+        }
         let tail = getOrInitTail(state, sessionId);
         // Strip a matching optimistic user row when the real user_message lands,
         // so the two don't double-show (both are harness-sourced, so the OTel
@@ -786,6 +824,7 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
       tails: new Map(),
       pendingHooks: new Map(),
       budgetHalts: new Map(),
+      activity: new Map(),
       activeId: null,
       filter: { ...EMPTY_FILTER, ...persistedFilterAxes },
       contentHits: null,

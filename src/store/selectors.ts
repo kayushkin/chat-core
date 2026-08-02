@@ -1,6 +1,8 @@
 import type { Entry, HarnessMeta, ModelOption, SessionSummary, Turn, TurnModel } from '../net/types.js';
 import { annotateOTelDuplicates, groupMembers } from '../reduce/otelDedup.js';
 import { terminalStateFromTail } from '../reduce/terminalState.js';
+import { IDLE_ACTIVITY, type ActivityKind } from './activity.js';
+import { isRunningState } from './sessionStates.js';
 import type { ChatState, ContentHits, FilterState } from './ChatStore.js';
 
 // Memoized selectors over the hot store. Kept pure + framework-free so they are
@@ -340,19 +342,11 @@ export function activeSummary(state: ChatState): SessionSummary | null {
   return state.sessions.get(state.activeId) ?? null;
 }
 
-// Summary states that mean "still working" — the ones a terminal tail may override.
-// Parked/settled states (awaiting_user, awaiting_permission, paused, idle, completed,
-// error, aborted, disconnected) are left untouched: they are not stale spinners.
-const RUNNING_STATES = new Set([
-  'starting',
-  'model_generating',
-  'tool_running',
-  'compacting',
-  'rate_limited',
-  'running',
-  'holding',
-  'waiting_on_approval',
-]);
+// The states that mean "still working" — the ones a terminal tail may override — now
+// live in ./sessionStates.js, because the activity fold has to agree with this list
+// about when a turn has ended. Parked/settled states (awaiting_user,
+// awaiting_permission, paused, idle, completed, error, aborted, disconnected) are left
+// untouched: they are not stale spinners.
 
 /**
  * The effective (reconciled) state of a session. If the session's cached/warm
@@ -366,10 +360,35 @@ export function effectiveState(state: ChatState, sessionId: string | null): stri
   if (!sessionId) return '';
   const summary = state.sessions.get(sessionId);
   const raw = summary?.state ?? '';
-  if (!RUNNING_STATES.has(raw)) return raw;
+  if (!isRunningState(raw)) return raw;
   const terminal = terminalStateFromTail(state.turnsBySession.get(sessionId));
   if (!terminal) return raw;
   return terminal === 'failed' ? 'failed' : 'completed';
+}
+
+/**
+ * What a session is doing right now — thinking, streaming, or the tool it is running
+ * — or `idle`. See `store/activity.ts`.
+ *
+ * Returns the shared `IDLE_ACTIVITY` reference for every session with no entry, so a
+ * `useStore` subscription on an idle session never sees a new object and never
+ * re-renders on identity alone.
+ *
+ * ⚠️ Only the ACTIVE session ever has an entry. This deliberately does NOT fall back
+ * to reading the session's state, because there is no honest translation: a summary
+ * that says `tool_running` cannot say WHICH tool, and guessing `streaming` from
+ * `running` would put a label on screen that no event supports. A session with no
+ * live stream is reported idle, and the caller decides whether to show the state
+ * instead.
+ */
+export function selectActivity(state: ChatState, sessionId: string | null): ActivityKind {
+  if (!sessionId) return IDLE_ACTIVITY;
+  return state.activity.get(sessionId) ?? IDLE_ACTIVITY;
+}
+
+/** The active session's activity. */
+export function activeActivity(state: ChatState): ActivityKind {
+  return selectActivity(state, state.activeId);
 }
 
 // Memo for the reconciled active summary: recompute only when the summary object or
