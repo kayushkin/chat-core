@@ -901,7 +901,20 @@ export function useModels(harnessId?: string | null): ModelOption[] {
  *  timeout) — the POST only ACKs, so this never fakes completion, mirroring bridge-ui.
  *  `forking` is true for the fork request's duration; on success it navigates the store to
  *  the new fork (whose summary arrives via the list SSE upsert). `error` is the last
- *  control error, or null. */
+ *  control error, or null.
+ *
+ *  ⚠️ `compacting` answers "is THIS session compacting", not "did this hook ask for a
+ *  compaction". It was a bare boolean, and a bare boolean is a claim about the wrong
+ *  subject: switching sessions mid-compaction carried it onto whatever session was opened
+ *  next, which then reported a compaction it was not running until the 180s timeout fired.
+ *  What is remembered is the session id the request was made FOR, and `compacting` is that
+ *  id matching the one being asked about — so the answer travels with the session rather
+ *  than with the component. Consumers see no difference in the type.
+ *
+ *  The clear-on-boundary watch necessarily only runs while that session is the one being
+ *  read, since it is the only model this hook subscribes to. A compaction that finishes
+ *  while the user is elsewhere is therefore cleared on their return, or by the timeout —
+ *  never by faking a completion nobody observed. */
 export function useSessionControls(sessionId: string | null): {
   compact: (summary?: string) => Promise<void>;
   fork: (displayName?: string) => Promise<void>;
@@ -913,7 +926,9 @@ export function useSessionControls(sessionId: string | null): {
 } {
   const { store, api } = useChatContext();
   const actions = useActions();
-  const [compacting, setCompacting] = useState(false);
+  // The session a compaction is in flight FOR, or null. See the header: this is the whole
+  // of why the flag does not leak across a session switch.
+  const [compactingSession, setCompactingSession] = useState<string | null>(null);
   const [forking, setForking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const model = useStore(store, (s) => (sessionId ? turnsFor(s, sessionId) : undefined));
@@ -921,6 +936,8 @@ export function useSessionControls(sessionId: string | null): {
   // newer than this, so a boundary already in history never resolves a fresh request.
   const compactStart = useRef<number>(-1);
   const compactTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const compacting = compactingSession !== null && compactingSession === sessionId;
 
   const clearCompactTimer = useCallback(() => {
     if (compactTimer.current) {
@@ -930,11 +947,16 @@ export function useSessionControls(sessionId: string | null): {
   }, []);
 
   // Clear `compacting` when the canonical compact_boundary system entry arrives.
+  //
+  // Gated on `compacting` rather than on `compactingSession` alone, so it only reads the
+  // model it is actually subscribed to: with the user on another session, `model` is that
+  // OTHER session's entries, and a compact_boundary sitting in ITS history would clear a
+  // request that belongs to a session this effect cannot see.
   useEffect(() => {
     if (!compacting || !model) return;
     for (const e of Object.values(model.entries)) {
       if (e.kind === 'system' && e.subtype === 'compact_boundary' && e.eventId > compactStart.current) {
-        setCompacting(false);
+        setCompactingSession(null);
         clearCompactTimer();
         return;
       }
@@ -948,19 +970,19 @@ export function useSessionControls(sessionId: string | null): {
       if (!sessionId) return;
       setError(null);
       compactStart.current = store.getState().turnsBySession.get(sessionId)?.validator.maxEventId ?? -1;
-      setCompacting(true);
+      setCompactingSession(sessionId);
       clearCompactTimer();
       // Safety net: a large context can take a while; the boundary event normally clears
       // this well before the timeout fires.
       compactTimer.current = setTimeout(() => {
         compactTimer.current = null;
-        setCompacting(false);
+        setCompactingSession(null);
       }, 180000);
       try {
         await api.compact(sessionId, summary);
       } catch (e) {
         clearCompactTimer();
-        setCompacting(false);
+        setCompactingSession(null);
         setError(e instanceof Error ? e.message : String(e));
         throw e;
       }
