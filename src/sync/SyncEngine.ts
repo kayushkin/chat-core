@@ -1,6 +1,6 @@
 import type { ApiClient } from '../net/ApiClient.js';
 import type { SessionCache } from '../cache/SessionCache.js';
-import { enforceCacheBound } from '../cache/evict.js';
+import { DEFAULT_LIST_CACHE_LIMIT, enforceCacheBound } from '../cache/evict.js';
 import type { ChatStoreApi } from '../store/ChatStore.js';
 import type { Validator } from '../net/types.js';
 import { connectListSSE, connectSessionSSE } from './sse.js';
@@ -21,6 +21,10 @@ export interface SyncEngineConfig {
   cache: SessionCache;
   sweepIntervalMs?: number;
   sweepLimit?: number;
+  /** Sidebar sessions per page. Bounds the cache's list store, whose only reader
+   *  is the cold-boot paint — one page wide. Must match the Prefetcher's, or the
+   *  sweep trims rows the next boot wanted to paint. */
+  sessionsPerPage?: number;
 }
 
 function validatorsEqual(a: Validator | undefined, b: Validator | undefined): boolean {
@@ -34,6 +38,7 @@ export class SyncEngine {
   private readonly cache: SessionCache;
   private readonly sweepIntervalMs: number;
   private readonly sweepLimit: number;
+  private readonly sessionsPerPage: number;
 
   private listAbort: AbortController | null = null;
   private activeAbort: AbortController | null = null;
@@ -53,6 +58,7 @@ export class SyncEngine {
     this.cache = config.cache;
     this.sweepIntervalMs = config.sweepIntervalMs ?? 15000;
     this.sweepLimit = config.sweepLimit ?? 50;
+    this.sessionsPerPage = config.sessionsPerPage ?? DEFAULT_LIST_CACHE_LIMIT;
   }
 
   start(): void {
@@ -202,6 +208,24 @@ export class SyncEngine {
   // --- validator sweep + silent repair ---
 
   async sweepValidators(): Promise<void> {
+    try {
+      await this.repairChangedValidators();
+    } finally {
+      // The bound is local housekeeping, not part of the validator work, so it
+      // runs on a tick that found nothing cached and on a tick whose network read
+      // failed. It used to sit at the tail of the method below, past two early
+      // returns — and the list store grows from the live stream's upserts, which
+      // do not stop when the sweep has nothing to check. A tab left open with no
+      // session ever selected took neither branch and trimmed nothing.
+      if (this.cache.isEnabled) {
+        void enforceCacheBound(this.cache, this.sweepLimit, this.sessionsPerPage);
+      }
+    }
+  }
+
+  /** Compare each cached session's validator against the server's and repair the
+   *  ones that both changed and are on screen. */
+  private async repairChangedValidators(): Promise<void> {
     const state = this.store.getState();
     const cachedIds = [...state.turnsBySession.keys()].slice(0, this.sweepLimit);
     if (cachedIds.length === 0) return;
@@ -227,10 +251,6 @@ export class SyncEngine {
       if (this.isDisplayed(id)) {
         await this.repairSession(id);
       }
-    }
-
-    if (this.cache.isEnabled) {
-      void enforceCacheBound(this.cache, this.sweepLimit);
     }
   }
 

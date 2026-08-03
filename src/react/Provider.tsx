@@ -46,7 +46,10 @@ export function ChatProvider(props: ChatProviderProps): JSX.Element {
       turnsPerBundle,
       sessionsPerPage,
     });
-    const sync = new SyncEngine({ store, api, cache: sessionCache });
+    // The page size goes to BOTH: the Prefetcher paints one page from the cache
+    // and the SyncEngine's sweep trims the cache to it. Configure one and not the
+    // other and the sweep drops rows the next boot paint wanted.
+    const sync = new SyncEngine({ store, api, cache: sessionCache, sessionsPerPage });
     ctxRef.current = { store, api, cache: sessionCache, sync, prefetcher };
   }
 

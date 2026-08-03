@@ -206,7 +206,13 @@ export {
   type HydratedCache,
   type CachedListRow,
 } from './cache/SessionCache.js';
-export { selectEvictions, enforceCacheBound, DEFAULT_CACHE_LIMIT } from './cache/evict.js';
+export {
+  selectEvictions,
+  enforceCacheBound,
+  enforceListBound,
+  DEFAULT_CACHE_LIMIT,
+  DEFAULT_LIST_CACHE_LIMIT,
+} from './cache/evict.js';
 
 // ---- Sync ----
 export { SyncEngine, type SyncEngineConfig } from './sync/SyncEngine.js';

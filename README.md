@@ -30,7 +30,9 @@ src/store/   ChatStore (Zustand) + selectors + draftStorage (composer drafts →
              + filterStorage (the six filter axes → localStorage; search/folder deliberately not)
              + webStorage (the one localStorage probe both of those take)
 src/reduce/  TurnReducer (live tail, Map-indexed) + otelDedup (annotator) + refChips
-src/cache/   SessionCache (IndexedDB via idb) + evict (LRU ~50 sessions)
+src/cache/   SessionCache (IndexedDB via idb) + evict (two LRU bounds: ~50 sessions'
+             turns, and the list store to one sidebar page — its only reader is the
+             cold-boot paint, which is one page wide)
 src/sync/    SyncEngine + sse
 src/net/     ApiClient + types (wire contract)
 src/boot/    Prefetcher (boot sequence + hover/idle prefetch)

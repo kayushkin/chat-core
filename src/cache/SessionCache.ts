@@ -3,8 +3,9 @@ import type { SessionSummary, TurnModel, Validator } from '../net/types.js';
 
 // L2 persistence (decision D3). Persists the projected list + the most-recent
 // sessions' materialized turns so a cold reload paints instantly with 0 network.
-// Bounded to ~50 recent sessions by evict.ts. Authoritative for DISPLAY; the
-// server stays authoritative for TRUTH (the SyncEngine reconciles).
+// Both stores are bounded by evict.ts — turns to ~50 sessions, list rows to one
+// sidebar page. Authoritative for DISPLAY; the server stays authoritative for
+// TRUTH (the SyncEngine reconciles).
 
 const DB_NAME = 'chat-core';
 const DB_VERSION = 1;
@@ -165,6 +166,26 @@ export class SessionCache {
       validators.set(sessionId, validator);
     }
     return { list, turns, validators };
+  }
+
+  /** Every list row's sessionId, oldest `updatedAt` first, for the list evictor.
+   *  Reads the `updatedAt` INDEX, so it orders the store without deserializing a
+   *  single summary — this is the store the bound exists to stop growing, and
+   *  reading all of it to decide what to drop would defeat the point. */
+  async listKeysOldestFirst(): Promise<string[]> {
+    if (!this.enabled) return [];
+    const db = await this.db();
+    return db.getAllKeysFromIndex('list', 'updatedAt');
+  }
+
+  /** Drop list rows, keeping each session's turns and validator. Used by the
+   *  list LRU; `deleteSession` is the one that drops all three. */
+  async evictListRows(sessionIds: string[]): Promise<void> {
+    if (!this.enabled || sessionIds.length === 0) return;
+    const db = await this.db();
+    const tx = db.transaction('list', 'readwrite');
+    for (const id of sessionIds) await tx.store.delete(id);
+    await tx.done;
   }
 
   /** Enumerate cached turn sessionIds + their updatedAt, for the evictor. */

@@ -55,12 +55,11 @@ export class Prefetcher {
     const actions = this.store.getState().actions;
     try {
       const hydrated = await this.cache.hydrate();
-      // Bounded to one page. The cache's list store is append-only — every session
-      // ever seen live is written to it by the SyncEngine and nothing evicts a list
-      // row — so an unbounded paint would show hundreds of rows and then SHRINK back
-      // to one page the moment the network's first page replaced them. The cached
+      // Bounded to one page, so the paint cannot show hundreds of rows and then
+      // SHRINK back the moment the network's first page replaces them. The cached
       // list is sorted newest-first, so the head of it is the same window page one
-      // is about to confirm.
+      // is about to confirm. `enforceListBound` now keeps the store itself this
+      // wide; the slice stays because eviction is periodic and lags the writes.
       const painted = hydrated.list.slice(0, this.sessionsPerPage);
       if (painted.length > 0) actions.setSessions(painted);
       for (const [id, model] of hydrated.turns) actions.setTurns(id, model);
@@ -126,7 +125,11 @@ export class Prefetcher {
 
     await Promise.all([summaryP, bundleP, validatorsP, foldersP]);
 
-    if (this.cache.isEnabled) void enforceCacheBound(this.cache, this.cacheLimit);
+    // The list bound is the page size, not a constant: the cold paint reads one
+    // page, so one page is exactly what is worth keeping.
+    if (this.cache.isEnabled) {
+      void enforceCacheBound(this.cache, this.cacheLimit, this.sessionsPerPage);
+    }
   }
 
   /** Full boot: cache paint → parallel prime. */
