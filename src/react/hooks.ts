@@ -269,10 +269,11 @@ export function useTurns(
  *
  *  Two things this set is deliberately NOT:
  *
- *  - It is not `paused`. Nothing on this box emits `msg.SessionPaused`: the server's
- *    derivation only passes the value through if a manager injects it, and no site
- *    does. Zero of the 500 most recent live sessions carry it (measured 2026-08-02).
- *    A control gated on `paused` is a control that never appears.
+ *  - It is not `paused`, and this is now a decided question rather than an open
+ *    one. The interrupt handler writes `msg.SessionPaused` and broadcasts it
+ *    (`Manager.ForceSessionState`), so the value does appear — but a paused
+ *    session is precisely one with a LIVE process, which is the 409 case below.
+ *    Paused says the user stopped the turn, not that the harness is gone.
  *  - It is not "the user hit stop". Interrupt leaves the process registered
  *    (`Manager.Stop` calls `proc.Interrupt()`; only `Kill` and process exit remove
  *    it from the map), so an interrupted session is idle WITH a live process and
@@ -292,8 +293,11 @@ export function useTurns(
  *  when the registry has none, so a dead session of any state revives by being sent
  *  to. Resume is the way to bring one back WITHOUT putting words in its mouth.
  *
- *  When `e1732f61` (SessionPaused on interrupt) is decided and the manager starts
- *  emitting it, `paused` joins this set; nothing else here changes. */
+ *  `e1732f61` (SessionPaused on interrupt) shipped and this set did NOT change.
+ *  The note it left behind predicted `paused` would join — that prediction was
+ *  wrong, and it was wrong because it assumed paused meant the process had
+ *  gone. It does not: `Manager.Stop` interrupts the turn and leaves the process
+ *  registered, so Resume on a paused session is the same 409 as ever. */
 const RESUMABLE_STATES = new Set<string>(['aborted', 'disconnected']);
 
 /** Composer + turn controls for a session (or the pending/new pane).
