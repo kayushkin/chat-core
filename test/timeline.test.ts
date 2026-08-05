@@ -64,7 +64,8 @@ describe('selectTimeline — event-granular, turn→task grouping', () => {
         kind: 'system',
         eventId: 2,
         subtype: 'task_started',
-        raw: { task_id: 'task-A', description: 'Explore repo' },
+        taskId: 'task-A',
+        text: 'Explore repo',
       }),
       entry({ id: 'th1', turnId: 't1', kind: 'thinking', eventId: 3, text: 'let me look' }),
       entry({ id: 'tool1', turnId: 't1', role: 'tool', kind: 'tool_call', eventId: 4, toolName: 'grep' }),
@@ -107,7 +108,7 @@ describe('selectTimeline — event-granular, turn→task grouping', () => {
         kind: 'system',
         eventId: 2,
         subtype: 'task_started',
-        raw: { task_id: 'task-A' }, // no description yet
+        taskId: 'task-A', // no description yet
       }),
       entry({
         id: 'sys2',
@@ -116,7 +117,8 @@ describe('selectTimeline — event-granular, turn→task grouping', () => {
         kind: 'system',
         eventId: 3,
         subtype: 'task_progress',
-        raw: { task_id: 'task-A', description: 'Building index' },
+        taskId: 'task-A',
+        text: 'Building index',
       }),
     ]);
     const tl = selectTimeline(m);
@@ -132,5 +134,134 @@ describe('selectTimeline — event-granular, turn→task grouping', () => {
   it('is memoized on model identity', () => {
     const m = model([entry({ id: 'u1', turnId: 't1', role: 'user', kind: 'text', eventId: 1, text: 'x' })]);
     expect(selectTimeline(m)).toBe(selectTimeline(m));
+  });
+});
+
+describe('a subagent that finishes says so', () => {
+  // Until task_notification was read, a task header looked identical before and
+  // after its subagent finished — there was no done tone to reach — and the
+  // group went on swallowing every row for the rest of the turn, because the
+  // only things that closed a scope were a new turn, a user message, or a
+  // result.
+  const launched = () => [
+    entry({ id: 'u1', turnId: 't1', role: 'user', kind: 'text', eventId: 1, text: 'go' }),
+    entry({
+      id: 'sys1',
+      turnId: 't1',
+      role: 'system',
+      kind: 'system',
+      eventId: 2,
+      subtype: 'task_started',
+      taskId: 'task-A',
+      text: 'Find the button',
+    }),
+  ];
+
+  it('marks the task done and shows the subagent report, not the launch description', () => {
+    const m = model([
+      ...launched(),
+      entry({
+        id: 'sys2',
+        turnId: 't1',
+        role: 'system',
+        kind: 'system',
+        eventId: 3,
+        subtype: 'task_notification',
+        taskId: 'task-A',
+        taskStatus: 'completed',
+        taskSummary: 'The button is in Sidebar.tsx at line 440.',
+      }),
+    ]);
+    const node = selectTimeline(m).turns[0]!.children[0]!;
+    expect(node.type).toBe('task');
+    if (node.type === 'task') {
+      expect(node.header.tone).toBe('task-done');
+      expect(node.header.detail).toBe('The button is in Sidebar.tsx at line 440.');
+    }
+  });
+
+  it('closes the scope, so later rows are not swallowed by a finished task', () => {
+    const m = model([
+      ...launched(),
+      entry({
+        id: 'sys2',
+        turnId: 't1',
+        role: 'system',
+        kind: 'system',
+        eventId: 3,
+        subtype: 'task_notification',
+        taskId: 'task-A',
+        taskStatus: 'completed',
+        taskSummary: 'done',
+      }),
+      entry({ id: 'a1', turnId: 't1', kind: 'text', eventId: 4, text: 'after the task' }),
+    ]);
+    const children = selectTimeline(m).turns[0]!.children;
+    expect(children).toHaveLength(2);
+    const after = children[1]!;
+    expect(after.type).toBe('item');
+    if (after.type === 'item') expect(after.item.taskId).toBeUndefined();
+  });
+
+  it('reports a failed subagent as failed, not as finished', () => {
+    const m = model([
+      ...launched(),
+      entry({
+        id: 'sys2',
+        turnId: 't1',
+        role: 'system',
+        kind: 'system',
+        eventId: 3,
+        subtype: 'task_notification',
+        taskId: 'task-A',
+        taskStatus: 'failed',
+      }),
+    ]);
+    const node = selectTimeline(m).turns[0]!.children[0]!;
+    if (node.type === 'task') expect(node.header.tone).toBe('task-err');
+  });
+
+  it('leaves a task open on a status it does not recognize', () => {
+    // A harness that invents a status must not silently close a running task.
+    const m = model([
+      ...launched(),
+      entry({
+        id: 'sys2',
+        turnId: 't1',
+        role: 'system',
+        kind: 'system',
+        eventId: 3,
+        subtype: 'task_updated',
+        taskId: 'task-A',
+        taskStatus: 'quiesced',
+      }),
+      entry({ id: 'a1', turnId: 't1', kind: 'text', eventId: 4, text: 'still inside' }),
+    ]);
+    const node = selectTimeline(m).turns[0]!.children[0]!;
+    expect(node.type).toBe('task');
+    if (node.type === 'task') {
+      expect(node.header.tone).toBe('task-start');
+      expect(node.children).toHaveLength(1);
+    }
+  });
+
+  it('does not spin forever on a tool call that can never be paired', () => {
+    const m = model([
+      entry({ id: 'u1', turnId: 't1', role: 'user', kind: 'text', eventId: 1, text: 'go' }),
+      entry({
+        id: 'evt_9',
+        turnId: 't1',
+        role: 'tool',
+        kind: 'tool_call',
+        eventId: 2,
+        toolName: 'Bash',
+        unpairable: true,
+      }),
+    ]);
+    const node = selectTimeline(m).turns[0]!.children[0]!;
+    if (node.type === 'item') {
+      expect(node.item.tone).toBe('tool-unknown');
+      expect(node.item.tone).not.toBe('tool');
+    }
   });
 });

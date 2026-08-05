@@ -594,14 +594,30 @@ export function sourcesForEntry(model: TurnModel | undefined, entryId: string): 
 export type TimelineTone =
   | 'turn'
   | 'task-start'
+  | 'task-done'
+  | 'task-err'
   | 'thinking'
   | 'tool'
   | 'tool-done'
   | 'tool-err'
+  /** a tool call whose outcome can never be known: the source event carried no
+   *  tool_id, so no result can ever be joined to it. Distinct from 'tool',
+   *  which means still running. */
+  | 'tool-unknown'
   | 'result'
   | 'error'
   | 'system'
   | 'text';
+
+/** Task statuses that mean the subagent will do no more work.
+ *
+ * Mirrors msg.TaskStatusIsTerminal. An unrecognized status is NOT terminal, so
+ * a status a harness adds later cannot close a task that is still running. */
+const TERMINAL_TASK_STATUSES = new Set(['completed', 'failed', 'cancelled']);
+
+function isTerminalTaskStatus(status: string | undefined): boolean {
+  return status !== undefined && TERMINAL_TASK_STATUSES.has(status);
+}
 
 /** One event-granular row in the timeline (presentation-agnostic). */
 export interface TimelineItem {
@@ -724,26 +740,39 @@ function toTimelineItems(model: TurnModel): TimelineItem[] {
 
     // task_* scope marker (system entry whose subtype starts with task_).
     if (e.kind === 'system' && e.subtype && e.subtype.startsWith('task_')) {
-      const raw = (e.raw ?? {}) as Record<string, unknown>;
-      const rawSys = (raw.system ?? {}) as Record<string, unknown>;
-      const explicitId = asString(raw.task_id) ?? asString(rawSys.task_id);
+      const explicitId = e.taskId;
       const isStart = e.subtype === 'task_started';
       if (isStart) currentTaskId = explicitId ?? `task_${e.id}`;
       else if (explicitId && !currentTaskId) currentTaskId = explicitId;
-      const description =
-        asString(raw.description) ??
-        asString(rawSys.description) ??
-        asString(rawSys.message) ??
-        asString(e.text) ??
-        '';
+      const description = e.taskSummary ?? e.text ?? '';
+
+      // The subagent finished. This is the only event that ever says so — it
+      // emits no result of its own — and until it was read here a task header
+      // looked identical before and after, while the group swallowed every row
+      // that followed for the rest of the turn.
+      const terminal = isTerminalTaskStatus(e.taskStatus);
 
       if (currentTaskId && taskIdxByScope.has(currentTaskId)) {
         const idx = taskIdxByScope.get(currentTaskId)!;
         const existing = out[idx];
-        if (existing && !existing.detail && description) {
-          existing.detail = oneLine(description);
-          existing.fullText = description;
+        if (existing) {
+          // The summary is the subagent's own report and always wins over the
+          // launch description: the description says what it was asked to do,
+          // the summary says what it did.
+          if (e.taskSummary) {
+            existing.detail = oneLine(e.taskSummary);
+            existing.fullText = e.taskSummary;
+          } else if (!existing.detail && description) {
+            existing.detail = oneLine(description);
+            existing.fullText = description;
+          }
+          if (terminal) {
+            const failed = e.taskStatus !== 'completed';
+            existing.tone = failed ? 'task-err' : 'task-done';
+            existing.icon = failed ? '▣✗' : '▣✓';
+          }
         }
+        if (terminal) currentTaskId = undefined;
         continue;
       }
       out.push(
@@ -756,6 +785,10 @@ function toTimelineItems(model: TurnModel): TimelineItem[] {
         }),
       );
       if (currentTaskId) taskIdxByScope.set(currentTaskId, out.length - 1);
+      // Close the scope so the rows after a finished task are not nested under
+      // it. Without this the only things that ever cleared it were a new turn,
+      // a user message, or a result.
+      if (terminal) currentTaskId = undefined;
       continue;
     }
 
@@ -775,11 +808,17 @@ function toTimelineItems(model: TurnModel): TimelineItem[] {
     if (e.kind === 'tool_call' || e.kind === 'tool_result') {
       const done = e.kind === 'tool_result' || e.toolResult !== undefined;
       const err = toolIsError(e);
+      // An unpairable call has no result coming — it was keyed by event id
+      // because the source event carried no tool_id, so nothing can ever join
+      // the two. Rendering it "running" promises an outcome that will never
+      // arrive; that is the spinner that sat on screen forever. Say the
+      // outcome is unknown instead.
+      const unresolvable = !done && !err && e.unpairable === true;
       out.push(
         makeItem(e, {
-          icon: err ? '✗' : done ? '✓' : '⚙',
+          icon: err ? '✗' : done ? '✓' : unresolvable ? '–' : '⚙',
           label: e.toolName || 'tool',
-          tone: err ? 'tool-err' : done ? 'tool-done' : 'tool',
+          tone: err ? 'tool-err' : done ? 'tool-done' : unresolvable ? 'tool-unknown' : 'tool',
           taskId: currentTaskId,
           text: toolText(e),
         }),

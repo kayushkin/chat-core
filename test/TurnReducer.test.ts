@@ -155,3 +155,76 @@ describe('TurnReducer — live-tail, O(1)-indexed, idempotent', () => {
     expect(s1).not.toBe(s0);
   });
 });
+
+describe('subagent task fields cross the wire boundary', () => {
+  // WireEventData.system used to be typed as { subtype, message } only, so the
+  // correlators and the outcome were reachable only by digging through the
+  // untyped raw blob. The timeline dug for task_id and nothing dug for the
+  // status at all, which is why a finished subagent never reported.
+  //
+  // Frame shape is verbatim from a live CC 2.1.220 capture under the flags the
+  // bridge runs, marshalled as the canonical msg.Event the server sends.
+  function taskNotification(eventId: number, turnId: string): WireEvent {
+    return {
+      id: String(eventId),
+      type: 'system',
+      data: {
+        event_id: eventId,
+        turn_id: turnId,
+        timestamp: '2026-07-27T14:00:02-07:00',
+        type: 'system',
+        system: {
+          subtype: 'task_notification',
+          task_id: 'a66ecc868c9c5c8db',
+          tool_use_id: 'toolu_01PdEBPefCBfgx62jXmkfBvP',
+          task_status: 'completed',
+          task_summary: 'The command output was: hi',
+          task_output_file: '/tmp/claude-1000/x/tasks/a66ecc868c9c5c8db.output',
+        },
+      },
+    };
+  }
+
+  it('maps the canonical system fields onto the entry', () => {
+    const state = applyEvent(initTailState('s'), taskNotification(1, 't1'));
+    const entry = Object.values(state.model.entries)[0]!;
+    expect(entry.subtype).toBe('task_notification');
+    expect(entry.taskId).toBe('a66ecc868c9c5c8db');
+    expect(entry.toolUseId).toBe('toolu_01PdEBPefCBfgx62jXmkfBvP');
+    expect(entry.taskStatus).toBe('completed');
+    expect(entry.taskSummary).toBe('The command output was: hi');
+    expect(entry.taskOutputFile).toBe('/tmp/claude-1000/x/tasks/a66ecc868c9c5c8db.output');
+  });
+
+  it('marks a tool event with no tool_id unpairable, because nothing can ever join it', () => {
+    // OTel-derived tool stand-ins arrive with no tool id by design. Keyed by
+    // event id, a call and its result become two entries, so the call would
+    // render "running" forever.
+    const noId: WireEvent = {
+      id: '2',
+      type: 'tool_call',
+      data: {
+        event_id: 2,
+        turn_id: 't1',
+        timestamp: '2026-07-27T14:00:03-07:00',
+        type: 'tool_call',
+        tool_call: { name: 'Bash' },
+      },
+    };
+    const withId: WireEvent = {
+      id: '3',
+      type: 'tool_call',
+      data: {
+        event_id: 3,
+        turn_id: 't1',
+        timestamp: '2026-07-27T14:00:04-07:00',
+        type: 'tool_call',
+        tool_call: { tool_id: 'toolu_real', name: 'Bash' },
+      },
+    };
+    const state = applyEvents(initTailState('s'), [noId, withId]);
+    const entries = Object.values(state.model.entries);
+    expect(entries.find((e) => e.id.startsWith('evt_'))?.unpairable).toBe(true);
+    expect(entries.find((e) => e.id === 'tool_toolu_real')?.unpairable).toBe(false);
+  });
+});

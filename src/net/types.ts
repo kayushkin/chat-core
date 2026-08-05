@@ -81,6 +81,12 @@ export interface Entry {
   toolName?: string;
   toolInput?: unknown;
   toolResult?: unknown;
+  /** tool entries only: the source event carried no tool_id, so this entry can
+   *  never be paired with its counterpart — a call here will never receive a
+   *  result, and a result here will never find its call. OTel-derived tool
+   *  stand-ins arrive this way by design. The edge must not render such a call
+   *  as still running: it is not pending, it is unknowable. */
+  unpairable?: boolean;
   raw?: unknown; // original event payload, for the raw Timeline view / audit
 
   // Provenance / kind-specific fields (mapped from the canonical wire, never invented):
@@ -96,6 +102,19 @@ export interface Entry {
   /** system entries (kind 'system'): the SystemEvent subtype (e.g. subagent_completed,
    *  compact_boundary). An unknown subtype must render generically, never as an error. */
   subtype?: string;
+  /** system entries describing a harness subagent (subtype `task_*`).
+   *
+   *  `taskId` names the subagent and is what the timeline groups its rows under;
+   *  `toolUseId` ties it back to the tool call that spawned it. `taskStatus` is
+   *  the only signal that the subagent finished — it emits no result event of
+   *  its own — and `taskSummary` is its own report of what it did, which is the
+   *  whole point of the notification. `taskOutputFile` is the transcript path,
+   *  diagnostic only: never read it to reconstruct the summary. */
+  taskId?: string;
+  toolUseId?: string;
+  taskStatus?: string;
+  taskSummary?: string;
+  taskOutputFile?: string;
 
   // Non-destructive dedup annotations:
   duplicate: boolean; // hidden in collapsed Turns view; always shown in raw Timeline

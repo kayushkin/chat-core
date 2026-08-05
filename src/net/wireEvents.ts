@@ -46,7 +46,27 @@ export interface WireEventData {
   // TURN_IDLE_TIMEOUT / PROCESS_DIED are turn terminators; api_error /
   // api_retries_exhausted are informational. `retryable` / `status_code` drive chip styling.
   error?: { code?: string; message?: string; retryable?: boolean; status_code?: number };
-  system?: { subtype?: string; message?: string };
+  /** Mirrors the canonical `msg.SystemEvent` JSON (snake_case on the wire).
+   *
+   *  The task_* fields describe a harness subagent. `task_id` names it,
+   *  `tool_use_id` ties it back to the tool call that spawned it, and
+   *  `task_status` is the only thing that ever says it finished — a subagent
+   *  emits no result event of its own. `task_summary` is the subagent's own
+   *  report, which is the payload the notification exists to deliver.
+   *
+   *  These were previously read off the untyped `raw` blob by whoever needed
+   *  them, which is why the completion never rendered: nothing looked. */
+  system?: {
+    subtype?: string;
+    message?: string;
+    tool_use_id?: string;
+    task_id?: string;
+    description?: string;
+    last_tool_name?: string;
+    task_status?: string;
+    task_summary?: string;
+    task_output_file?: string;
+  };
   state?: { state?: string; previous?: string; reason?: string };
   info?: unknown;
   hook?: HookEventWire;

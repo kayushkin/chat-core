@@ -142,6 +142,18 @@ function roleOf(ev: WireEvent, kind: EntryKind): Role {
 // Grouping key: the stable Entry id. tool_call/tool_result pair by tool_id;
 // user prompts and assistant content group by message_id + kind; anything
 // without a message_id stands alone keyed by its event id.
+//
+// A tool event with no tool_id cannot be paired with anything, and falling
+// through to the `evt_<id>` key below is what strands it: the call becomes one
+// entry and its result another, so the call row renders "running" forever with
+// no result that can ever reach it. Some events legitimately arrive that way —
+// OTel-derived tool stand-ins carry no tool id by design — so this is not rare.
+//
+// Pairing them by (message, tool name) instead is wrong in the other direction:
+// two calls to the same tool in one message would collapse onto each other and
+// one result would overwrite the other. So the honest key is still per-event,
+// and the fix belongs at the render edge, which must not show a permanent
+// spinner for a row it knows can never be resolved. `unpairable` marks that.
 function groupKeyFor(ev: WireEvent, kind: EntryKind): string {
   if (ev.type === 'tool_call' || ev.type === 'tool_result') {
     const toolId = ev.data.tool_call?.tool_id || ev.data.tool_result?.tool_id;
@@ -207,6 +219,21 @@ function applyPayload(prev: Entry, ev: WireEvent): Entry {
     case 'system':
       next.text = raw.system?.message ?? prev.text;
       if (raw.system?.subtype !== undefined) next.subtype = raw.system.subtype;
+      // Subagent correlators and outcome. These were reachable only by digging
+      // through the untyped `raw` blob, so the timeline read `task_id` from it
+      // and nothing read the status at all — which is why a finished subagent
+      // never reported. Carry them onto the entry like every other canonical
+      // field, and let the edge render from the model.
+      if (raw.system?.task_id !== undefined) next.taskId = raw.system.task_id;
+      if (raw.system?.tool_use_id !== undefined) next.toolUseId = raw.system.tool_use_id;
+      if (raw.system?.task_status !== undefined) next.taskStatus = raw.system.task_status;
+      if (raw.system?.task_summary !== undefined) next.taskSummary = raw.system.task_summary;
+      if (raw.system?.task_output_file !== undefined) {
+        next.taskOutputFile = raw.system.task_output_file;
+      }
+      // task_started names the subagent; its description is the only human
+      // label the task header ever gets.
+      if (!next.text && raw.system?.description) next.text = raw.system.description;
       break;
     default:
       break;
@@ -256,6 +283,12 @@ export function applyEvent(state: TailState, ev: WireEvent): TailState {
       ts,
       duplicate: false,
       primary: true,
+      // A tool event with no tool_id is keyed by event id, so nothing can ever
+      // join it to its counterpart. Recorded here, where the key was chosen,
+      // rather than re-derived at the edge.
+      unpairable:
+        (ev.type === 'tool_call' || ev.type === 'tool_result') &&
+        !(ev.data.tool_call?.tool_id || ev.data.tool_result?.tool_id),
     };
     entry = applyPayload(fresh, ev);
   }
