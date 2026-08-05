@@ -453,9 +453,17 @@ describe('ApiClient.getHarnesses — snake_case HarnessInfo → camelCase Harnes
 });
 
 describe('ApiClient.getModels — filters enabled + projects ModelOption', () => {
-  it('drops disabled rows and builds { value, label, provider } with cost', async () => {
+  it('drops disabled rows and builds { value, label, provider, shortName } with cost', async () => {
     const wire = [
-      { id: 'claude-opus', name: 'Opus', provider: 'anthropic', enabled: true, input_cost: 15, output_cost: 75 },
+      {
+        id: 'claude-opus',
+        name: 'Opus',
+        short_name: 'opus-4.6',
+        provider: 'anthropic',
+        enabled: true,
+        input_cost: 15,
+        output_cost: 75,
+      },
       { id: 'gpt-5', name: 'GPT-5', provider: 'openai', enabled: false, input_cost: 10, output_cost: 30 },
       { id: 'bare', provider: 'local', enabled: true },
     ];
@@ -465,9 +473,31 @@ describe('ApiClient.getModels — filters enabled + projects ModelOption', () =>
     });
     const models = await api.getModels();
     expect(models).toEqual([
-      { value: 'claude-opus', label: 'Opus ($15/$75)', provider: 'anthropic' },
+      { value: 'claude-opus', label: 'Opus ($15/$75)', provider: 'anthropic', shortName: 'opus-4.6' },
       // No cost reported → label is just the name (falls back to id) — never a fake cost.
-      { value: 'bare', label: 'bare', provider: 'local' },
+      // No `short_name` either → the empty string, NOT the name and NOT the id: the mapper
+      // reports that this model has no nickname and leaves it to the picker to decide what
+      // to draw instead.
+      { value: 'bare', label: 'bare', provider: 'local', shortName: '' },
+    ]);
+  });
+
+  it('carries short_name through independently of the cost-bearing label', async () => {
+    // A nickname and a cost are separate facts about a row, so pin the two combinations the
+    // case above does not cover: a nicknamed model with no cost, and a priced model with no
+    // nickname. Otherwise `shortName` could be accidentally wired to the cost branch and
+    // every assertion above would still pass.
+    const wire = [
+      { id: 'claude-haiku', name: 'Claude Haiku 4.6', short_name: 'haiku-4.6', provider: 'anthropic', enabled: true },
+      { id: 'gpt-5', name: 'GPT-5', provider: 'openai', enabled: true, input_cost: 10, output_cost: 30 },
+    ];
+    const api = new ApiClient({
+      fetch: fakeFetch({ ok: true, status: 200, statusText: 'OK', jsonBody: wire }),
+      basePath: '/api/bridge',
+    });
+    await expect(api.getModels()).resolves.toEqual([
+      { value: 'claude-haiku', label: 'Claude Haiku 4.6', provider: 'anthropic', shortName: 'haiku-4.6' },
+      { value: 'gpt-5', label: 'GPT-5 ($10/$30)', provider: 'openai', shortName: '' },
     ]);
   });
 

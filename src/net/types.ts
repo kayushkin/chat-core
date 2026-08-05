@@ -320,11 +320,23 @@ export interface HarnessMeta {
 /** One selectable model for the controls-bar picker, projected from `GET /models`
  *  (only `enabled` rows). `value` is the model id (exactly what the config POST sends),
  *  `label` is display text including per-million cost when reported, `provider` scopes
- *  the option to a harness's `supportedProviders`. */
+ *  the option to a harness's `supportedProviders`, and `shortName` is the model's dense
+ *  nickname for a picker too narrow to show the full label. */
 export interface ModelOption {
   value: string;
   label: string;
   provider: string;
+  /** The model's short nickname (`opus-4.6`), empty when the registry has none for it.
+   *
+   *  REQUIRED, not optional, even though the wire field it comes from is optional and the
+   *  value is often the empty string. The projection that builds this type writes a fresh
+   *  object literal rather than spreading the wire row, so an optional field would let any
+   *  construction site quietly omit it and still typecheck — the field would then be
+   *  `undefined` at runtime in exactly the paths nobody remembered to update. Requiring it
+   *  turns each of those omissions into a compile error at the site that has the wire row
+   *  in hand and can actually answer the question. The empty string carries "no nickname"
+   *  perfectly well and costs no extra type. */
+  shortName: string;
 }
 
 /** The per-session runtime knobs applied via `POST /sessions/{id}/config`. camelCase

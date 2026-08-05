@@ -23,10 +23,12 @@ const HARNESSES: HarnessMeta[] = [
   },
 ];
 
+// `gpt-5` deliberately carries no nickname: the filter must pass a model through whole
+// whether or not the registry has a short name for it.
 const MODELS: ModelOption[] = [
-  { value: 'claude-opus', label: 'Opus', provider: 'anthropic' },
-  { value: 'claude-sonnet', label: 'Sonnet', provider: 'anthropic' },
-  { value: 'gpt-5', label: 'GPT-5', provider: 'openai' },
+  { value: 'claude-opus', label: 'Opus', provider: 'anthropic', shortName: 'opus-4.6' },
+  { value: 'claude-sonnet', label: 'Sonnet', provider: 'anthropic', shortName: 'sonnet-4.6' },
+  { value: 'gpt-5', label: 'GPT-5', provider: 'openai', shortName: '' },
 ];
 
 describe('harnessCapabilities — from the canonical registry', () => {
@@ -45,8 +47,8 @@ describe('harnessCapabilities — from the canonical registry', () => {
 describe('modelsForHarness — filters by the harness providers', () => {
   it("keeps only the harness's supported providers", () => {
     expect(modelsForHarness(MODELS, HARNESSES, 'claudecode')).toEqual([
-      { value: 'claude-opus', label: 'Opus', provider: 'anthropic' },
-      { value: 'claude-sonnet', label: 'Sonnet', provider: 'anthropic' },
+      { value: 'claude-opus', label: 'Opus', provider: 'anthropic', shortName: 'opus-4.6' },
+      { value: 'claude-sonnet', label: 'Sonnet', provider: 'anthropic', shortName: 'sonnet-4.6' },
     ]);
   });
 

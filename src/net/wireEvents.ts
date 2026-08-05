@@ -218,6 +218,12 @@ export interface StoreModelWire {
   id: string;
   provider: string;
   name?: string;
+  /** The model's short nickname (`opus-4.6` for `claude-opus-4-6`, whose full `name` is
+   *  `Claude Opus 4.6`), for a dense picker that keeps the full name in the tooltip.
+   *  Optional because model-store lets the column stay empty: a model whose nickname has
+   *  not been set yet simply has none, and the server sends no value rather than a made-up
+   *  one. */
+  short_name?: string;
   max_tokens?: number;
   input_cost?: number;
   output_cost?: number;

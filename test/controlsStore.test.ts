@@ -32,7 +32,9 @@ describe('harness / model registry actions', () => {
     const harnesses: HarnessMeta[] = [
       { name: 'codex', label: 'Codex', emoji: '🧠', available: true, capabilities: ['model'], pty: true },
     ];
-    const models: ModelOption[] = [{ value: 'gpt-5', label: 'GPT-5', provider: 'openai' }];
+    const models: ModelOption[] = [
+      { value: 'gpt-5', label: 'GPT-5', provider: 'openai', shortName: 'gpt-5' },
+    ];
 
     store.getState().actions.setHarnessesLoading(true);
     expect(store.getState().harnessesLoading).toBe(true);

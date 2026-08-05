@@ -115,14 +115,22 @@ function harnessMetaFromWire(w: HarnessInfoWire): HarnessMeta {
 /** Project a snake_case `GET /models` row to the controls-bar `ModelOption`. `value` is
  *  the model id the config POST sends; `label` mirrors bridge-ui's `name ($in/$out)`
  *  format, falling back to just the name (or id) when cost is not reported — never
- *  fabricating a cost. */
+ *  fabricating a cost; `shortName` carries the registry's dense nickname through for a
+ *  picker that has no room for the full label. */
 function modelOptionFromWire(w: StoreModelWire): ModelOption {
   const name = w.name || w.id;
   const label =
     typeof w.input_cost === 'number' && typeof w.output_cost === 'number'
       ? `${name} ($${w.input_cost}/$${w.output_cost})`
       : name;
-  return { value: w.id, label, provider: w.provider };
+  // A row with no `short_name` gets the empty string, deliberately NOT the name or the id.
+  // "This model has no nickname yet" is a real and different answer from "its nickname
+  // happens to equal its full name", and substituting one for the other here would erase
+  // that distinction for every consumer downstream. What to draw in a picker when the
+  // nickname is missing — the full label, an abbreviation, the raw id — is a presentation
+  // decision that belongs to the UI at the edge, which can see how much room it has. This
+  // mapper is a transport layer: it reports what the registry said and nothing more.
+  return { value: w.id, label, provider: w.provider, shortName: w.short_name ?? '' };
 }
 
 /** Project a create/fork response (the canonical snake_case `msg.ManagedSession`) to a
@@ -576,7 +584,8 @@ export class ApiClient {
    * The available models for the controls-bar picker. GET /models — the canonical
    * model-store registry. Drops `enabled=false` rows (mirroring bridge-ui) and projects
    * each to a `ModelOption` carrying `provider` so `useModels` can filter by a harness's
-   * supported providers. LOUD: throws on any non-2xx. (bridge-ui: BridgeChat.tsx:260.)
+   * supported providers, plus the `shortName` nickname a dense picker renders. LOUD:
+   * throws on any non-2xx. (bridge-ui: BridgeChat.tsx:260.)
    */
   async getModels(): Promise<ModelOption[]> {
     const wire = await this.getJSON<StoreModelWire[] | null>('/models');

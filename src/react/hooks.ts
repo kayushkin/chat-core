@@ -882,7 +882,8 @@ export function useHarnessCapabilities(harnessId: string | null): Set<string> {
  *  `harnessModels` does. Pass no `harnessId` (or a harness that declares no providers) to
  *  get every enabled model. Fetches the model + harness registries once on first use
  *  (cached, shared); returns `[]` until they load. Each option is
- *  `{ value: modelId, label, provider }`. */
+ *  `{ value: modelId, label, provider, shortName }`, where `shortName` is the registry's
+ *  dense nickname and is the empty string for a model that has none. */
 export function useModels(harnessId?: string | null): ModelOption[] {
   const { store } = useChatContext();
   useEnsureModels();
