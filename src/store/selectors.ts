@@ -14,6 +14,19 @@ export interface FolderGroup {
   sessions: SessionSummary[];
 }
 
+/** Session types the list hides while the `type` axis carries no selection.
+ *
+ *  An `external` session ran outside the bridge entirely and was imported afterwards
+ *  by scanning the harness's on-disk history. Nobody opened it in a UI, so listing it
+ *  beside real conversations reports a `claude -p` one-shot as a human chat.
+ *
+ *  This is a rule rather than a seeded selection because the axis is INCLUSION-based:
+ *  "everything except external" can only be written down by naming every other type,
+ *  and that list would silently hide whatever type the server adds next. Selecting
+ *  `external` on the axis shows those sessions, so the default stays user-toggleable
+ *  and nothing is ever persisted on the user's behalf. */
+export const DEFAULT_HIDDEN_SESSION_TYPES: ReadonlySet<string> = new Set(['external']);
+
 /** True iff a session passes the current filter.
  *
  *  Each faceted axis (`harness`, `status`, `type`, `purpose`, `mode`, `machine`) is a
@@ -22,6 +35,10 @@ export interface FolderGroup {
  *  the axis). Axes combine with AND — every non-empty axis must match. The `machine`
  *  axis matches `SessionSummary.instanceId` (there is no machine field on the summary;
  *  the dash resolves instanceId → machine and passes instanceId values here).
+ *
+ *  The `type` axis has ONE exception to "empty is no filter": with nothing selected on
+ *  it, the types in `DEFAULT_HIDDEN_SESSION_TYPES` are still dropped. Select any type
+ *  and the array rules alone.
  *
  *  `folder` is a scalar exact match; `search` matches the display name OR the session
  *  id case-insensitively AND, when `contentHits` is supplied (C6 content search), any
@@ -34,7 +51,11 @@ export function matchesFilter(
 ): boolean {
   if (f.harness.length && !f.harness.includes(s.harness)) return false;
   if (f.status.length && !f.status.includes(s.state)) return false;
-  if (f.type.length && !f.type.includes(s.type)) return false;
+  if (f.type.length) {
+    if (!f.type.includes(s.type)) return false;
+  } else if (DEFAULT_HIDDEN_SESSION_TYPES.has(s.type)) {
+    return false;
+  }
   if (f.purpose.length && !f.purpose.includes(s.purpose)) return false;
   if (f.mode.length && !f.mode.includes(s.mode)) return false;
   if (f.machine.length && !f.machine.includes(s.instanceId)) return false;

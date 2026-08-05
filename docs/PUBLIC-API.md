@@ -447,6 +447,14 @@ export function usePrefetch(): (sessionId: string) => void;
 // name (bridge-ui `useBridgeMachines`). So the dash passes instanceId values here
 // (grouped by machine on its side); `selectFacets().machine` is likewise keyed by
 // instanceId. See "Canonical field flagged" in the handoff note.
+//
+// The `type` axis has ONE exception to "empty means no filter": with nothing selected
+// on it, `matchesFilter` still drops the types in `DEFAULT_HIDDEN_SESSION_TYPES`
+// (currently `external` — a session that ran outside the bridge and was imported from
+// the harness's on-disk history, so it is not a chat anyone opened). Selecting any
+// type makes the array rule alone, so the default is user-toggleable and nothing is
+// persisted on the user's behalf.
+export const DEFAULT_HIDDEN_SESSION_TYPES: ReadonlySet<string>;
 export interface FilterState {
   harness: string[];
   status: string[];

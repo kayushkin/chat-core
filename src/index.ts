@@ -157,6 +157,7 @@ export {
   visibleEntryIdsFor,
   sourcesForEntry,
   matchesFilter,
+  DEFAULT_HIDDEN_SESSION_TYPES,
   selectFacets,
   selectContentSearchReach,
   sessionCost,

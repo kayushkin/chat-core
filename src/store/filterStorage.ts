@@ -45,7 +45,13 @@ export const PERSISTED_FILTER_AXES = [
 export type PersistedFilterAxis = (typeof PERSISTED_FILTER_AXES)[number];
 
 /** The selected values per persisted axis. An empty array means "no filter on this
- *  axis", exactly as in `FilterState`. */
+ *  axis", exactly as in `FilterState`.
+ *
+ *  ⚠️ Empty on the `type` axis is still not "show literally everything": the list path
+ *  drops `DEFAULT_HIDDEN_SESSION_TYPES` (see `selectors.ts`) while nothing is selected
+ *  there. That default is deliberately NOT written here — seeding a stored selection
+ *  would mean naming every type the user DOES want, and hiding whatever type the server
+ *  adds next. Nothing a user has stored is touched by it. */
 export type PersistedFilterAxes = Record<PersistedFilterAxis, string[]>;
 
 /** The localStorage key the whole filter record lives under. */
