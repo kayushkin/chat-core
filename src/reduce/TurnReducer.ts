@@ -26,6 +26,35 @@ export interface TailState {
 
 const EMPTY_VALIDATOR: Validator = { maxEventId: 0, eventCount: 0, updatedAt: '' };
 
+/** Keep a known cost/context roll-up alive across a page that arrived without one.
+ *
+ *  `TurnModel.aggregates` is PER-PAGE on the wire: log-store computes it last-value-wins
+ *  over the events it happened to return, and omits the block entirely when that page
+ *  held no spend or usage event. Its own comment spells out whose job the gap is:
+ *  "the client falls back to its live-tail values". Nobody was doing that, so the header
+ *  read $0.00 / no context bar the moment a page came back without spend on it — not
+ *  because the session had spent nothing, but because this page had not seen the event
+ *  that said so.
+ *
+ *  So the client treats the roll-up as SESSION state under the same last-value-wins rule
+ *  the server uses within a page: the newest figure that actually arrived wins, and a
+ *  page carrying no figure changes nothing. That never fabricates — every number on
+ *  screen was genuinely reported for this session — and it never freezes either: a
+ *  compaction that shrinks the window emits a fresh usage event, and the fresh (lower)
+ *  value simply wins.
+ *
+ *  Direction is the whole reason both models are named rather than merged positionally:
+ *  `fresher` wins whenever it carries a block at all, and `staler` only ever fills a
+ *  gap. Get that backwards in `prependOlder` and paging backwards through a transcript
+ *  walks the cost chip back in time. */
+export function carryForwardAggregates(
+  staler: TurnModel | undefined,
+  fresher: TurnModel,
+): TurnModel {
+  if (fresher.aggregates || !staler?.aggregates) return fresher;
+  return { ...fresher, aggregates: staler.aggregates };
+}
+
 /** Build a fresh, empty tail state, or seed it from a server-materialized
  *  TurnModel (the warm/cold-switch path: reduce only the tail on top of this). */
 export function initTailState(sessionId: string, model?: TurnModel): TailState {
@@ -266,7 +295,26 @@ export function applyEvent(state: TailState, ev: WireEvent): TailState {
   for (const e of annotated) annotatedEntries[e.id] = e;
 
   const maxEventId = Math.max(state.model.validator.maxEventId, evId);
+  // Spread the prior model rather than re-listing its fields. This used to be an
+  // explicit five-field literal, and the sixth field TurnModel grew — `aggregates`, the
+  // server's cost/context roll-up — was therefore ERASED by every event folded onto the
+  // tail. That is the dashv2 header flicker: `GET /turns` delivered the roll-up, the
+  // cost chip and context strip painted, and the very next streamed token dropped it
+  // again, taking 14px of header height with it on every blink.
+  //
+  // log-store computes `aggregates` as last-value-wins over the RETURNED PAGE and
+  // documents the consequence explicitly (turnmodel.go): "If the spend/context events
+  // fall outside the page … the whole struct may be nil — the client falls back to its
+  // live-tail values." A wire event carries no spend total and no context figure, so it
+  // has nothing to replace them WITH; dropping them reports "this session has no cost
+  // data" about a session that does. Carrying them forward is that documented fallback.
+  //
+  // Spreading is the point, not a shortcut: an explicit field list is a standing promise
+  // to remember to edit this literal every time the shape grows, and that promise has
+  // already been broken once. Whatever field TurnModel gains next survives the tail by
+  // default and has to be dropped ON PURPOSE to be dropped at all.
   const model: TurnModel = {
+    ...state.model,
     sessionId: state.model.sessionId || state.sessionId,
     turns,
     entries: annotatedEntries,
@@ -275,7 +323,6 @@ export function applyEvent(state: TailState, ev: WireEvent): TailState {
       eventCount: seenEventIds.size,
       updatedAt: ts,
     },
-    more: state.model.more,
   };
 
   return { sessionId: state.sessionId, model, turnIndex, entryEventIds, seenEventIds };

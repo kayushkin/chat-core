@@ -447,9 +447,37 @@ export function turnsFor(state: ChatState, sessionId: string | null): TurnModel 
 //
 // Both read the loaded model's roll-up. `aggregates` MAY be absent (the spend/context
 // events fell outside the loaded page) — absence reads as zeros, never a fabricated
-// figure. Memoized single-slot on the TurnModel's identity (the model is replaced
-// immutably on every mutation) so `useStore` sees a stable reference between unrelated
-// renders — a fresh object every call would loop the subscription.
+// figure.
+//
+// ## Why these memoize in a WeakMap and not a single slot
+//
+// Both are consumed through `useStore(store, s => selector(s, sessionId))`, i.e.
+// `useSyncExternalStore`, whose contract is that `getSnapshot` returns a REFERENTIALLY
+// STABLE value while the state is unchanged. React calls it during render, again after
+// commit, and again on every store notification; if any two of those calls disagree by
+// identity, it re-renders and asks again — forever.
+//
+// These selectors take a PARAMETER, so "the state is unchanged" is not enough to make a
+// single slot safe. A one-entry cache keyed on the TurnModel's identity holds the answer
+// for exactly one session, so the moment a second live caller reads a different
+// sessionId — or the same caller alternates a real id with `null` while nothing is
+// selected — the two evict each other, every call is a miss, every miss allocates, and
+// each subscription sees its own snapshot change on every check. Note that `null` and an
+// unloaded id both resolve to the key `undefined`, so a single slot cannot even tell
+// "no session" apart from "a session whose model has not loaded".
+//
+// A WeakMap keyed on the TurnModel is the shape the problem actually has: one memo slot
+// per model, so interleaved sessions cannot evict one another, and the entry dies with
+// the model it describes rather than pinning it (the model is replaced immutably on
+// every mutation, so a stale entry is unreachable the instant it is stale). `undefined`
+// cannot be a WeakMap key, but it does not need to be: a session with no loaded model
+// gets the shared `EMPTY_*` constant, which is referentially stable by construction.
+//
+// The other memos in this file (`visibleCache`, `reachCache`, `facetsCache`,
+// `activeEffectiveCache`) are deliberately left as single slots: they take NO parameter
+// beyond the state, so there is only ever one live key and a second caller cannot exist
+// to fight over the slot. `selectTimeline` is parameterized like these two and is
+// memoized the same way, for the same reason.
 
 /** A session's rolled-up cost, or all-zeros when no aggregates are loaded. */
 export interface SessionCost {
@@ -469,13 +497,18 @@ export interface ContextUsage {
 const EMPTY_COST: SessionCost = { totalUsd: 0, byModel: {}, byQuerySource: {} };
 const EMPTY_CONTEXT: ContextUsage = { tokens: 0, limit: 0, pct: 0 };
 
-let costCache: { model: TurnModel | undefined; result: SessionCost } | null = null;
+const costByModel = new WeakMap<TurnModel, SessionCost>();
 
-/** Cost roll-up for a session from `TurnModel.aggregates`; zeros when absent. */
+/** Cost roll-up for a session from `TurnModel.aggregates`; zeros when absent.
+ *
+ *  Guaranteed stable: for an unchanged state, repeated calls with the same `sessionId`
+ *  return the IDENTICAL object no matter which other sessionIds are read in between. */
 export function sessionCost(state: ChatState, sessionId: string | null): SessionCost {
   const model = turnsFor(state, sessionId);
-  if (costCache && costCache.model === model) return costCache.result;
-  const agg = model?.aggregates;
+  if (!model) return EMPTY_COST;
+  const cached = costByModel.get(model);
+  if (cached) return cached;
+  const agg = model.aggregates;
   const result: SessionCost = agg
     ? {
         totalUsd: agg.totalUsd ?? 0,
@@ -483,25 +516,29 @@ export function sessionCost(state: ChatState, sessionId: string | null): Session
         byQuerySource: agg.byQuerySource ?? {},
       }
     : EMPTY_COST;
-  costCache = { model, result };
+  costByModel.set(model, result);
   return result;
 }
 
-let contextCache: { model: TurnModel | undefined; result: ContextUsage } | null = null;
+const contextByModel = new WeakMap<TurnModel, ContextUsage>();
 
 /** Context-window usage for a session from `TurnModel.aggregates`; zeros when absent.
- *  `pct = tokens/limit*100`, or 0 when the limit is missing/zero. */
+ *  `pct = tokens/limit*100`, or 0 when the limit is missing/zero.
+ *
+ *  Same stability guarantee as `sessionCost`. */
 export function contextUsage(state: ChatState, sessionId: string | null): ContextUsage {
   const model = turnsFor(state, sessionId);
-  if (contextCache && contextCache.model === model) return contextCache.result;
-  const agg = model?.aggregates;
+  if (!model) return EMPTY_CONTEXT;
+  const cached = contextByModel.get(model);
+  if (cached) return cached;
+  const agg = model.aggregates;
   const tokens = agg?.contextTokens ?? 0;
   const limit = agg?.contextLimit ?? 0;
   const result: ContextUsage =
     tokens === 0 && limit === 0
       ? EMPTY_CONTEXT
       : { tokens, limit, pct: limit > 0 ? (tokens / limit) * 100 : 0 };
-  contextCache = { model, result };
+  contextByModel.set(model, result);
   return result;
 }
 
@@ -825,19 +862,33 @@ function groupTurns(items: TimelineItem[]): TimelineTurnGroup[] {
   return groups;
 }
 
-// Identity memo: the TurnModel is replaced immutably on every mutation, so
-// referential equality is a correct and cheap staleness check.
-let timelineCache: { model: TurnModel | undefined; result: TimelineView } | null = null;
+// Identity memo, one slot PER MODEL: the TurnModel is replaced immutably on every
+// mutation, so referential equality is a correct and cheap staleness check, and a
+// WeakMap keeps the entry alive exactly as long as the model it describes.
+//
+// This is parameterized like the cost/context selectors, so it carries their hazard too
+// (see the long note above them): a single shared slot would mean two panes derived from
+// two different models — a live session and a preview, say — thrashing each other out of
+// the cache on every render and re-deriving the WHOLE transcript each time, which here
+// costs a full sort-and-group over every entry rather than a five-field object.
+const timelineByModel = new WeakMap<TurnModel, TimelineView>();
+
+/** The answer for "no model at all". Shared so the empty case is referentially stable
+ *  too — `undefined` cannot key a WeakMap, and a fresh empty object every call would
+ *  re-render the pane forever on a session that has nothing to show. */
+const EMPTY_TIMELINE: TimelineView = { items: [], turns: [], count: 0 };
 
 /**
  * Build the event-granular, turn→task-grouped timeline for a materialized model.
  * Pure + memoized on the model's identity so the Timeline pane never re-derives.
  */
 export function selectTimeline(model: TurnModel | undefined): TimelineView {
-  if (timelineCache && timelineCache.model === model) return timelineCache.result;
-  const items = model ? toTimelineItems(model) : [];
+  if (!model) return EMPTY_TIMELINE;
+  const cached = timelineByModel.get(model);
+  if (cached) return cached;
+  const items = toTimelineItems(model);
   const result: TimelineView = { items, turns: groupTurns(items), count: items.length };
-  timelineCache = { model, result };
+  timelineByModel.set(model, result);
   return result;
 }
 

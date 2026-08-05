@@ -13,7 +13,12 @@ import type {
   TurnModel,
 } from '../net/types.js';
 import type { WireEvent } from '../net/wireEvents.js';
-import { applyEvent, initTailState, type TailState } from '../reduce/TurnReducer.js';
+import {
+  applyEvent,
+  carryForwardAggregates,
+  initTailState,
+  type TailState,
+} from '../reduce/TurnReducer.js';
 import { foldHookEvent } from './pendingHooks.js';
 import { activityFromEvent, sameActivity, type ActivityKind } from './activity.js';
 import { budgetHaltFromEvent, type BudgetHalt } from './budgetHalt.js';
@@ -266,9 +271,19 @@ export interface ChatActions {
 
   setActive(sessionId: string | null): void;
 
+  /** Install a freshly materialized page as the session's model.
+   *
+   *  Replaces everything EXCEPT `aggregates`, which is last-value-wins session state
+   *  rather than a property of the page: log-store computes it only from the events the
+   *  page returned and omits it entirely when that page held none, so a page without
+   *  spend events on it must not be allowed to report "$0.00" for a session that has
+   *  spent money. See `carryForwardAggregates`. */
   setTurns(sessionId: string, model: TurnModel): void;
   applyTailEvent(sessionId: string, event: WireEvent): void;
   setTurnsLoading(sessionId: string, loading: boolean): void;
+  /** Merge an OLDER page in front of the loaded model (backwards pagination). Same
+   *  `aggregates` rule as `setTurns`, in the other direction: the older page can fill a
+   *  roll-up that was never known, but never overwrite the one already on screen. */
   prependOlder(sessionId: string, older: TurnModel): void;
 
   /** Cache a session's fetched detail info (null = fetched, harness reported none);
@@ -519,7 +534,14 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
         set({ activeId, activity });
       },
 
-      setTurns(sessionId, model) {
+      setTurns(sessionId, incoming) {
+        // The freshly materialized page wins outright — EXCEPT that a page which carries
+        // no cost/context roll-up does not get to erase the one already known for this
+        // session. `aggregates` is computed per-page by log-store and omitted when the
+        // page held no spend/usage event, so blanking on absence reports "no cost data"
+        // for a session whose spend event merely fell outside this window. See
+        // `carryForwardAggregates`.
+        const model = carryForwardAggregates(get().turnsBySession.get(sessionId), incoming);
         const turnsBySession = new Map(get().turnsBySession);
         turnsBySession.set(sessionId, model);
         const tails = new Map(get().tails);
@@ -640,13 +662,19 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
         const entries = { ...older.entries, ...cur.entries };
         const seen = new Set(cur.turns.map((t) => t.id));
         const turns: Turn[] = [...older.turns.filter((t) => !seen.has(t.id)), ...cur.turns];
-        const merged: TurnModel = {
+        // Spread `cur` first so every field the merge does not explicitly decide — today
+        // that is `aggregates`, tomorrow whatever TurnModel grows next — comes from the
+        // model already on screen rather than silently vanishing. `older` can still fill
+        // a roll-up `cur` never had, but never overwrite one: an older page's figures are
+        // by construction the staler answer. See `carryForwardAggregates`.
+        const merged: TurnModel = carryForwardAggregates(older, {
+          ...cur,
           sessionId,
           turns,
           entries,
           validator: cur.validator,
           more: older.more,
-        };
+        });
         const turnsBySession = new Map(get().turnsBySession);
         turnsBySession.set(sessionId, merged);
         const tails = new Map(get().tails);
