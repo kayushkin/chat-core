@@ -17,6 +17,8 @@ import type {
 export interface ChatProviderProps {
   fetch: typeof fetch;          // dash passes its cookie-credentialed apiFetch
   basePath: string;             // '/api/bridge'
+  noteboardBasePath?: string;   // '/api/noteboard' — omit and note/todo ref chips
+                                // say lookup is not configured, never guess a path
   recentN?: number;             // warm-cache size, default 20
   turnsPerBundle?: number;      // last-N turns per bundled session, default 30
   sessionsPerPage?: number;     // sidebar sessions per page, default 100
@@ -509,11 +511,48 @@ export type TimelineTone =
   | 'result' | 'error' | 'system' | 'text';
 
 // ---- Reference chips (dash TurnList wiring) ----
-// Pure matcher + a remark transformer (dependency-free) and a minimal React renderer.
+// Pure matcher + a remark transformer (dependency-free) and a React renderer.
 // Wire into ReactMarkdown:  remarkPlugins={[remarkRefChips]} components={{ 'ref-chip': RefChip }}
+//
+// The matcher chips bare session ids (br_/herald-/autoworker- snowflakes) anywhere, and
+// noteboard uuids ONLY behind a cue word — note/workspace (kind 'note') or todo/item/card
+// (kind 'todo'), each also with an `_id` suffix. Bare uuids are never chipped: they
+// collide with harness session uuids. The cue only says where to LOOK; the loaded item's
+// own `type` is the authority and the chip relabels itself from it.
+//
+// ⚠️ RefChip reads ChatProvider context (it resolves ids against llm-bridge and
+// noteboard), so it must be mounted inside one. It was a pure standalone <span> before.
+// It ships no CSS: every element carries a stable unhashed `ref-chip-*` class and
+// `data-ref-kind` / `data-ref-id`, and the host styles them (dash uses `:global()`).
+// `onActivate` fires only for kinds with a navigation target — sessions. A noteboard chip
+// opens its own detail panel, because nothing deep-links to a single item.
 export function parseRefChips(value: string): RefSegment[];
 export function remarkRefChips(): (tree: unknown) => void;
 export function RefChip(props: RefChipProps): JSX.Element;
+export type RefKind = 'session' | 'note' | 'todo';
+
+// Detail loaders behind the chip panels. Every one dedupes by id through a 30s promise
+// cache, because one id can mount dozens of chips in a single transcript. A rejection is
+// never cached, so the next chip retries.
+export function useSessionRefDetail(sessionId: string): RefDetailState<ManagedSessionDetail>;
+export function useNoteboardRefDetail(itemId: string): RefDetailState<NoteboardItem>;
+// The "fully load the history" affordance: fetches ONLY once `enabled` is true (the user
+// expanded the panel), always with a limit on the wire. `model.more` means older turns
+// exist beyond the window; this does not paginate.
+export function useSessionRefTranscript(sessionId: string, enabled: boolean): RefDetailState<TurnModel>;
+export function clearRefDetailCache(): void;   // tests only
+export const REF_TRANSCRIPT_TURNS: number;     // 30
+export interface RefDetailState<T> { data: T | null; error: string | null; loading: boolean }
+
+// ---- NoteboardClient ----
+// A SECOND backend, not part of the bridge gateway, so it gets its own client rather than
+// a method on ApiClient. Read-only and deliberately narrow: ref chips are the only reason
+// chat-core talks to noteboard. `getItem` throws loud on non-2xx; a DELETED item still
+// resolves (noteboard's delete is reversible), carrying `deleted_at`.
+export class NoteboardClient {
+  constructor(config: NoteboardClientConfig);
+  getItem(id: string): Promise<NoteboardItem>;
+}
 
 // ---- ApiClient additions ----
 // interrupt() fails LOUD (throws on non-2xx, incl. the 409 "nothing was stopped");
