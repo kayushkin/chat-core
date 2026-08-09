@@ -122,6 +122,37 @@ describe('budgetHaltFromRefusal', () => {
     expect(budgetHaltFromRefusal('br_1', null)).toBeNull();
   });
 
+  // The two tests below exist because `toBeNull()` names a value, not a reason, and this
+  // function has four separate producers of that one null. Every other test here happens to
+  // trip exactly one of them, so each of those pins its own guard. These two inputs are the
+  // ones where a *different* guard was silently doing the work:
+  //
+  //   - a 402 whose body parses to something with no `error` at all was reaching the
+  //     `err.code !== ...` comparison, so the `!err` half of that guard was unpinned;
+  //   - a thrown value that merely looks like an ApiError was being rejected by the status
+  //     read crashing on it, not by the type check, so `instanceof ApiError` was unpinned
+  //     the moment the status read became defensive.
+  //
+  // Both were measured by mutation, not guessed: deleting either half left the whole suite
+  // green. See `budgetHaltFromEvent`'s 'ignores an event with no error at all' for the same
+  // guard on the other half of the gate, which was pinned all along.
+
+  it('reports null for a 402 whose body parses but carries no error object', () => {
+    // Reaches the `!err` half of the guard specifically: the code comparison cannot fire
+    // here, because there is no code to compare.
+    expect(budgetHaltFromRefusal('br_1', refusal(402, '{}'))).toBeNull();
+    expect(budgetHaltFromRefusal('br_1', refusal(402, '{"error":null}'))).toBeNull();
+    expect(budgetHaltFromRefusal('br_1', refusal(402, 'null'))).toBeNull();
+  });
+
+  it('reports null for a thrown value that only looks like an ApiError', () => {
+    // Requirement 1 at the top of this file — the reader must be NARROW — is about the type,
+    // not about the shape. A bare object carrying the right status and a real refusal body
+    // is the case that tells those two apart.
+    const lookalike = { status: 402, body: REFUSAL_BODY, method: 'POST', path: '/x' };
+    expect(budgetHaltFromRefusal('br_1', lookalike)).toBeNull();
+  });
+
   it('leaves the figures undefined when the body names the code and no numbers', () => {
     const body = JSON.stringify({ error: { code: 'budget_exceeded', message: 'over ceiling' } });
     const halt = budgetHaltFromRefusal('br_1', refusal(402, body));

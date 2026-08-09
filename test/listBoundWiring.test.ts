@@ -38,6 +38,33 @@ function aged(n: number): SessionSummary[] {
   );
 }
 
+/** Wait for the fire-and-forget list bound to have run.
+ *
+ *  `prime` and `sweepValidators` both start the bound without awaiting it — the boot path
+ *  must not block on housekeeping — so every test here has to wait for it before reading
+ *  the cache. That wait used to be a flat `setTimeout(…, 20)`, which is a guess about how
+ *  busy the machine is rather than a fact about the code. Measured: once in roughly 37
+ *  full-suite runs the trim had not landed inside 20ms and the run failed with 400 rows,
+ *  while the same file passed 12/12 on its own. A suite that reddens under load is worse
+ *  than slow — it makes every mutation score unreliable, because a CAUGHT can be the flake
+ *  rather than the mutation, and a false CAUGHT hides a hole.
+ *
+ *  It waits for the row count to MOVE OFF the seeded size, not for the expected size. Those
+ *  have to be different conditions: waiting for the expected size would make the wait into
+ *  the assertion, and a bound that trimmed to the wrong number would then surface as a
+ *  timeout instead of a plain size mismatch. */
+async function settleListBound(cache: SessionCache, seededLength: number): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  for (;;) {
+    const list = (await cache.getList()) ?? [];
+    if (list.length !== seededLength) return;
+    if (Date.now() > deadline) {
+      throw new Error(`the list bound never ran: still ${seededLength} rows after 5s`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 /** An ApiClient that answers every boot/sweep read with nothing. */
 function quietApi(): ApiClient {
   return {
@@ -64,9 +91,7 @@ describe('the list bound is wired to both callers, at the page size', () => {
       sessionsPerPage: 100,
     });
     await prefetcher.prime();
-    // `prime` fires the bound without awaiting it — the boot path must not block
-    // on housekeeping — so settle the microtasks it queued.
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await settleListBound(cache, 400);
 
     expect(await cache.getList()).toHaveLength(100);
     await cache.close();
@@ -86,7 +111,7 @@ describe('the list bound is wired to both callers, at the page size', () => {
       sessionsPerPage: 200,
     });
     await prefetcher.prime();
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await settleListBound(cache, 400);
 
     expect(await cache.getList()).toHaveLength(200);
     await cache.close();
@@ -105,7 +130,7 @@ describe('the list bound is wired to both callers, at the page size', () => {
       sessionsPerPage: 200,
     });
     await engine.sweepValidators();
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await settleListBound(cache, 400);
 
     expect(await cache.getList()).toHaveLength(200);
     await cache.close();
@@ -132,7 +157,7 @@ describe('the list bound is wired to both callers, at the page size', () => {
 
     const engine = new SyncEngine({ store, api, cache, sessionsPerPage: 100 });
     await engine.sweepValidators();
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await settleListBound(cache, 400);
 
     expect(await cache.getList()).toHaveLength(100);
     await cache.close();
@@ -144,7 +169,7 @@ describe('the list bound is wired to both callers, at the page size', () => {
 
     const engine = new SyncEngine({ store: createChatStore(), api: quietApi(), cache });
     await engine.sweepValidators();
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await settleListBound(cache, 400);
 
     expect(await cache.getList()).toHaveLength(100);
     await cache.close();
