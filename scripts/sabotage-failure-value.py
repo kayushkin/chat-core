@@ -84,10 +84,92 @@ def score(mutation):
         "kind": mutation["kind"],
         "describes": mutation["describes"],
         "plan": mutation["plan"],
+        "expected_unnoticed": mutation.get("expected_unnoticed"),
         "caught": caught,
         "exit": code,
         "failing": failing[:14],
     }
+
+
+# A producer can be genuinely unobservable: `if (!candidate) return null` in
+# webStorage.ts is followed by a read that throws on the same input, and the
+# catch turns that throw into the identical null. No assertion over the return
+# value can tell the two apart, so the mutation is UNNOTICED on a suite that
+# pins the pair perfectly. Reporting that as a hole would leave the sweep unable
+# to finish honestly, and silently exempting it would hide a real hole the day
+# the code changes.
+#
+# So a mutation may DECLARE itself expected-unnoticed, with the reason. The
+# declaration is a claim about the code, and a claim that stops being true is
+# worse than no claim -- so a declared mutation that IS caught is reported as a
+# problem in its own right, telling the reader to delete the declaration. That
+# is the one thing an exemption list usually cannot do.
+LABELS = {
+    "CAUGHT": "CAUGHT            ",
+    "UNNOTICED": "UNNOTICED         ",
+    "EXPECTED-UNNOTICED": "EXPECTED-UNNOTICED",
+    "STALE-DECLARATION": "STALE-DECLARATION ",
+    "DID-NOT-APPLY": "DID-NOT-APPLY     ",
+}
+
+
+def classify(result):
+    """The verdict on one mutation: a label, and whether it needs a human."""
+    declared = result.get("expected_unnoticed")
+    if result["caught"] is None:
+        return "DID-NOT-APPLY"
+    if result["caught"]:
+        return "STALE-DECLARATION" if declared else "CAUGHT"
+    return "EXPECTED-UNNOTICED" if declared else "UNNOTICED"
+
+
+def problems(results):
+    """Every result a run must not pass over, as ready-to-print lines.
+
+    Controls are judged separately, per plan -- see `control_problems`.
+    """
+    lines = []
+    for result in results:
+        verdict = classify(result)
+        if result["kind"] == "control":
+            continue
+        if verdict == "UNNOTICED":
+            lines.append(f"UNNOTICED: {result['id']}: {result['describes']}")
+        elif verdict == "DID-NOT-APPLY":
+            lines.append(f"DID NOT APPLY: {result['id']}: {result['error'].splitlines()[0]}")
+        elif verdict == "STALE-DECLARATION":
+            lines.append(
+                f"STALE DECLARATION: {result['id']} is declared expected_unnoticed "
+                f"({result['expected_unnoticed']}) and the suite CAUGHT it. "
+                "The declaration is out of date -- delete it."
+            )
+    return lines
+
+
+def control_problems(results):
+    """Controls are judged per plan, never pooled: each plan carries its own pair,
+    and a plan whose controls misbehaved has measured nothing, so pooling would let
+    one plan's healthy pair vouch for another plan's broken run."""
+    lines = []
+    for plan_name in sorted({r["plan"] for r in results}):
+        controls = {
+            r["id"].split("/", 1)[1]: r
+            for r in results
+            if r["plan"] == plan_name and r["kind"] == "control"
+        }
+        if not controls:
+            lines.append(f"{plan_name}: no controls, so the run vouches for nothing")
+            continue
+        positive = controls.get("CONTROL-POSITIVE")
+        if positive is None or positive["caught"] is not True:
+            lines.append(f"{plan_name}: CONTROL-POSITIVE was not caught -- the suite never ran")
+        negative = controls.get("CONTROL-NEGATIVE")
+        if negative is None or negative["caught"] is not False:
+            lines.append(
+                f"{plan_name}: CONTROL-NEGATIVE was caught -- the suite is red for a reason "
+                "unrelated to any mutation"
+            )
+    return lines
 
 
 def load_plans(arguments):
@@ -154,11 +236,52 @@ def self_test():
     finally:
         scratch.unlink(missing_ok=True)
 
+    # The verdict logic, in all four directions. An exemption that cannot go stale
+    # is the failure mode this whole mechanism exists to avoid, so the direction
+    # that matters most is the LAST one: a declared mutation that got caught must
+    # be a problem, not a quiet pass.
+    def result(kind, caught, declared=None):
+        return {
+            "id": "p/M",
+            "plan": "p",
+            "kind": kind,
+            "describes": "d",
+            "caught": caught,
+            "expected_unnoticed": declared,
+        }
+
+    check("an undeclared catch is CAUGHT", classify(result("A", True)), "CAUGHT")
+    check("an undeclared miss is UNNOTICED", classify(result("A", False)), "UNNOTICED")
+    check(
+        "a declared miss is EXPECTED-UNNOTICED",
+        classify(result("A", False, "masked by the catch")),
+        "EXPECTED-UNNOTICED",
+    )
+    check(
+        "a declared CATCH is a stale declaration",
+        classify(result("A", True, "masked by the catch")),
+        "STALE-DECLARATION",
+    )
+    check("an undeclared catch needs nobody", problems([result("A", True)]), [])
+    check(
+        "a declared miss needs nobody",
+        problems([result("A", False, "masked by the catch")]),
+        [],
+    )
+    check("an undeclared miss needs a human", len(problems([result("A", False)])), 1)
+    check(
+        "a STALE declaration needs a human",
+        len(problems([result("A", True, "masked by the catch")])),
+        1,
+    )
+    # A control is judged by control_problems, never counted as a hole by problems().
+    check("a control is not a hole", problems([result("control", False)]), [])
+
     for line in failures:
         print(f"SELF-TEST FAILED: {line}")
     if failures:
         return 1
-    print("self-test passed: 7 checks, both directions")
+    print("self-test passed: 16 checks, both directions")
     return 0
 
 
@@ -180,10 +303,10 @@ def main():
                 "error": str(error),
             }
         results.append(result)
-        mark = {True: "CAUGHT   ", False: "UNNOTICED", None: "DID-NOT-APPLY"}[
-            result["caught"]
-        ]
-        print(f"{mark}  [{result['kind']}] {result['id']}: {result['describes']}")
+        print(
+            f"{LABELS[classify(result)]}  [{result['kind']}] {result['id']}: "
+            f"{result['describes']}"
+        )
         if result["caught"] is None:
             print(f"            {result['error'].splitlines()[0]}")
         sys.stdout.flush()
@@ -195,48 +318,28 @@ def main():
     # unnoticed; CONTROL-POSITIVE is supposed to be caught. Both are statements
     # about whether the run measured anything, so they are judged, not tallied.
     real = [r for r in results if r["kind"] != "control"]
-
-    unnoticed = [r for r in real if r["caught"] is False]
-    broken = [r for r in results if r["caught"] is None]
+    tally = {}
+    for result in real:
+        verdict = classify(result)
+        tally[verdict] = tally.get(verdict, 0) + 1
     print(
         f"\n{len(real)} real mutations: "
-        f"{sum(1 for r in real if r['caught'] is True)} caught, "
-        f"{len(unnoticed)} UNNOTICED, {len(broken)} did not apply"
+        + ", ".join(f"{count} {verdict}" for verdict, count in sorted(tally.items()))
     )
 
-    # Controls are judged per plan, not pooled. Each plan carries its own pair,
-    # and a plan whose controls misbehaved has measured nothing -- pooling them
-    # would let one plan's healthy pair vouch for another plan's broken run.
-    misbehaved = []
-    plans = sorted({r["plan"] for r in results})
-    for plan_name in plans:
-        controls = {
-            r["id"].split("/", 1)[1]: r
-            for r in results
-            if r["plan"] == plan_name and r["kind"] == "control"
-        }
-        if not controls:
-            misbehaved.append(f"{plan_name}: no controls, so the run vouches for nothing")
-            continue
-        positive = controls.get("CONTROL-POSITIVE")
-        if positive is None or positive["caught"] is not True:
-            misbehaved.append(f"{plan_name}: CONTROL-POSITIVE was not caught -- the suite never ran")
-        negative = controls.get("CONTROL-NEGATIVE")
-        if negative is None or negative["caught"] is not False:
-            misbehaved.append(
-                f"{plan_name}: CONTROL-NEGATIVE was caught -- the suite is red for a reason "
-                "unrelated to any mutation"
-            )
-    for line in misbehaved:
-        print(f"CONTROL FAILED: {line}")
-    if not misbehaved:
-        print(f"controls behaved in all {len(plans)} plans")
+    complaints = problems(results) + control_problems(results)
+    for line in complaints:
+        print(line)
+    if not complaints:
+        plans = sorted({r["plan"] for r in results})
+        print(f"controls behaved in all {len(plans)} plans, and no producer is unpinned")
 
     # Exit status answers "did this run measure a hole", not "did it like what it
     # found". A mutation that never applied, and a control that misbehaved, both
     # mean the run did not measure -- which is not the same as finding nothing,
-    # but is equally not a pass.
-    return 1 if (unnoticed or broken or misbehaved) else 0
+    # but is equally not a pass. A DECLARED expected-unnoticed is neither: it is a
+    # measurement that came out as the plan said it would.
+    return 1 if complaints else 0
 
 
 if __name__ == "__main__":
