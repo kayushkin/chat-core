@@ -14,9 +14,11 @@ import type {
   SessionConfig,
   SessionInfo,
   SessionPermissionState,
+  SessionSummaryFilterAxes,
   SummaryResponse,
   ValidatorsResponse,
 } from './types.js';
+import { SUMMARY_FILTER_AXES } from './types.js';
 import type {
   HarnessConfigWire,
   HarnessInfoWire,
@@ -294,11 +296,31 @@ export class ApiClient {
 
   // --- dashv2 read endpoints ---
 
-  /** Projected sidebar list, newest first, paginated. */
-  getSummary(opts?: { limit?: number; before?: string }): Promise<SummaryResponse> {
+  /** Projected sidebar list, newest first, paginated, and optionally narrowed to
+   *  the given axes server-side.
+   *
+   *  Filtering here rather than over the returned page is the whole point: the
+   *  page is a strict newest-first prefix, and on a box whose recent history is
+   *  mostly machine traffic that prefix is spent before it reaches the sessions
+   *  the user wants. Sieving it client-side can only ever throw rows away.
+   *
+   *  Each axis is sent as REPEATED parameters (`?type=a&type=b`), never joined
+   *  with commas: these values are free-form strings from the sessions table — a
+   *  purpose on this box reads "dashv2 browser verification + A/B perf" — and one
+   *  containing a comma would be silently cut in half by a join. */
+  getSummary(opts?: {
+    limit?: number;
+    before?: string;
+    filter?: SessionSummaryFilterAxes;
+  }): Promise<SummaryResponse> {
     const params = new URLSearchParams();
     if (opts?.limit != null) params.set('limit', String(opts.limit));
     if (opts?.before) params.set('before', opts.before);
+    if (opts?.filter) {
+      for (const axis of SUMMARY_FILTER_AXES) {
+        for (const value of opts.filter[axis] ?? []) params.append(axis, value);
+      }
+    }
     const qs = params.toString();
     return this.getJSON<SummaryResponse>(`/sessions/summary${qs ? `?${qs}` : ''}`);
   }

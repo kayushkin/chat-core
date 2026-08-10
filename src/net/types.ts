@@ -378,6 +378,44 @@ export interface SummaryResponse {
   revision: string; // ETag-equivalent; also returned as the ETag header
 }
 
+/** The axes `GET /sessions/summary` can narrow on, server-side.
+ *
+ *  These are exactly the six faceted axes of `FilterState`, so a `FilterState` is
+ *  structurally assignable here and no mapping table is needed. `folder` and
+ *  `search` are deliberately absent: the endpoint has no folder parameter, and
+ *  transcript search is a different endpoint with its own ranking.
+ *
+ *  Semantics match the chips: an absent or empty axis constrains nothing, values
+ *  within one axis are OR'd, and axes are AND'd. The server implements the same
+ *  rule (`internal/store/dashv2.go`), so the two cannot drift into meaning
+ *  different things by one filter. */
+export interface SessionSummaryFilterAxes {
+  harness?: string[];
+  status?: string[];
+  type?: string[];
+  purpose?: string[];
+  mode?: string[];
+  machine?: string[];
+}
+
+/** The axis names, which are also the query parameter names. Iterated rather than
+ *  written out at each call site so adding an axis is one edit. */
+export const SUMMARY_FILTER_AXES = [
+  'harness',
+  'status',
+  'type',
+  'purpose',
+  'mode',
+  'machine',
+] as const satisfies readonly (keyof SessionSummaryFilterAxes)[];
+
+/** True when the filter constrains nothing, so a caller can tell an unfiltered
+ *  request from a filtered one without inspecting each axis. */
+export function isEmptySummaryFilter(filter: SessionSummaryFilterAxes | undefined): boolean {
+  if (!filter) return true;
+  return SUMMARY_FILTER_AXES.every((axis) => (filter[axis]?.length ?? 0) === 0);
+}
+
 /** recent-bundle: warms the N most-recent sessions in one round trip. */
 export type RecentBundleResponse = Record<
   string,
