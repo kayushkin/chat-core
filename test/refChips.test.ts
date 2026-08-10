@@ -142,6 +142,60 @@ describe('remarkRefChips', () => {
     });
   });
 
+  it('resolves an id inside a single-backtick span', () => {
+    // Backticks are how people set an id apart in prose, so these resolve. This
+    // was reported as "session ids just show as text": every example had been
+    // written in backticks, and none of them chipped.
+    const root = tree([
+      {
+        type: 'paragraph',
+        children: [{ type: 'inlineCode', value: 'br_1234567890123456' }],
+      },
+    ]);
+    remarkRefChips()(root as never);
+    const kids = root.children?.[0]?.children ?? [];
+    expect(kids.map((k) => k.type)).toEqual(['refChip']);
+    expect(kids[0]?.data).toEqual({
+      hName: 'ref-chip',
+      hProperties: { kind: 'session', refId: 'br_1234567890123456' },
+    });
+  });
+
+  it('keeps the non-reference part of a code span as code', () => {
+    const root = tree([
+      { type: 'paragraph', children: [{ type: 'inlineCode', value: `todo: ${UUID}` }] },
+    ]);
+    remarkRefChips()(root as never);
+    const kids = root.children?.[0]?.children ?? [];
+    expect(kids.map((k) => k.type)).toEqual(['inlineCode', 'refChip']);
+    expect(kids[0]?.value).toBe('todo: ');
+  });
+
+  it('leaves a code span with no reference completely alone', () => {
+    const root = tree([
+      { type: 'paragraph', children: [{ type: 'inlineCode', value: 'npm run build' }] },
+    ]);
+    remarkRefChips()(root as never);
+    expect(root.children?.[0]?.children?.[0]).toEqual({
+      type: 'inlineCode',
+      value: 'npm run build',
+    });
+  });
+
+  it('leaves a FENCED block alone, unlike an inline span', () => {
+    // The two are the same shape and differ only by `type`. A fenced block holds
+    // a payload — a curl command, a JSON body — and chipping inside one would
+    // corrupt whatever a reader copies out of it.
+    const root = tree([
+      { type: 'code', value: `curl .../sessions/br_1234567890123456` },
+    ]);
+    remarkRefChips()(root as never);
+    expect(root.children?.[0]).toEqual({
+      type: 'code',
+      value: 'curl .../sessions/br_1234567890123456',
+    });
+  });
+
   it('does not rescan the nodes it inserted', () => {
     const root = tree([
       { type: 'paragraph', children: [{ type: 'text', value: `todo: ${UUID}` }] },

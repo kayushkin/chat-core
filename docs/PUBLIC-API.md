@@ -514,6 +514,13 @@ export type TimelineTone =
 // Pure matcher + a remark transformer (dependency-free) and a React renderer.
 // Wire into ReactMarkdown:  remarkPlugins={[remarkRefChips]} components={{ 'ref-chip': RefChip }}
 //
+// Verbatim nodes are skipped, for opposite reasons: `link` (a linkified id keeps its link
+// — only remark-gfm makes a bare URL a link, so without it an id in a query string is cut
+// out of the address) and `code`, the FENCED block, which holds a payload a reader copies
+// out. `inlineCode` is NOT skipped: a single-backtick span is prose emphasis and setting
+// an id apart with backticks is how people write one. In a mixed span the non-reference
+// part stays code — `todo: <uuid>` becomes a code span reading "todo: " plus the chip.
+//
 // The matcher chips bare session ids (br_/herald-/autoworker- snowflakes) anywhere, and
 // noteboard uuids ONLY behind a cue word — note/workspace (kind 'note') or todo/item/card
 // (kind 'todo'), each also with an `_id` suffix. Bare uuids are never chipped: they

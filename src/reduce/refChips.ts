@@ -110,6 +110,13 @@ interface MdText {
   type: 'text';
   value: string;
 }
+/** A single-backtick span. A LEAF with a `value`, like `code` (the fenced
+ *  block) — the two are only distinguishable by `type`, which is why the fenced
+ *  case has to be excluded by name rather than by shape. */
+interface MdInlineCode {
+  type: 'inlineCode';
+  value: string;
+}
 interface RefChipNode {
   type: 'refChip';
   data: { hName: 'ref-chip'; hProperties: { kind: RefKind; refId: string } };
@@ -119,7 +126,7 @@ interface MdParent {
   type: string;
   children: MdNode[];
 }
-type MdNode = MdText | RefChipNode | MdParent;
+type MdNode = MdText | MdInlineCode | RefChipNode | MdParent;
 
 function isParent(node: MdNode): node is MdParent {
   return Array.isArray((node as MdParent).children);
@@ -133,10 +140,27 @@ function chip(kind: RefKind, refId: string): RefChipNode {
   };
 }
 
-/** remark-compatible transformer. Rewrites bare session ids and cue-prefixed
- *  todo uuids inside text nodes into `<ref-chip>` elements, leaving text inside
- *  existing links alone and never re-scanning inserted nodes. Dependency-free:
- *  it walks the tree itself rather than using unist-util-visit. */
+/**
+ * remark-compatible transformer. Rewrites bare session ids and cue-prefixed
+ * noteboard uuids into `<ref-chip>` elements, and never re-scans what it
+ * inserted. Dependency-free: it walks the tree itself rather than using
+ * unist-util-visit.
+ *
+ * Two node types are treated as verbatim and left alone, for opposite reasons:
+ *
+ *  - `link` — a linkified id keeps its link. Only remark-gfm's autolink-literal
+ *    extension makes a bare pasted URL a link node, so without gfm in the
+ *    pipeline an id in a URL's query string is cut out of the middle of the
+ *    address.
+ *  - `code` — a FENCED block holds a payload: a curl command, a JSON body, a log
+ *    line. Chipping inside one would corrupt what a reader copies out of it.
+ *
+ * `inlineCode` is deliberately NOT in that list. A single-backtick span is prose
+ * emphasis, not a payload, and setting an id apart with backticks is the most
+ * natural way to write one — so those resolve. Getting this wrong is invisible
+ * rather than loud: the id simply renders as text and looks like a chip that
+ * failed, which is exactly how it was first reported.
+ */
 export function remarkRefChips() {
   return (tree: MdParent): void => {
     const walk = (parent: MdParent): void => {
@@ -154,6 +178,25 @@ export function remarkRefChips() {
           );
           parent.children.splice(i, 1, ...replacement);
           // Skip past the inserted nodes so their text is never re-scanned.
+          i += replacement.length - 1;
+          continue;
+        }
+        if (node.type === 'inlineCode') {
+          const segments = parseRefChips((node as MdInlineCode).value);
+          if (!segments.some((s) => s.type === 'chip')) continue;
+          // Whatever was NOT a reference stays code — `todo: <uuid>` in backticks
+          // becomes a code span reading "todo: " followed by the chip, rather
+          // than losing the code styling the author asked for. Whitespace-only
+          // leftovers become plain text: an empty code span would render as a
+          // stray tick-mark box.
+          const replacement: MdNode[] = segments.map((s) =>
+            s.type === 'chip'
+              ? chip(s.kind, s.refId)
+              : s.value.trim() === ''
+                ? { type: 'text', value: s.value }
+                : { type: 'inlineCode', value: s.value },
+          );
+          parent.children.splice(i, 1, ...replacement);
           i += replacement.length - 1;
           continue;
         }
