@@ -838,14 +838,32 @@ function toTimelineItems(model: TurnModel): TimelineItem[] {
       const drawn = TASK_FINISH_BY_STATUS[e.taskStatus!];
       const existingIdx = finishIdxByTask.get(taskKey);
       if (existingIdx !== undefined) {
-        // A second close for the same task. Keep the row where the first one
-        // put it — that is when the task actually ended — and take the summary,
-        // which only task_notification carries.
-        const existing = out[existingIdx];
-        if (existing && e.taskSummary) {
-          existing.detail = oneLine(e.taskSummary);
-          existing.fullText = e.taskSummary;
+        // A second close for the same task: one row, moved to the LATEST one.
+        //
+        // Usually the two are milliseconds apart — task_updated carries the
+        // status, task_notification follows with the report — and it makes no
+        // visible difference which is used. But a task can genuinely resume:
+        // measured on a real subagent, task_started → close → task_started
+        // again → close again, thirty seconds apart. Anchoring on the first
+        // close then drew "Task finished" above work the subagent had not done
+        // yet.
+        const existing = out.splice(existingIdx, 1)[0]!;
+        for (const [key, idx] of finishIdxByTask) {
+          if (idx > existingIdx) finishIdxByTask.set(key, idx - 1);
         }
+        existing.ts = e.ts;
+        existing.entryId = e.id;
+        existing.icon = drawn?.icon ?? existing.icon;
+        existing.label = drawn?.label ?? existing.label;
+        existing.tone = drawn?.tone ?? existing.tone;
+        const later = e.taskSummary || e.text;
+        if (later) {
+          existing.detail = oneLine(later);
+          existing.fullText = later;
+        }
+        applyTaskFields(existing, e);
+        finishIdxByTask.set(taskKey, out.length);
+        out.push(existing);
         continue;
       }
       // The summary is the subagent's own report of what it did and is the

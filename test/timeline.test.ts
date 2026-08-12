@@ -289,8 +289,49 @@ describe('the harness repeats itself', () => {
     const rows = selectTimeline(m).turns[0]!.children;
     expect(rows.map((r) => r.label)).toEqual(['Task started', 'Task finished']);
     expect(rows[1]!.detail).toBe('what it actually did');
-    // The row stays where the task ENDED, not where the report arrived.
-    expect(rows[1]!.entryId).toBe('s2');
+  });
+
+  it('moves the finish down when a task resumes and closes again', () => {
+    // Measured on a real subagent: it reported completed, was re-announced
+    // thirty seconds later, worked on, and closed again. Anchoring the row on
+    // the FIRST close drew "Task finished" above work the subagent had not
+    // done yet.
+    const m = model([
+      entry({ id: 'u1', turnId: 't1', role: 'user', kind: 'text', eventId: 1, text: 'go' }),
+      taskStarted({ id: 's1', turnId: 't1', eventId: 2, taskId: 'A', text: 'demo' }),
+      taskClosed({
+        id: 's2',
+        turnId: 't1',
+        eventId: 3,
+        taskId: 'A',
+        taskStatus: 'completed',
+        taskSummary: 'the 40-second wait is still running',
+      }),
+      // It resumes. Same task id, a second announcement.
+      taskStarted({ id: 's3', turnId: 't1', eventId: 4, taskId: 'A', text: 'demo' }),
+      // The parent works while the resumed task runs.
+      entry({
+        id: 'p1',
+        turnId: 't1',
+        role: 'tool',
+        kind: 'tool_call',
+        eventId: 5,
+        toolName: 'Bash',
+      }),
+      taskClosed({
+        id: 's4',
+        turnId: 't1',
+        eventId: 6,
+        taskId: 'A',
+        taskStatus: 'completed',
+        taskSummary: 'counted 34 TypeScript files',
+      }),
+    ]);
+    const rows = selectTimeline(m).turns[0]!.children;
+    // Still one spawn and one finish — but the finish is now BELOW the work.
+    expect(rows.map((r) => r.label)).toEqual(['Task started', 'Bash', 'Task finished']);
+    expect(rows[2]!.detail).toBe('counted 34 TypeScript files');
+    expect(rows[2]!.entryId).toBe('s4');
   });
 });
 
