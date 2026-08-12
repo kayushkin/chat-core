@@ -1,5 +1,6 @@
 import type { Entry, SessionSummary, TurnModel } from '../net/types.js';
 import { isTerminalTaskStatus } from './selectors.js';
+import { resultedToolIds, toolIdOf } from './toolPairing.js';
 
 // LIVE STATUS: what a running turn is doing at this instant, at one level more
 // detail than `ActivityKind`. The activity fold answers with one word (thinking /
@@ -181,13 +182,16 @@ function deriveStatus(model: TurnModel): LiveTurnStatus {
   // Tasks first, so their tool_use_ids can claim the Task tool calls that
   // spawned them. A settled task still claims its call: the call's result may
   // land an event later, and in that gap the turn is "composing", not "waiting".
+  // Claims are matched by TOOL ID, not entry key — the live reducer keys a call
+  // `tool_<tool_id>` but the server-materialized page keys it `e_<eventId>`, and
+  // a claim written against the key shape would silently miss on one of them.
   const subagentByTaskId = new Map<string, LiveSubagent>();
-  const claimedToolEntryIds = new Set<string>();
+  const claimedToolUseIds = new Set<string>();
   for (const entryId of lastTurn.entryIds) {
     const entry = model.entries[entryId];
     if (!entry || entry.duplicate || entry.kind !== 'system' || !entry.taskId) continue;
     if (entry.subtype === 'task_started') {
-      if (entry.toolUseId) claimedToolEntryIds.add(`tool_${entry.toolUseId}`);
+      if (entry.toolUseId) claimedToolUseIds.add(entry.toolUseId);
       if (!subagentByTaskId.has(entry.taskId)) {
         subagentByTaskId.set(entry.taskId, {
           taskId: entry.taskId,
@@ -205,17 +209,30 @@ function deriveStatus(model: TurnModel): LiveTurnStatus {
     }
   }
 
-  const toolCalls: LiveToolCall[] = [];
-  let lastEntryTs: string | undefined;
+  // Results this turn, by tool id — the pairing the server-materialized page
+  // needs. The live reducer merges a result onto its call (`toolResult` set), but
+  // a cold-loaded page keeps them as two rows, and reading `toolResult` alone
+  // would report every historical call as still running.
+  const lastTurnEntries: Entry[] = [];
   for (const entryId of lastTurn.entryIds) {
     const entry = model.entries[entryId];
-    if (!entry || entry.duplicate) continue;
+    if (entry && !entry.duplicate) lastTurnEntries.push(entry);
+  }
+  const resulted = resultedToolIds(lastTurnEntries);
+
+  const toolCalls: LiveToolCall[] = [];
+  let lastEntryTs: string | undefined;
+  for (const entry of lastTurnEntries) {
     lastEntryTs = entry.ts;
     if (entry.kind !== 'tool_call') continue;
-    // In flight = no result yet. An unpairable call can never receive one, so it
-    // must not render as pending — it is not pending, it is unknowable.
+    // In flight = no result yet, on either model shape. A call with no tool id
+    // can never receive one (the reducer marks these `unpairable`; the server
+    // materializer marks nothing, so the absent id is read directly) — it must
+    // not render as pending: it is not pending, it is unknowable.
     if (entry.toolResult !== undefined || entry.unpairable) continue;
-    if (claimedToolEntryIds.has(entry.id)) continue;
+    const toolId = toolIdOf(entry);
+    if (!toolId || resulted.has(toolId)) continue;
+    if (claimedToolUseIds.has(toolId)) continue;
     toolCalls.push({
       name: entry.toolName ?? '',
       summary: toolCallSummary(entry.toolName, entry.toolInput),

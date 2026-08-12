@@ -264,4 +264,59 @@ describe('a subagent that finishes says so', () => {
       expect(node.item.tone).not.toBe('tool');
     }
   });
+
+  it('marks a call done when its result is a SEPARATE row (server-materialized page)', () => {
+    // GET /messages keys entries by event id and never merges a result onto its
+    // call — the tool id lives only in raw. Reading `toolResult` alone drew a ⚙
+    // on every cold-loaded call, forever.
+    const m = model([
+      entry({ id: 'u1', turnId: 't1', role: 'user', kind: 'text', eventId: 1, text: 'go' }),
+      entry({
+        id: 'e_2',
+        turnId: 't1',
+        role: 'tool',
+        kind: 'tool_call',
+        eventId: 2,
+        toolName: 'Bash',
+        raw: { tool_call: { tool_id: 'toolu_1', name: 'Bash' } },
+      }),
+      entry({
+        id: 'e_3',
+        turnId: 't1',
+        role: 'tool',
+        kind: 'tool_result',
+        eventId: 3,
+        toolResult: 'ok',
+        raw: { tool_result: { tool_id: 'toolu_1', output: 'ok' } },
+      }),
+    ]);
+    const callNode = selectTimeline(m).turns[0]!.children.find(
+      (n) => n.type === 'item' && n.item.entryId === 'e_2',
+    );
+    expect(callNode?.type).toBe('item');
+    if (callNode?.type === 'item') {
+      expect(callNode.item.tone).toBe('tool-done');
+      expect(callNode.item.icon).toBe('✓');
+    }
+  });
+
+  it('still shows ⚙ for a pairable call whose result has not arrived', () => {
+    const m = model([
+      entry({ id: 'u1', turnId: 't1', role: 'user', kind: 'text', eventId: 1, text: 'go' }),
+      entry({
+        id: 'e_2',
+        turnId: 't1',
+        role: 'tool',
+        kind: 'tool_call',
+        eventId: 2,
+        toolName: 'Bash',
+        raw: { tool_call: { tool_id: 'toolu_1', name: 'Bash' } },
+      }),
+    ]);
+    const node = selectTimeline(m).turns[0]!.children[0]!;
+    if (node.type === 'item') {
+      expect(node.item.tone).toBe('tool');
+      expect(node.item.icon).toBe('⚙');
+    }
+  });
 });

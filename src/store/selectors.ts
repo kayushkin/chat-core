@@ -3,6 +3,7 @@ import { annotateOTelDuplicates, groupMembers } from '../reduce/otelDedup.js';
 import { terminalStateFromTail } from '../reduce/terminalState.js';
 import { IDLE_ACTIVITY, type ActivityKind } from './activity.js';
 import { isRunningState } from './sessionStates.js';
+import { resultedToolIds, toolIdOf } from './toolPairing.js';
 import type { ChatState, ContentHits, FilterState } from './ChatStore.js';
 
 // Memoized selectors over the hot store. Kept pure + framework-free so they are
@@ -718,6 +719,13 @@ function toTimelineItems(model: TurnModel): TimelineItem[] {
     .slice()
     .sort((a, b) => a.eventId - b.eventId);
 
+  // Which calls actually finished, by TOOL ID. The live reducer merges a result
+  // onto its call, so `toolResult !== undefined` catches those — but the
+  // server-materialized page (`GET /messages`) keeps call and result as separate
+  // rows, and reading `toolResult` alone drew a ⚙ on every cold-loaded call,
+  // forever. See store/toolPairing.ts.
+  const resulted = resultedToolIds(entries);
+
   const out: TimelineItem[] = [];
   const seenTurn = new Set<string>();
   const taskIdxByScope = new Map<string, number>();
@@ -808,14 +816,20 @@ function toTimelineItems(model: TurnModel): TimelineItem[] {
     }
 
     if (e.kind === 'tool_call' || e.kind === 'tool_result') {
-      const done = e.kind === 'tool_result' || e.toolResult !== undefined;
+      const toolId = toolIdOf(e);
+      const done =
+        e.kind === 'tool_result' ||
+        e.toolResult !== undefined ||
+        (toolId !== undefined && resulted.has(toolId));
       const err = toolIsError(e);
       // An unpairable call has no result coming — it was keyed by event id
       // because the source event carried no tool_id, so nothing can ever join
       // the two. Rendering it "running" promises an outcome that will never
       // arrive; that is the spinner that sat on screen forever. Say the
-      // outcome is unknown instead.
-      const unresolvable = !done && !err && e.unpairable === true;
+      // outcome is unknown instead. The reducer stamps `unpairable` when it
+      // chooses the key; the server materializer stamps nothing, so the absent
+      // tool id is read directly.
+      const unresolvable = !done && !err && (e.unpairable === true || toolId === undefined);
       out.push(
         makeItem(e, {
           icon: err ? '✗' : done ? '✓' : unresolvable ? '–' : '⚙',

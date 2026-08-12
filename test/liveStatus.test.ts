@@ -128,6 +128,59 @@ describe('liveStatusFromModel — in-flight tool calls', () => {
   });
 });
 
+describe('liveStatusFromModel — server-materialized pages (call and result as separate rows)', () => {
+  // GET /sessions/{id}/messages keys entries by event id and does NOT merge a
+  // result onto its call — the tool id lives only in each row's raw payload.
+  // This is the shape that made every cold-loaded call read as in flight
+  // ("+19 more") the first time the status line met a real session.
+  function serverModel(withResult: boolean) {
+    const call = {
+      id: 'e_100',
+      turnId: 't1',
+      role: 'assistant' as const,
+      kind: 'tool_call' as const,
+      source: 'harness' as const,
+      eventId: 100,
+      ts: '2026-08-12T16:54:10Z',
+      toolName: 'Bash',
+      toolInput: { command: 'cat thing.txt' },
+      raw: { tool_call: { tool_id: 'toolu_1', name: 'Bash' } },
+      duplicate: false,
+      primary: true,
+    };
+    const result = {
+      id: 'e_101',
+      turnId: 't1',
+      role: 'assistant' as const,
+      kind: 'tool_result' as const,
+      source: 'harness' as const,
+      eventId: 101,
+      ts: '2026-08-12T16:54:12Z',
+      toolResult: 'contents',
+      raw: { tool_result: { tool_id: 'toolu_1', name: '', output: 'contents' } },
+      duplicate: false,
+      primary: true,
+    };
+    const entryIds = withResult ? ['e_100', 'e_101'] : ['e_100'];
+    return {
+      sessionId: 'br_1',
+      turns: [{ id: 't1', role: 'assistant' as const, ts: call.ts, entryIds }],
+      entries: withResult ? { e_100: call, e_101: result } : { e_100: call },
+      more: false,
+    };
+  }
+
+  it('lists a genuinely unpaired call', () => {
+    expect(liveStatusFromModel(serverModel(false)).toolCalls).toEqual([
+      { name: 'Bash', summary: 'cat thing.txt', startedAt: '2026-08-12T16:54:10Z' },
+    ]);
+  });
+
+  it('pairs by the raw tool id: a call whose result is a separate row is NOT in flight', () => {
+    expect(liveStatusFromModel(serverModel(true)).toolCalls).toEqual([]);
+  });
+});
+
 describe('liveStatusFromModel — todo label (harness todo list)', () => {
   const todos = (items: Array<Record<string, unknown>>) => ({ todos: items });
 
