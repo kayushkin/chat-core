@@ -190,7 +190,6 @@ export {
   type FolderGroup,
   type TimelineTone,
   type TimelineItem,
-  type TimelineNode,
   type TimelineTurnGroup,
   type TimelineView,
 } from './store/selectors.js';

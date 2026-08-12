@@ -235,6 +235,9 @@ function applyPayload(prev: Entry, ev: WireEvent): Entry {
       if (raw.system?.subagent_type !== undefined) {
         next.subagentType = raw.system.subagent_type;
       }
+      if (raw.system?.subagent_session_id !== undefined) {
+        next.subagentSessionId = raw.system.subagent_session_id;
+      }
       if (raw.system?.last_tool_name !== undefined) {
         next.lastToolName = raw.system.last_tool_name;
       }
@@ -248,6 +251,11 @@ function applyPayload(prev: Entry, ev: WireEvent): Entry {
   // Recovered-assistant provenance rides on extensions (block events); never gates
   // visibility — it's a presentation marker only.
   if (raw.extensions?.recovered === true) next.recovered = true;
+  // Whose work this is. Carried on every event type, not just one kind, so it is
+  // read here rather than in the switch above. It reached the browser on ~12,000
+  // events and no consumer looked at it, which is how another session's rows
+  // ended up rendering as this one's.
+  if (raw.harness_parent_id) next.harnessParentId = raw.harness_parent_id;
   next.raw = raw;
   return next;
 }

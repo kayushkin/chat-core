@@ -228,6 +228,22 @@ never invented. log-store's `Entry` struct and the live-tail reducer populate th
 - `subtype?: string` — the `SystemEvent.subtype` on a kind `'system'` entry (e.g.
   `subagent_completed`, `compact_boundary`). An unknown subtype renders generically, never as
   an error.
+- `taskId?`, `toolUseId?`, `taskStatus?`, `taskSummary?`, `taskOutputFile?`, `taskType?`,
+  `subagentType?`, `lastToolName?` — the `msg.SystemEvent` subagent fields on a `task_*` entry.
+  `taskStatus` reaching a terminal value is the ONLY thing that ever says a subagent finished;
+  it emits no result event of its own. An unrecognized status is NOT terminal, so a status a
+  harness adds later cannot close a task that is still running.
+- `subagentSessionId?: string` — the bridge session id of the subagent a `task_*` entry
+  describes, and the id a client follows to read what it did. **Server-owned**: llm-bridge-server
+  mints the session and stamps this, because it is the only party that knows the id — a harness
+  knows only its own task id. Empty is a real answer, not a gap: a backgrounded shell task
+  (`taskType` `local_bash`) never gets a session.
+- `harnessParentId?: string` — set when the entry is a **subagent's own work rather than this
+  session's** (`Event.harness_parent_id`: the tool_use_id of the Task call that spawned it).
+  The server routes a subagent's frames into the subagent's own session, so a session's model
+  should almost never hold one; the exception is the fail-safe that keeps a frame whose
+  `task_started` was missed on the parent rather than dropping it. A view of what THIS session
+  did must leave those out.
 
 ### Client terminal-state reconcile (F1)
 The server's `sessions.state` can stay pinned to a holding value (`tool_running`) after a turn

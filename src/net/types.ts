@@ -96,6 +96,17 @@ export interface Entry {
    *  stand-ins arrive this way by design. The edge must not render such a call
    *  as still running: it is not pending, it is unknowable. */
   unpairable?: boolean;
+  /** Set when this entry is a subagent's own work rather than this session's:
+   *  the tool_use_id of the Task call that spawned it (`harness_parent_id` on
+   *  the wire).
+   *
+   *  The bridge server routes a subagent's frames into the subagent's own
+   *  session, so a session's own model should almost never hold one. The
+   *  exception is the server's fail-safe: a frame whose task_started was missed
+   *  stays on the parent rather than being dropped. A view of what THIS session
+   *  did must leave those out — they are another session's rows, sitting here
+   *  because there was nowhere better to put them. */
+  harnessParentId?: string;
   raw?: unknown; // original event payload, for the raw Timeline view / audit
 
   // Provenance / kind-specific fields (mapped from the canonical wire, never invented):
@@ -131,6 +142,14 @@ export interface Entry {
   /** The agent role a subagent was spawned as (`Explore`, `general-purpose`, …).
    *  Only `task_started` carries it. */
   subagentType?: string;
+  /** The bridge session id of the subagent a `task_*` entry describes — the id a
+   *  client follows to read what that subagent did. Minted and stamped by
+   *  llm-bridge-server, which owns it.
+   *
+   *  Empty means there is no session to link to, which is a real answer: a
+   *  backgrounded shell task gets the same task frames a subagent does and
+   *  deliberately never gets one. */
+  subagentSessionId?: string;
   /** The tool the subagent last ran, from `task_progress` — the only live view a
    *  parent has into what its subagent is doing. */
   lastToolName?: string;

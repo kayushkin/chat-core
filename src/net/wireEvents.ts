@@ -23,6 +23,16 @@ export interface WireEventData {
   turn_id?: string;
   harness_message_id?: string;
   client_request_id?: string;
+  /** The tool_use_id of the Task call that spawned the subagent this event came
+   *  from. Present only on a subagent's OWN frames, and the only thing that
+   *  separates them from the parent's: Claude Code runs a subagent inside the
+   *  parent's process and stamps every frame with the parent's session id.
+   *
+   *  The bridge server normally routes these frames into the subagent's own
+   *  session, so a parent's timeline should not see them. When one does arrive
+   *  (its task_started was missed, and the server keeps it on the parent rather
+   *  than dropping it), this is what identifies it as somebody else's work. */
+  harness_parent_id?: string;
 
   /** llm-bridge-claudecode tags the OTel copy of a prompt/response here
    *  (`extensions.source = "otel"`) so consumers can tell the two sources apart.
@@ -74,6 +84,14 @@ export interface WireEventData {
     /** The agent role a subagent was spawned as (`Explore`, `general-purpose`, …).
      *  Only `task_started` carries it. */
     subagent_type?: string;
+    /** The bridge session id of the subagent this task spawned — what a client
+     *  follows to read what the subagent actually did.
+     *
+     *  Set by llm-bridge-server, which mints the session and so is the only
+     *  party that knows the id; a harness only ever knows its own task id.
+     *  Empty is a real answer, not a gap: a backgrounded shell task never gets
+     *  a session. */
+    subagent_session_id?: string;
   };
   state?: { state?: string; previous?: string; reason?: string };
   info?: unknown;

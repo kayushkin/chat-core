@@ -597,6 +597,10 @@ export type TimelineTone =
   | 'task-start'
   | 'task-done'
   | 'task-err'
+  /** a task that was taken away rather than finishing or failing — the host
+   *  process died with it in flight, or the harness reported it stopped. Not
+   *  'task-err': nothing went wrong with the work, it was cut short. */
+  | 'task-cancelled'
   | 'thinking'
   | 'tool'
   | 'tool-done'
@@ -627,8 +631,19 @@ export interface TimelineItem {
   key: string;
   entryId: string;
   turnId: string;
-  /** Set on rows scoped to an active task_* span (bridge-ui task grouping). */
+  /** The task this row is ABOUT — set on the two rows that report a task's
+   *  lifecycle, its spawn and its finish. It does not mean "this row happened
+   *  inside that task": a task's own work is not in this session at all. */
   taskId?: string;
+  /** The bridge session to follow to see what the task did. Only a task row
+   *  carries one, and only when the task got a session — a backgrounded shell
+   *  never does. */
+  subagentSessionId?: string;
+  /** What kind of background work a task row describes (`local_agent`,
+   *  `local_bash`, …) and, for an agent, the role it was spawned as. Only the
+   *  spawn row carries these; the harness sends them nowhere else. */
+  taskType?: string;
+  subagentType?: string;
   icon: string;
   label: string;
   detail?: string; // one-line preview
@@ -637,16 +652,12 @@ export interface TimelineItem {
   tone: TimelineTone;
 }
 
-/** A child of a turn: either a standalone item or a task-scoped sub-group. */
-export type TimelineNode =
-  | { type: 'item'; item: TimelineItem }
-  | { type: 'task'; taskId: string; header: TimelineItem; children: TimelineItem[] };
-
-/** A turn group: its header row (the user prompt / first event) + grouped children. */
+/** A turn group: its header row (the user prompt / first event) + its rows, in
+ *  the order they happened. Flat on purpose — see toTimelineItems. */
 export interface TimelineTurnGroup {
   turnId: string;
   header: TimelineItem;
-  children: TimelineNode[];
+  children: TimelineItem[];
 }
 
 /** The full render-ready structure: the flat ordered items plus the turn→task tree. */
@@ -691,10 +702,12 @@ function toolText(e: Entry): string | undefined {
 
 function makeItem(
   e: Entry,
-  o: { icon: string; label: string; tone: TimelineTone; taskId?: string; text?: string },
+  o: { icon: string; label: string; tone: TimelineTone; text?: string; keySuffix?: string },
 ): TimelineItem {
   const item: TimelineItem = {
-    key: `tl_${e.id}`,
+    // A task's spawn and finish can come off the SAME entry when the harness
+    // repeats a terminal frame, so the key takes a suffix to stay unique.
+    key: `tl_${e.id}${o.keySuffix ?? ''}`,
     entryId: e.id,
     turnId: e.turnId,
     icon: o.icon,
@@ -702,7 +715,6 @@ function makeItem(
     ts: e.ts,
     tone: o.tone,
   };
-  if (o.taskId) item.taskId = o.taskId;
   const line = o.text ? oneLine(o.text) : '';
   if (line) {
     item.detail = line;
@@ -711,9 +723,47 @@ function makeItem(
   return item;
 }
 
-/** Flatten the model's entries into ordered timeline items, tracking task_* scope
- *  exactly as bridge-ui rowsToTimeline does (start opens a scope, user_message and
- *  result close it, repeated task events fold their description into the header). */
+/** How a finished task is drawn, by its canonical terminal status.
+ *
+ *  A status with no entry here is not terminal and never reaches this table —
+ *  isTerminalTaskStatus is the gate, and it mirrors msg.TaskStatusIsTerminal.
+ */
+/** Copy the task's identity onto a row. Both of a task's rows carry it, so a
+ *  client can link to the subagent from the finish as readily as from the
+ *  spawn. Absent fields stay absent — an empty subagentSessionId means there is
+ *  no session, which is the honest answer for a backgrounded shell. */
+function applyTaskFields(item: TimelineItem, e: Entry): void {
+  if (e.taskId) item.taskId = e.taskId;
+  if (e.subagentSessionId) item.subagentSessionId = e.subagentSessionId;
+}
+
+const TASK_FINISH_BY_STATUS: Record<string, { icon: string; label: string; tone: TimelineTone }> = {
+  completed: { icon: '▣✓', label: 'Task finished', tone: 'task-done' },
+  failed: { icon: '▣✗', label: 'Task failed', tone: 'task-err' },
+  cancelled: { icon: '▣–', label: 'Task cancelled', tone: 'task-cancelled' },
+};
+
+/** Flatten the model's entries into the ordered rows of what THIS session did.
+ *
+ *  Flat, and chronological, with no nesting. The timeline used to open a task
+ *  "scope" and file every following row inside it, tracked as a single
+ *  `currentTaskId` scalar set by the last task_started seen. With concurrent
+ *  subagents — the normal case; one measured session ran four at once with
+ *  their rows interleaved event by event — that scalar was wrong three ways at
+ *  once. Rows landed under whichever task started most recently, one subagent's
+ *  completion stamped its status and summary onto another's header, and the
+ *  first task to finish closed the scope, dropping every still-running task's
+ *  remaining rows out to the turn. Grouping was by CONTIGUOUS run as well, so
+ *  interleaving shattered a task into repeated headers regardless.
+ *
+ *  None of it was recoverable by fixing the bookkeeping, because the premise was
+ *  wrong: a subagent's work is not part of this session. The bridge server routes
+ *  it into the subagent's own session, and a task row here links to it.
+ *
+ *  So a task contributes exactly two rows, where they happened: a spawn and a
+ *  finish. Everything in between is the subagent's, and belongs on the other end
+ *  of that link.
+ */
 function toTimelineItems(model: TurnModel): TimelineItem[] {
   const entries = Object.values(model.entries)
     .slice()
@@ -728,77 +778,89 @@ function toTimelineItems(model: TurnModel): TimelineItem[] {
 
   const out: TimelineItem[] = [];
   const seenTurn = new Set<string>();
-  const taskIdxByScope = new Map<string, number>();
-  let currentTurnId: string | undefined;
-  let currentTaskId: string | undefined;
+  // One spawn row and one finish row per task. Claude Code repeats both — a
+  // task_started can arrive twice, and a close is commonly narrated twice
+  // (task_updated then task_notification, the second carrying the summary the
+  // first lacks). Without these the timeline showed a task starting and
+  // finishing several times over.
+  const spawnedTasks = new Set<string>();
+  const finishIdxByTask = new Map<string, number>();
 
   for (const e of entries) {
-    if (e.turnId !== currentTurnId) {
-      currentTurnId = e.turnId;
-      currentTaskId = undefined;
-      taskIdxByScope.clear();
-    }
+    // Somebody else's work. The bridge server routes a subagent's frames into
+    // the subagent's own session; one that lands here anyway was kept on the
+    // parent by the fail-safe for a frame whose task_started was missed, and
+    // showing it would put another session's rows in this session's timeline.
+    if (e.harnessParentId) continue;
 
     // User prompt → the turn header row.
     if (e.role === 'user') {
-      currentTaskId = undefined;
       const first = !seenTurn.has(e.turnId);
       seenTurn.add(e.turnId);
       out.push(makeItem(e, { icon: first ? '▶' : '»', label: 'Turn', tone: 'turn', text: e.text }));
       continue;
     }
 
-    // task_* scope marker (system entry whose subtype starts with task_).
+    // A task's lifecycle: spawn and finish, and nothing else.
     if (e.kind === 'system' && e.subtype && e.subtype.startsWith('task_')) {
-      const explicitId = e.taskId;
-      const isStart = e.subtype === 'task_started';
-      if (isStart) currentTaskId = explicitId ?? `task_${e.id}`;
-      else if (explicitId && !currentTaskId) currentTaskId = explicitId;
-      const description = e.taskSummary ?? e.text ?? '';
+      // Keyed by task id, falling back to the entry when a frame names no task
+      // — the adapter's catch-all branch forwards an unknown task_* subtype
+      // with its correlators stripped, and two of those must not collapse onto
+      // each other.
+      const taskKey = e.taskId ?? `entry_${e.id}`;
 
-      // The subagent finished. This is the only event that ever says so — it
-      // emits no result of its own — and until it was read here a task header
-      // looked identical before and after, while the group swallowed every row
-      // that followed for the rest of the turn.
-      const terminal = isTerminalTaskStatus(e.taskStatus);
-
-      if (currentTaskId && taskIdxByScope.has(currentTaskId)) {
-        const idx = taskIdxByScope.get(currentTaskId)!;
-        const existing = out[idx];
-        if (existing) {
-          // The summary is the subagent's own report and always wins over the
-          // launch description: the description says what it was asked to do,
-          // the summary says what it did.
-          if (e.taskSummary) {
-            existing.detail = oneLine(e.taskSummary);
-            existing.fullText = e.taskSummary;
-          } else if (!existing.detail && description) {
-            existing.detail = oneLine(description);
-            existing.fullText = description;
-          }
-          if (terminal) {
-            const failed = e.taskStatus !== 'completed';
-            existing.tone = failed ? 'task-err' : 'task-done';
-            existing.icon = failed ? '▣✗' : '▣✓';
-          }
-        }
-        if (terminal) currentTaskId = undefined;
+      if (e.subtype === 'task_started') {
+        if (spawnedTasks.has(taskKey)) continue;
+        spawnedTasks.add(taskKey);
+        const spawn = makeItem(e, {
+          icon: '▣',
+          label: 'Task started',
+          tone: 'task-start',
+          text: e.text || undefined,
+        });
+        applyTaskFields(spawn, e);
+        spawn.taskType = e.taskType;
+        spawn.subagentType = e.subagentType;
+        out.push(spawn);
         continue;
       }
-      out.push(
-        makeItem(e, {
-          icon: '▣',
-          label: 'Task',
-          tone: 'task-start',
-          taskId: currentTaskId,
-          text: description || undefined,
-        }),
-      );
-      if (currentTaskId) taskIdxByScope.set(currentTaskId, out.length - 1);
-      // Close the scope so the rows after a finished task are not nested under
-      // it. Without this the only things that ever cleared it were a new turn,
-      // a user message, or a result.
-      if (terminal) currentTaskId = undefined;
+
+      if (!isTerminalTaskStatus(e.taskStatus)) {
+        // task_progress and the non-terminal patches. This is the subagent
+        // narrating its own tool calls to its parent — one row per call, 68 of
+        // them for a single task in one measured session, three times the
+        // parent's own output. It belongs to the subagent's session, and the
+        // live status line already reads the newest one to say what a running
+        // subagent is doing.
+        continue;
+      }
+
+      const drawn = TASK_FINISH_BY_STATUS[e.taskStatus!];
+      const existingIdx = finishIdxByTask.get(taskKey);
+      if (existingIdx !== undefined) {
+        // A second close for the same task. Keep the row where the first one
+        // put it — that is when the task actually ended — and take the summary,
+        // which only task_notification carries.
+        const existing = out[existingIdx];
+        if (existing && e.taskSummary) {
+          existing.detail = oneLine(e.taskSummary);
+          existing.fullText = e.taskSummary;
+        }
+        continue;
+      }
+      // The summary is the subagent's own report of what it did and is the
+      // payload the notification exists to deliver; `text` is the reason a
+      // close was derived rather than reported, which only the server sends.
+      const finish = makeItem(e, {
+        icon: drawn?.icon ?? '▣',
+        label: drawn?.label ?? 'Task finished',
+        tone: drawn?.tone ?? 'task-done',
+        text: e.taskSummary || e.text || undefined,
+        keySuffix: '_finish',
+      });
+      applyTaskFields(finish, e);
+      finishIdxByTask.set(taskKey, out.length);
+      out.push(finish);
       continue;
     }
 
@@ -808,7 +870,6 @@ function toTimelineItems(model: TurnModel): TimelineItem[] {
           icon: '💭',
           label: 'Thinking',
           tone: 'thinking',
-          taskId: currentTaskId,
           text: e.text,
         }),
       );
@@ -835,7 +896,6 @@ function toTimelineItems(model: TurnModel): TimelineItem[] {
           icon: err ? '✗' : done ? '✓' : unresolvable ? '–' : '⚙',
           label: e.toolName || 'tool',
           tone: err ? 'tool-err' : done ? 'tool-done' : unresolvable ? 'tool-unknown' : 'tool',
-          taskId: currentTaskId,
           text: toolText(e),
         }),
       );
@@ -843,7 +903,6 @@ function toTimelineItems(model: TurnModel): TimelineItem[] {
     }
 
     if (e.kind === 'result') {
-      currentTaskId = undefined;
       out.push(makeItem(e, { icon: '■', label: 'Done', tone: 'result', text: e.text }));
       continue;
     }
@@ -854,7 +913,6 @@ function toTimelineItems(model: TurnModel): TimelineItem[] {
           icon: '⚠',
           label: 'Error',
           tone: 'error',
-          taskId: currentTaskId,
           text: e.text,
         }),
       );
@@ -867,7 +925,6 @@ function toTimelineItems(model: TurnModel): TimelineItem[] {
           icon: 'ⓘ',
           label: e.subtype || 'System',
           tone: 'system',
-          taskId: currentTaskId,
           text: e.text,
         }),
       );
@@ -876,30 +933,11 @@ function toTimelineItems(model: TurnModel): TimelineItem[] {
 
     if (e.kind === 'text' && e.text) {
       out.push(
-        makeItem(e, { icon: '✎', label: 'Text', tone: 'text', taskId: currentTaskId, text: e.text }),
+        makeItem(e, { icon: '✎', label: 'Text', tone: 'text', text: e.text }),
       );
       continue;
     }
     // meta / empty entries carry nothing to render — skipped, as bridge-ui does.
-  }
-  return out;
-}
-
-function groupTaskChildren(items: TimelineItem[]): TimelineNode[] {
-  const out: TimelineNode[] = [];
-  let i = 0;
-  while (i < items.length) {
-    const it = items[i]!;
-    if (!it.taskId) {
-      out.push({ type: 'item', item: it });
-      i++;
-      continue;
-    }
-    const taskId = it.taskId;
-    const start = i;
-    while (i < items.length && items[i]!.taskId === taskId) i++;
-    const slice = items.slice(start, i);
-    out.push({ type: 'task', taskId, header: slice[0]!, children: slice.slice(1) });
   }
   return out;
 }
@@ -912,7 +950,7 @@ function groupTurns(items: TimelineItem[]): TimelineTurnGroup[] {
     const start = i;
     while (i < items.length && items[i]!.turnId === turnId) i++;
     const slice = items.slice(start, i);
-    groups.push({ turnId, header: slice[0]!, children: groupTaskChildren(slice.slice(1)) });
+    groups.push({ turnId, header: slice[0]!, children: slice.slice(1) });
   }
   return groups;
 }
