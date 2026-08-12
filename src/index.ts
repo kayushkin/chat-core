@@ -23,6 +23,8 @@ export {
   usePendingPermissions,
   useBudgetHalt,
   useActivity,
+  useLiveStatus,
+  type LiveStatus,
   usePrefetch,
 } from './react/hooks.js';
 export { RefChip, type RefChipProps } from './react/RefChip.js';
@@ -144,6 +146,14 @@ export {
   IDLE_ACTIVITY,
   type ActivityKind,
 } from './store/activity.js';
+export {
+  liveStatusFromModel,
+  joinSubagentSessions,
+  toolCallSummary,
+  type LiveTurnStatus,
+  type LiveToolCall,
+  type LiveSubagent,
+} from './store/liveStatus.js';
 export { RUNNING_STATES, isRunningState } from './store/sessionStates.js';
 export {
   budgetHaltFromEvent,

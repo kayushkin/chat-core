@@ -231,6 +231,13 @@ function applyPayload(prev: Entry, ev: WireEvent): Entry {
       if (raw.system?.task_output_file !== undefined) {
         next.taskOutputFile = raw.system.task_output_file;
       }
+      if (raw.system?.task_type !== undefined) next.taskType = raw.system.task_type;
+      if (raw.system?.subagent_type !== undefined) {
+        next.subagentType = raw.system.subagent_type;
+      }
+      if (raw.system?.last_tool_name !== undefined) {
+        next.lastToolName = raw.system.last_tool_name;
+      }
       // task_started names the subagent; its description is the only human
       // label the task header ever gets.
       if (!next.text && raw.system?.description) next.text = raw.system.description;

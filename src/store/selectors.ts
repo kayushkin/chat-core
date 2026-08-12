@@ -615,7 +615,9 @@ export type TimelineTone =
  * a status a harness adds later cannot close a task that is still running. */
 const TERMINAL_TASK_STATUSES = new Set(['completed', 'failed', 'cancelled']);
 
-function isTerminalTaskStatus(status: string | undefined): boolean {
+/** Exported so the live-status derivation (`store/liveStatus.ts`) closes a task on
+ *  exactly the same statuses the timeline does — one answer to "is it finished". */
+export function isTerminalTaskStatus(status: string | undefined): boolean {
   return status !== undefined && TERMINAL_TASK_STATUSES.has(status);
 }
 

@@ -33,6 +33,12 @@ import { resolvePendingHook } from '../store/pendingHooks.js';
 import { budgetHaltFromRefusal, type BudgetHalt } from '../store/budgetHalt.js';
 import type { ActivityKind } from '../store/activity.js';
 import {
+  joinSubagentSessions,
+  liveStatusFromModel,
+  type LiveSubagent,
+  type LiveToolCall,
+} from '../store/liveStatus.js';
+import {
   activeSummaryEffective,
   selectActivity,
   contextUsage,
@@ -1173,6 +1179,51 @@ export function useBudgetHalt(sessionId: string | null): {
 export function useActivity(sessionId: string | null): ActivityKind {
   const { store } = useChatContext();
   return useStore(store, (s) => selectActivity(s, sessionId));
+}
+
+/** Everything a live status line needs, composed: the activity word plus the
+ *  model-derived facts behind it. See `store/liveStatus.ts`. */
+export interface LiveStatus {
+  /** What the session is doing right now — same value `useActivity` returns. */
+  activity: ActivityKind;
+  /** The harness's own in-progress todo item, when its latest todo list has one. */
+  todo?: { text: string; sinceTs: string };
+  /** Tool calls in flight this turn, oldest first. */
+  toolCalls: LiveToolCall[];
+  /** Tasks (subagents / backgrounded shells) still working this turn, each with
+   *  its promoted bridge session attached where one exists. */
+  subagents: LiveSubagent[];
+  /** When the latest call started: the newest in-flight tool call's timestamp,
+   *  else the newest entry of the live turn (RFC3339 + offset). */
+  startedAt?: string;
+}
+
+/**
+ * The live status line for one session: activity, in-progress todo, in-flight
+ * tool calls, and running subagents with their promoted sessions joined on.
+ *
+ * The same caveats as `useActivity`: meaningful for the ACTIVE session only
+ * (nothing else has a live stream), and not to be gated on the session's state —
+ * a non-idle activity is itself the evidence that work is happening. The
+ * model-derived half is memoized per model identity, so calling this from a
+ * component that already re-renders per event adds no second derivation.
+ */
+export function useLiveStatus(sessionId: string | null): LiveStatus {
+  const { store } = useChatContext();
+  const model = useStore(store, (s) => turnsFor(s, sessionId));
+  const activity = useStore(store, (s) => selectActivity(s, sessionId));
+  const sessions = useStore(store, (s) => s.sessions);
+  return useMemo(() => {
+    const base = liveStatusFromModel(model);
+    const newestToolCall = base.toolCalls[base.toolCalls.length - 1];
+    return {
+      activity,
+      todo: base.todo,
+      toolCalls: base.toolCalls,
+      subagents: joinSubagentSessions(base.subagents, sessions),
+      startedAt: newestToolCall?.startedAt ?? base.lastEntryTs,
+    };
+  }, [model, activity, sessions]);
 }
 
 /** Prefetch hint — call on sidebar row hover. Warms a cold session. */

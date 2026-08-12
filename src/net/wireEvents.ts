@@ -66,6 +66,14 @@ export interface WireEventData {
     task_status?: string;
     task_summary?: string;
     task_output_file?: string;
+    /** What kind of background work the task is (`local_agent`, `local_bash`, …).
+     *  Only `task_started` carries it — Claude Code backgrounds a shell command
+     *  through the same task frames it uses for a subagent, and without the kind a
+     *  consumer cannot tell an agent from `sleep 2`. */
+    task_type?: string;
+    /** The agent role a subagent was spawned as (`Explore`, `general-purpose`, …).
+     *  Only `task_started` carries it. */
+    subagent_type?: string;
   };
   state?: { state?: string; previous?: string; reason?: string };
   info?: unknown;
@@ -102,8 +110,10 @@ export interface HookEventWire {
  *  The first block is what `summaryFromManaged` (sync/sse.ts) projects onto
  *  `SessionSummary` — the sidebar row. The second block is the per-session identity,
  *  lineage and spend the server already writes on every one of these rows and that
- *  only `ManagedSessionDetail` surfaces; it is deliberately NOT projected onto
- *  `SessionSummary`, because the sidebar list query must not widen to carry it. */
+ *  mostly only `ManagedSessionDetail` surfaces; apart from the two lineage ids
+ *  (`harness_session_id`, `manager_session_id`, which the live-status surface joins
+ *  on), it is deliberately NOT projected onto `SessionSummary`, because the sidebar
+ *  list query must not widen to carry it. */
 export interface ManagedSessionWire {
   session_id: string;
   state?: string;
@@ -123,7 +133,11 @@ export interface ManagedSessionWire {
   /** OS process id of the harness process, while one is running. */
   pid?: number;
   /** The harness's OWN session id, which rotates on resume/fork. Never equal to
-   *  `session_id` — the server discards an event that claims it is. */
+   *  `session_id` — the server discards an event that claims it is. Projected onto
+   *  `SessionSummary` (with `manager_session_id`) because it is the lineage join the
+   *  live-status surface needs: a promoted subagent session's value is
+   *  `agent-<task_id>`, the server-chosen dedupe key that ties it back to the
+   *  parent's `task_started` narration. */
   harness_session_id?: string;
   /** ⚠️ Deprecated on the server (`msg.ManagedSession.ParentID`): this is the FORK
    *  parent's `harness_session_id`, a harness UUID fed to `--fork` — not a session id
@@ -132,7 +146,8 @@ export interface ManagedSessionWire {
   parent_id?: string;
   /** The session this one was forked from, as a bridge session id. */
   forked_from_session_id?: string;
-  /** The managing session in the team tree (bridge session id); empty = top-level. */
+  /** The managing session in the team tree (bridge session id); empty = top-level.
+   *  Projected onto `SessionSummary` — see `harness_session_id` above. */
   manager_session_id?: string;
   /** The directory the harness runs in. Empty inherits the instance's, then the
    *  machine's — an empty string is "inherit", never "unknown". */

@@ -185,9 +185,12 @@ describe('ApiClient.getSessionDetail — the identity, lineage and spend block',
     expect(detail.workingDir).toBe('/home/u/repos/dash');
     expect(detail.spendUsd).toBe(1.25);
     expect(detail.maxBudgetUsd).toBe(5);
-    // The sidebar row must not have grown: SessionSummary still has its 12 keys.
+    // The sidebar row must not grow beyond its 14 keys: the original 12 plus the two
+    // lineage ids (harnessSessionId, managerSessionId) the live-status surface joins
+    // subagent sessions on. Everything else detail-only.
     expect(Object.keys(detail.summary).sort()).toEqual([
-      'agentId', 'createdAt', 'displayName', 'folderName', 'harness', 'instanceId',
+      'agentId', 'createdAt', 'displayName', 'folderName', 'harness',
+      'harnessSessionId', 'instanceId', 'managerSessionId',
       'mode', 'purpose', 'sessionId', 'state', 'type', 'updatedAt',
     ]);
   });

@@ -19,6 +19,15 @@ export interface SessionSummary {
   agentId: string;
   updatedAt: string; // RFC3339 + offset
   createdAt: string; // RFC3339 + offset
+  /** The harness's OWN session id (rotates on resume/fork). For a promoted subagent
+   *  session this is `agent-<task_id>` — the server-chosen key that ties the row back
+   *  to the parent's `task_started` narration, and the join the live-status surface
+   *  uses to link a running subagent line to its session. Empty until the harness
+   *  reports one. */
+  harnessSessionId: string;
+  /** The managing session in the team tree (bridge session id); empty = top-level.
+   *  A promoted subagent session carries its parent here. */
+  managerSessionId: string;
 }
 
 /** Cheap staleness currency. A cached TurnModel is fresh iff its validator equals the
@@ -115,6 +124,16 @@ export interface Entry {
   taskStatus?: string;
   taskSummary?: string;
   taskOutputFile?: string;
+  /** What kind of background work the task is (`local_agent`, `local_bash`, …).
+   *  Only `task_started` carries it; without it a background `sleep 2` is
+   *  indistinguishable from an agent. */
+  taskType?: string;
+  /** The agent role a subagent was spawned as (`Explore`, `general-purpose`, …).
+   *  Only `task_started` carries it. */
+  subagentType?: string;
+  /** The tool the subagent last ran, from `task_progress` — the only live view a
+   *  parent has into what its subagent is doing. */
+  lastToolName?: string;
 
   // Non-destructive dedup annotations:
   duplicate: boolean; // hidden in collapsed Turns view; always shown in raw Timeline

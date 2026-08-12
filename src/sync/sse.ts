@@ -96,6 +96,8 @@ function summaryFromManaged(m: ManagedSessionWire): SessionSummary {
     agentId: m.agent_id ?? '',
     updatedAt: m.updated_at ?? '',
     createdAt: m.created_at ?? '',
+    harnessSessionId: m.harness_session_id ?? '',
+    managerSessionId: m.manager_session_id ?? '',
   };
 }
 
