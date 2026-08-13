@@ -155,6 +155,10 @@ export {
   type LiveSubagent,
 } from './store/liveStatus.js';
 export { RUNNING_STATES, isRunningState } from './store/sessionStates.js';
+// Tool call/result pairing. Exported for a host that renders tool cards: an
+// entry's `toolResult` alone answers "did this call finish?" only for the live
+// tail, and reports every cold-loaded call as still running. See toolPairing.ts.
+export { toolIdOf, resultedToolIds } from './store/toolPairing.js';
 export {
   budgetHaltFromEvent,
   budgetHaltFromRefusal,
