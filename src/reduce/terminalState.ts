@@ -28,23 +28,38 @@ export const TERMINAL_EVENT_TYPES: ReadonlySet<string> = new Set([
 /**
  * Scan a materialized tail for a terminal signal and report the state it implies:
  *  - an Entry of kind 'result'                               → 'completed'
- *  - kind 'error' with code TURN_IDLE_TIMEOUT / PROCESS_DIED → 'failed'
+ *  - kind 'error' with code TURN_IDLE_TIMEOUT / PROCESS_DIED → 'error'
  *  - a raw event type turn_complete / close / result         → 'completed'
  * Returns null when the tail carries no terminal signal (the turn is genuinely in
  * flight). When several terminal signals are present, the one with the highest
  * eventId wins, so a later result supersedes an earlier informational error.
+ *
+ * ⚠️ The failure spelling is 'error', not 'failed', because this value is rendered
+ * as a session state: it flows through effectiveState into bridge-ui's StatusDot,
+ * which turns it straight into the class `bc-status-dot-${state}`. The canonical
+ * vocabulary is llm-bridge's msg.SessionState, which spells the terminal failure
+ * "error" (SessionError) and has no "failed" member; bridge-ui's SessionUIState
+ * mirrors it. This returned 'failed' until 2026-08-14, and because no
+ * `.bc-status-dot-failed` rule exists over a `background: transparent` base, every
+ * failed session rendered an INVISIBLE dot — the reconcile fired and showed
+ * nothing. Do not "fix" a future mismatch here by adding a CSS rule for a spelling
+ * this enum does not have; correct the spelling.
+ *
+ * ⚠️ Not to be confused with msg.TaskStatus, a DIFFERENT canonical vocabulary that
+ * genuinely does spell its terminal failure "failed" (see TERMINAL_TASK_STATUSES in
+ * store/selectors.ts). One word, two enums — check which one you are in.
  */
 export function terminalStateFromTail(
   model: TurnModel | undefined,
-): 'completed' | 'failed' | null {
+): 'completed' | 'error' | null {
   if (!model) return null;
-  let best: { eventId: number; state: 'completed' | 'failed' } | null = null;
+  let best: { eventId: number; state: 'completed' | 'error' } | null = null;
   for (const e of Object.values(model.entries)) {
-    let state: 'completed' | 'failed' | null = null;
+    let state: 'completed' | 'error' | null = null;
     if (e.kind === 'result') {
       state = 'completed';
     } else if (e.kind === 'error' && e.code && TERMINAL_ERROR_CODES.has(e.code)) {
-      state = 'failed';
+      state = 'error';
     } else {
       const rawType = (e.raw as { type?: string } | undefined)?.type;
       if (rawType && TERMINAL_EVENT_TYPES.has(rawType)) state = 'completed';
