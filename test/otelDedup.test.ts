@@ -104,4 +104,52 @@ describe('annotateOTelDuplicates — non-destructive dedup', () => {
     expect(groupMembers(out, 'u_harness').map((e) => e.id).sort()).toEqual(['u_harness', 'u_otel']);
     expect(groupMembers(out, 'lone').map((e) => e.id)).toEqual(['lone']);
   });
+
+  it('a prompt and a reply with the SAME TEXT never absorb each other', () => {
+    // The dedup key carries the class as well as the text, and until this case
+    // nothing said so: replacing the whole key with the bare text left all 370
+    // tests green. Every other case here uses text that differs between the
+    // roles, so the class half of the key is never asked to do anything.
+    //
+    // The two classes share one queue map. Keyed on text alone, the user's
+    // harness copy and the assistant's harness copy sit in ONE queue in input
+    // order, and the assistant's late OTel copy pops whichever is at the front —
+    // the user's prompt. The visible result is the user's own message marked as
+    // the primary of a group whose other member is part of the assistant's reply,
+    // and an assistant reply left looking un-echoed.
+    //
+    // Identical prompt and reply text is not contrived: one-word exchanges
+    // ('continue', 'yes', a pasted path) collide constantly, and a harness that
+    // echoes the prompt back produces it every turn.
+    const userHarness = entry({ id: 'u_h', role: 'user', kind: 'text', source: 'harness', eventId: 1, text: 'continue' });
+    const assistantHarness = entry({ id: 'a_h', role: 'assistant', kind: 'text', source: 'harness', eventId: 2, text: 'continue' });
+    const assistantOtel = entry({ id: 'a_o', role: 'assistant', kind: 'text', source: 'otel', eventId: 3, text: 'continue' });
+
+    const out = annotateOTelDuplicates([userHarness, assistantHarness, assistantOtel]);
+    const byId = Object.fromEntries(out.map((e) => [e.id, e]));
+
+    // The OTel copy pairs with the reply it is a copy OF, not with the prompt
+    // that happens to read the same.
+    expect(groupMembers(out, 'a_o').map((e) => e.id).sort()).toEqual(['a_h', 'a_o']);
+    expect(byId.a_o!.duplicate).toBe(true);
+    expect(byId.a_h!.duplicate).toBe(false);
+
+    // And the user's prompt is untouched: no group, still shown, not made the
+    // primary of the assistant's group.
+    expect(byId.u_h!.groupId).toBeUndefined();
+    expect(byId.u_h!.duplicate).toBe(false);
+    expect(groupMembers(out, 'u_h').map((e) => e.id)).toEqual(['u_h']);
+  });
+
+  it('the same text in the same class still absorbs — the class is a discriminator, not a blanket', () => {
+    // The cry-wolf control for the case above. Splitting by class must not stop
+    // a genuine same-class duplicate from being absorbed, which is what an
+    // over-eager key (say, one that also folded in the entry id) would do.
+    const h = entry({ id: 'h', role: 'assistant', kind: 'text', source: 'harness', eventId: 1, text: 'continue' });
+    const o = entry({ id: 'o', role: 'assistant', kind: 'text', source: 'otel', eventId: 2, text: 'continue' });
+    const out = annotateOTelDuplicates([h, o]);
+    const byId = Object.fromEntries(out.map((e) => [e.id, e]));
+    expect(byId.o!.duplicate).toBe(true);
+    expect(byId.h!.duplicate).toBe(false);
+  });
 });
