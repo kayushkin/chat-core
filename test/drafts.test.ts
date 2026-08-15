@@ -249,4 +249,46 @@ describe('a broken or absent store never breaks the composer', () => {
     expect(store.getState().drafts.get('sess-a')).toBe('abc');
     warn.mockRestore();
   });
+
+  it('a stored record whose entries are the WRONG SHAPE drops those entries and keeps the rest', () => {
+    // `isPersistedDraft` refuses anything that is not an object before it reads
+    // a field, and both halves of that guard were unpinned: every other case
+    // here stores well-formed drafts, so the type check never met a value that
+    // could fail it.
+    //
+    // The values are deliberately varied rather than three of a kind. `null` is
+    // the one that makes the `value === null` half load-bearing (`typeof null`
+    // is 'object', so the typeof test alone lets it through to a field read on
+    // null); a string and a number are what make the `typeof` half load-bearing
+    // (a string has no `.text`, so it is refused one line later and the two
+    // halves cannot be told apart by that alone -- the difference is whether it
+    // is refused or throws).
+    const storage = fakeStorage({
+      [DRAFT_STORAGE_KEY]: JSON.stringify({
+        v: DRAFT_RECORD_VERSION,
+        drafts: {
+          nullEntry: null,
+          stringEntry: 'not a draft at all',
+          numberEntry: 7,
+          arrayEntry: ['text', 1],
+          missingStamp: { text: 'no updatedAt here' },
+          wrongStampType: { text: 'stamp is a string', updatedAt: '2026-08-15' },
+          good: { text: 'the only real one', updatedAt: Date.now() },
+        },
+      }),
+    });
+
+    const drafts = new DraftStore(storage).load();
+
+    expect([...drafts.keys()]).toEqual(['good']);
+    expect(drafts.get('good')).toBe('the only real one');
+  });
+
+  it('a record whose whole drafts field is a primitive yields no drafts and does not throw', () => {
+    // The outer shape check, one level up from the per-entry one.
+    const storage = fakeStorage({
+      [DRAFT_STORAGE_KEY]: JSON.stringify({ v: DRAFT_RECORD_VERSION, drafts: 'nonsense' }),
+    });
+    expect(new DraftStore(storage).load().size).toBe(0);
+  });
 });

@@ -217,4 +217,25 @@ describe('changeSessionPermissionState — optimistic + revert', () => {
     const store = createChatStore();
     expect(store.getState().actions.patchHarnessConfig('nope', { permissionMode: 'auto' })).toBeNull();
   });
+
+  it('a refused change for an UNCACHED session writes no detail back', async () => {
+    // The snapshot taken before the PUT is `... ?? null`, and the revert is
+    // guarded on it. Every other case here starts from a cached detail, so the
+    // guard is always true and its false branch was never taken: removing the
+    // `if (prior)` test left the whole suite green.
+    //
+    // With no cached detail there is nothing to revert TO, and the revert must
+    // not run. Reverting anyway would write the snapshot itself into the cache
+    // as though it were a detail, and `sessionDetail` would then hold an entry
+    // for a session whose detail was never fetched -- which every reader treats
+    // as "loaded", so nothing would fetch it again.
+    const store = createChatStore();
+    const api = fakeApi({ ok: false, status: 500, statusText: 'Server Error' });
+
+    await expect(
+      changeSessionPermissionState({ store, api }, 'br_uncached', { mode: 'auto' }),
+    ).rejects.toThrow();
+
+    expect(store.getState().sessionDetail.has('br_uncached')).toBe(false);
+  });
 });

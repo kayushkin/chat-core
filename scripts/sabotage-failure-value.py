@@ -285,10 +285,49 @@ def self_test():
     return 0
 
 
+# A mutation is undone in a `finally`, which covers an exception and does NOT
+# cover the process being killed -- a timeout, a Ctrl-C at the wrong moment, an
+# OOM. Then the mutation stays on disk, looking exactly like source code, and
+# every later run in that tree measures the sabotaged file as its baseline.
+#
+# That is not hypothetical. On 2026-08-15 a batch of these runs was killed by an
+# outer 2-minute timeout while `permission-state`'s CONTROL-POSITIVE was applied.
+# The next run scored `R1-no-prior-detail-A` as CAUGHT; on a restored tree the
+# same mutation is UNNOTICED. The leftover mutation manufactured a PASS and hid a
+# real hole -- the failure direction that gets a sweep marked finished.
+#
+# So: before touching anything, require every file the plans will edit to match
+# HEAD. Only those files -- editing the tests is the normal way to close a hole
+# found by this runner, and a dirty test tree is not a reason to refuse.
+def refuse_a_dirty_source_tree(plan):
+    files = sorted({edit["file"] for mutation in plan for edit in mutation["edits"]})
+    finished = subprocess.run(
+        ["git", "diff", "--name-only", "HEAD", "--", *files],
+        cwd=ROOT, capture_output=True, text=True,
+    )
+    if finished.returncode != 0:
+        raise SystemExit(
+            "cannot check the source tree against HEAD:\n" + finished.stderr.strip()
+        )
+    dirty = [line for line in finished.stdout.splitlines() if line.strip()]
+    if not dirty:
+        return
+    raise SystemExit(
+        "REFUSING TO RUN: these files differ from HEAD and are files the plans mutate:\n"
+        + "".join(f"    {name}\n" for name in dirty)
+        + "\nA killed run leaves its mutation on disk, and scoring against it reports\n"
+        "CAUGHT for holes that are really open. Restore them (git checkout -- <file>)\n"
+        "and re-run. Pass --allow-dirty if you are deliberately scoring edited source."
+    )
+
+
 def main():
     if "--self-test" in sys.argv:
         return self_test()
-    plan = load_plans(sys.argv[1:])
+    allow_dirty = "--allow-dirty" in sys.argv
+    plan = load_plans([a for a in sys.argv[1:] if a != "--allow-dirty"])
+    if not allow_dirty:
+        refuse_a_dirty_source_tree(plan)
     results = []
     for mutation in plan:
         try:

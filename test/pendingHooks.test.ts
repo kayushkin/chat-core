@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ApiClient } from '../src/net/ApiClient.js';
 import { createChatStore, type ChatStoreApi } from '../src/store/ChatStore.js';
-import { foldHookEvent, resolvePendingHook } from '../src/store/pendingHooks.js';
+import { foldHookEvent, pendingHookFromWire, resolvePendingHook } from '../src/store/pendingHooks.js';
 import type { PendingHook } from '../src/net/types.js';
 import type { WireEvent } from '../src/net/wireEvents.js';
 
@@ -38,6 +38,47 @@ function fakeFetch(
 function parkedIn(store: ChatStoreApi, sessionId: string): PendingHook[] {
   return [...(store.getState().pendingHooks.get(sessionId)?.values() ?? [])];
 }
+
+describe('pendingHookFromWire — what cannot become a decision', () => {
+  // Tested through the projector directly, because `foldHookEvent` cannot tell
+  // these apart: it discards a null hook and a hook with an unrecognised phase
+  // by the same `return current`. Projecting an absent payload into a blank
+  // PendingHook instead of refusing it left every folding case green -- the
+  // blank's phase is '' and falls out of the fold anyway. The refusal is only
+  // visible here.
+
+  it('an event carrying no hook payload at all is refused', () => {
+    expect(pendingHookFromWire(undefined)).toBeNull();
+  });
+
+  it('a hook with no request_id is refused — the resolve endpoint is keyed on it', () => {
+    expect(pendingHookFromWire({ event: 'PreToolUse', phase: 'awaiting_resolution' })).toBeNull();
+    expect(
+      pendingHookFromWire({ event: 'PreToolUse', phase: 'awaiting_resolution', request_id: '' }),
+    ).toBeNull();
+  });
+
+  it('a hook WITH a request id projects, so the refusals above are not blanket', () => {
+    // The cry-wolf control: the two cases above must not be passing because the
+    // projector refuses everything.
+    const hook = pendingHookFromWire({
+      event: 'PreToolUse',
+      phase: 'awaiting_resolution',
+      request_id: 'req-9',
+      tool_name: 'Bash',
+    });
+    expect(hook).not.toBeNull();
+    expect(hook?.requestId).toBe('req-9');
+    expect(hook?.toolName).toBe('Bash');
+  });
+
+  it('absent optional fields become empty strings, not undefined', () => {
+    // `event`, `phase` and `source` are `?? ''` on the way in; the optional
+    // camelCase ones are omitted entirely rather than set to undefined.
+    const hook = pendingHookFromWire({ request_id: 'req-9' });
+    expect(hook).toEqual({ requestId: 'req-9', event: '', phase: '', source: '' });
+  });
+});
 
 describe('foldHookEvent — the awaiting/completed protocol', () => {
   it('inserts on awaiting_resolution and deletes on the matching completed', () => {
@@ -220,6 +261,31 @@ describe('resolvePendingHook — optimistic clear, restore on refusal', () => {
     await expect(
       resolvePendingHook({ store, api }, 'br_1', { requestId: '', behavior: 'allow' }),
     ).rejects.toThrow(/requestId/);
+  });
+
+  it('a REFUSED resolve for a hook that was never parked restores nothing', () => {
+    // The prior-entry snapshot is `... ?? null` and the restore is guarded on
+    // it. Every case above parks a hook first, so the guard is always true and
+    // its false branch was never taken -- the `?? null` could be deleted and the
+    // suite stayed green.
+    //
+    // Resolving a request id the map does not hold is not exotic: two surfaces
+    // can answer the same question, and the second one to arrive finds the
+    // entry already cleared. Restoring the snapshot unconditionally would put an
+    // `undefined` into the session's hook map, and the banner counts entries --
+    // so a card with no question on it would appear and could never be cleared.
+    const store = createChatStore();
+    const api = new ApiClient({
+      fetch: fakeFetch({ ok: false, status: 500, statusText: 'Internal Server Error' }),
+      basePath: '/api/bridge',
+    });
+
+    return expect(
+      resolvePendingHook({ store, api }, 'br_1', { requestId: 'never-parked', behavior: 'allow' }),
+    ).rejects.toThrow(/500/).then(() => {
+      expect(parkedIn(store, 'br_1')).toEqual([]);
+      expect(store.getState().pendingHooks.get('br_1')?.has('never-parked') ?? false).toBe(false);
+    });
   });
 });
 
