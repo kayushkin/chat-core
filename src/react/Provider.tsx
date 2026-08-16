@@ -1,5 +1,6 @@
 import { useEffect, useRef, type JSX, type ReactNode } from 'react';
 import { ApiClient } from '../net/ApiClient.js';
+import { NoteboardClient } from '../net/NoteboardClient.js';
 import { SessionCache } from '../cache/SessionCache.js';
 import { SyncEngine } from '../sync/SyncEngine.js';
 import { Prefetcher } from '../boot/Prefetcher.js';
@@ -10,6 +11,10 @@ import { ChatContext, type ChatContextValue } from './context.js';
 export interface ChatProviderProps {
   fetch: typeof fetch; // dash passes its cookie-credentialed apiFetch
   basePath: string; // '/api/bridge'
+  /** Noteboard root, e.g. dash's '/api/noteboard'. Omit it and note/todo ref
+   *  chips render but say lookup is not configured here — they never guess a
+   *  path, because a wrong one would 404 as if the item did not exist. */
+  noteboardBasePath?: string;
   recentN?: number; // warm-cache size, default 20
   turnsPerBundle?: number; // last-N turns per bundled session, default 30
   sessionsPerPage?: number; // sidebar sessions per page, default 100
@@ -26,6 +31,7 @@ export function ChatProvider(props: ChatProviderProps): JSX.Element {
   const {
     fetch: fetchFn,
     basePath,
+    noteboardBasePath,
     recentN = 20,
     turnsPerBundle = 30,
     sessionsPerPage,
@@ -50,7 +56,13 @@ export function ChatProvider(props: ChatProviderProps): JSX.Element {
     // and the SyncEngine's sweep trims the cache to it. Configure one and not the
     // other and the sweep drops rows the next boot paint wanted.
     const sync = new SyncEngine({ store, api, cache: sessionCache, sessionsPerPage });
-    ctxRef.current = { store, api, cache: sessionCache, sync, prefetcher };
+    // Built only when a path was given. An unconfigured noteboard is null all
+    // the way to the chip, which then says so — rather than a client pointed at
+    // the bridge root, whose 404 would read as "that item does not exist".
+    const noteboard = noteboardBasePath
+      ? new NoteboardClient({ fetch: fetchFn, basePath: noteboardBasePath })
+      : null;
+    ctxRef.current = { store, api, cache: sessionCache, sync, prefetcher, noteboard };
   }
 
   const ctx = ctxRef.current;

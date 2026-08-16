@@ -26,6 +26,14 @@ export {
   usePrefetch,
 } from './react/hooks.js';
 export { RefChip, type RefChipProps } from './react/RefChip.js';
+export {
+  useSessionRefDetail,
+  useNoteboardRefDetail,
+  useSessionRefTranscript,
+  clearRefDetailCache,
+  REF_TRANSCRIPT_TURNS,
+  type RefDetailState,
+} from './react/refDetail.js';
 
 // ---- Wire types (docs/WIRE.md, src/net/types.ts) ----
 export type {
@@ -224,3 +232,10 @@ export { Prefetcher, type PrefetcherConfig } from './boot/Prefetcher.js';
 
 // ---- Net ----
 export { ApiClient, ApiError, type ApiClientConfig, type CreatedSession, type SendResult } from './net/ApiClient.js';
+export {
+  NoteboardClient,
+  type NoteboardClientConfig,
+  type NoteboardItem,
+  type NoteboardItemType,
+  type NoteboardSchedule,
+} from './net/NoteboardClient.js';
