@@ -14,3 +14,7 @@ secrets.*
 # ...but never ignore source files that happen to match the globs above
 !*.ts
 !*.tsx
+
+# Scratch output from scripts/sabotage-failure-value.py and its scan
+mutation-results.json
+failure-value-tests.json

@@ -152,4 +152,62 @@ describe('annotateOTelDuplicates — non-destructive dedup', () => {
     expect(byId.o!.duplicate).toBe(true);
     expect(byId.h!.duplicate).toBe(false);
   });
+
+  it('an entry in NEITHER dual-emit class is never grouped, however its text reads', () => {
+    // `dedupClass` returns null for anything that is not assistant prose or a
+    // user prompt, and that null was unpinned: making it fall through to
+    // 'assistant' left every case here green, because every case here uses
+    // entries that ARE in a dual-emit class.
+    //
+    // Only those two classes are emitted twice. A tool call, a tool result or an
+    // error has exactly one source, so two of them sharing text are two real
+    // events -- and hiding the second as a duplicate would drop a genuine
+    // occurrence out of the collapsed view. Repeated tool calls with identical
+    // text are the normal case, not a corner: the same command run twice, two
+    // reads of one path.
+    const first = entry({ id: 'tc1', role: 'assistant', kind: 'tool_call', source: 'harness', eventId: 1, text: 'ls -la' });
+    const second = entry({ id: 'tc2', role: 'assistant', kind: 'tool_call', source: 'otel', eventId: 2, text: 'ls -la' });
+
+    const out = annotateOTelDuplicates([first, second]);
+    const byId = Object.fromEntries(out.map((e) => [e.id, e]));
+
+    expect(byId.tc1!.duplicate).toBe(false);
+    expect(byId.tc2!.duplicate).toBe(false);
+    expect(byId.tc1!.groupId).toBeUndefined();
+    expect(byId.tc2!.groupId).toBeUndefined();
+  });
+
+  it('an assistant `result` and its OTel copy DO pair — both prose kinds count', () => {
+    // The other half of the assistant class. `dedupClass` accepts `text` OR
+    // `result`, and narrowing it to `text` alone left the suite green: the one
+    // existing case with a `result` entry has no OTel copy of it to pair with,
+    // so the `result` arm was never exercised.
+    const h = entry({ id: 'r_h', role: 'assistant', kind: 'result', source: 'harness', eventId: 1, text: 'done' });
+    const o = entry({ id: 'r_o', role: 'assistant', kind: 'result', source: 'otel', eventId: 2, text: 'done' });
+
+    const out = annotateOTelDuplicates([h, o]);
+    const byId = Object.fromEntries(out.map((e) => [e.id, e]));
+
+    expect(byId.r_o!.duplicate).toBe(true);
+    expect(byId.r_h!.duplicate).toBe(false);
+    expect(groupMembers(out, 'r_h').map((e) => e.id).sort()).toEqual(['r_h', 'r_o']);
+  });
+
+  it('groupMembers answers nothing for an id that is not in the list', () => {
+    // The failure value of `groupMembers`. Every existing call passes an id that
+    // is present, so the guard could be deleted (a TypeError on `target.groupId`)
+    // or made to return the WHOLE list, and nothing noticed either.
+    //
+    // The badge calls this with an id it holds from a previous render, so an
+    // entry dropped by a refresh reaches it routinely. Returning every entry
+    // there would render a sources badge claiming the whole transcript.
+    const a = entry({ id: 'a', role: 'assistant', kind: 'text', source: 'harness', eventId: 1, text: 'x' });
+    const b = entry({ id: 'b', role: 'assistant', kind: 'text', source: 'otel', eventId: 2, text: 'x' });
+    const out = annotateOTelDuplicates([a, b]);
+
+    expect(groupMembers(out, 'no-such-entry')).toEqual([]);
+    // And the grouped pair is still found, so the case above is not passing
+    // because groupMembers answers nothing for everything.
+    expect(groupMembers(out, 'a').map((e) => e.id).sort()).toEqual(['a', 'b']);
+  });
 });

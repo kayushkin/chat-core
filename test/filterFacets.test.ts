@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createChatStore, EMPTY_FILTER } from '../src/store/ChatStore.js';
+import { createChatStore, EMPTY_FILTER, type ContentHits } from '../src/store/ChatStore.js';
 import { matchesFilter, selectFacets, visibleSessions } from '../src/store/selectors.js';
 import type { SessionSummary } from '../src/net/types.js';
 
@@ -112,5 +112,87 @@ describe('selectFacets — counts over the FULL loaded set', () => {
     const first = selectFacets(store.getState());
     const second = selectFacets(store.getState());
     expect(second).toBe(first);
+  });
+});
+
+// `matchesFilter` produces `false` from nine separate places, and a test that only asserts
+// `toBe(false)` cannot say which one answered. Measured by deleting each producer in turn:
+// five of the nine could be removed with the whole suite still green.
+//
+// Four of those five are the facet axes below. `filterPersistence.test.ts` does name
+// type/purpose/mode — but it round-trips them through storage and never asks whether
+// selecting one filters anything, so all three could stop filtering and only the
+// persistence assertions would still hold. A facet that is stored and never applied is
+// exactly the shape this block exists to pin.
+//
+// Each test asserts both directions on purpose. A one-sided `toBe(false)` here would be
+// satisfied by any of the other eight producers and would pin nothing.
+
+describe('matchesFilter — every facet axis actually filters', () => {
+  it('purpose admits the selected value and rejects the rest', () => {
+    const f = { ...EMPTY_FILTER, purpose: ['autoworker'] };
+    expect(matchesFilter(summary({ sessionId: 'p', purpose: 'autoworker' }), f)).toBe(true);
+    expect(matchesFilter(summary({ sessionId: 'q', purpose: 'chat' }), f)).toBe(false);
+  });
+
+  it('mode admits the selected value and rejects the rest', () => {
+    const f = { ...EMPTY_FILTER, mode: ['pty'] };
+    expect(matchesFilter(summary({ sessionId: 'p', mode: 'pty' }), f)).toBe(true);
+    expect(matchesFilter(summary({ sessionId: 'q', mode: 'events' }), f)).toBe(false);
+  });
+
+  it('type admits the selected value and rejects the rest', () => {
+    const f = { ...EMPTY_FILTER, type: ['interactive'] };
+    expect(matchesFilter(summary({ sessionId: 'p', type: 'interactive' }), f)).toBe(true);
+    expect(matchesFilter(summary({ sessionId: 'q', type: 'batch' }), f)).toBe(false);
+  });
+});
+
+describe('matchesFilter — the default-hidden types are a rule, not a default', () => {
+  // selectors.ts states this in prose — "the types in DEFAULT_HIDDEN_SESSION_TYPES are
+  // still dropped. Select any type and the array rules alone" — and filterStorage.ts
+  // repeats it. Both halves of the rule were unpinned: either could be deleted with the
+  // suite green, so the prose was the only thing holding it.
+  const external = summary({ sessionId: 'ext', type: 'external' });
+  const interactive = summary({ sessionId: 'int', type: 'interactive' });
+
+  it('hides an external session while no type is selected', () => {
+    expect(matchesFilter(external, { ...EMPTY_FILTER, type: [] })).toBe(false);
+    // ...and it is the type being hidden, not sessions in general.
+    expect(matchesFilter(interactive, { ...EMPTY_FILTER, type: [] })).toBe(true);
+  });
+
+  it('shows it the moment that type is explicitly selected', () => {
+    expect(matchesFilter(external, { ...EMPTY_FILTER, type: ['external'] })).toBe(true);
+  });
+
+  it('and the selection still rules out everything else', () => {
+    expect(matchesFilter(interactive, { ...EMPTY_FILTER, type: ['external'] })).toBe(false);
+  });
+});
+
+describe('matchesFilter — a content hit belongs to the query that produced it', () => {
+  const hitsFor = (query: string, sessionIds: string[]): ContentHits => ({
+    query,
+    matchCountBySessionId: new Map(sessionIds.map((id) => [id, 1])),
+    hitCount: sessionIds.length,
+    truncated: false,
+  });
+  // Neither the id nor the name contains the query, so the content-hit set is the only
+  // thing that can make this session match.
+  const contentOnly = summary({ sessionId: 'br_zzz', displayName: 'nothing alike' });
+
+  it('counts a hit answering the query being asked', () => {
+    const f = { ...EMPTY_FILTER, search: 'ceiling' };
+    expect(matchesFilter(contentOnly, f, hitsFor('ceiling', ['br_zzz']))).toBe(true);
+  });
+
+  it('ignores a hit set left over from a different query', () => {
+    // The stale-hit case, which is the ordinary one while someone is typing: the previous
+    // query's results have arrived and the new query's have not. Without the equality
+    // check the old hits answer the new question and a session matches a string its
+    // transcript never contained.
+    const f = { ...EMPTY_FILTER, search: 'ceiling' };
+    expect(matchesFilter(contentOnly, f, hitsFor('budget', ['br_zzz']))).toBe(false);
   });
 });

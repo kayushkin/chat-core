@@ -172,6 +172,29 @@ describe('deleteFolder — the second half of the transaction is the one that ma
     expect(groups[0].sessions.map((s) => s.sessionId)).toEqual(['br_1']);
   });
 
+  it('refuses a blank name without a request, and still sends a real one', async () => {
+    const seen: Recorded[] = [];
+    const store = createChatStore();
+    const { actions } = store.getState();
+    actions.setFolders(['Work']);
+    actions.upsertSession(row({ sessionId: 'br_1', folderName: '' }));
+    const api = fakeApi(OK, seen);
+
+    // Without the guard this is `DELETE /folders/` — a request aimed at no folder —
+    // and sessionsInFolder('') then matches every UN-FILED row, so the revert path
+    // would be carrying the whole no-folder bucket. Neither shows up in the store,
+    // because un-filing an un-filed session changes nothing: the REQUEST is the only
+    // observable, which is why this asserts on `seen` and not on the state.
+    await deleteFolder({ store, api }, '');
+    expect(seen).toHaveLength(0);
+
+    // A usable call AFTER the refused one, so an api that records nothing at all
+    // cannot pass the assertion above.
+    await deleteFolder({ store, api }, 'Work');
+    expect(seen).toHaveLength(1);
+    expect(seen[0].method).toBe('DELETE');
+  });
+
   it('restores both the list and every moved row when the server refuses', async () => {
     const store = createChatStore();
     const { actions } = store.getState();
@@ -277,6 +300,21 @@ describe('moveSessionToFolder', () => {
     expect(store.getState().folders).toEqual([]);
   });
 
+  it('does not re-list a folder the list already holds', async () => {
+    const store = createChatStore();
+    const { actions } = store.getState();
+    actions.setFolders(['Work', 'Ops']);
+    actions.upsertSession(row({ folderName: 'Work' }));
+
+    await moveSessionToFolder({ store, api: fakeApi(OK) }, 'br_1', 'Ops');
+
+    // SetSessionFolder's INSERT is ON CONFLICT DO NOTHING, so the mirror must be too.
+    // Appending unconditionally gives the sidebar two headers reading "Ops", and
+    // visibleSessions groups by name — so the second one is always empty.
+    expect(store.getState().folders).toEqual(['Work', 'Ops']);
+    expect(store.getState().sessions.get('br_1')?.folderName).toBe('Ops');
+  });
+
   it('restores the row AND the folder it had auto-created when the server refuses', async () => {
     const store = createChatStore();
     const { actions } = store.getState();
@@ -320,6 +358,42 @@ describe('setSessionDone registers Archive too — same INSERT, same mirror', ()
 
     expect(store.getState().folders).toEqual(['Archive']);
     expect(store.getState().sessions.get('br_1')?.folderName).toBe('');
+  });
+
+  it('un-marking does NOT invent Archive when the list does not hold it', async () => {
+    const store = createChatStore();
+    const { actions } = store.getState();
+    // The fixture above starts with Archive already listed, which is exactly the state
+    // in which the `done &&` half of the guard cannot be observed: the includes() check
+    // short-circuits it either way. Archive is absent here, so only `done` decides.
+    actions.setFolders(['Work']);
+    actions.upsertSession(row({ state: 'completed', folderName: 'Archive' }));
+
+    await setSessionDone({ store, api: fakeApi(OK) }, 'br_1', false);
+
+    // Un-marking finishes through SetSessionFolder with an EMPTY folder, which inserts
+    // nothing. Mirroring an insert here would put a header on the sidebar for a folder
+    // the session is on its way out of.
+    expect(store.getState().folders).toEqual(['Work']);
+    expect(store.getState().sessions.get('br_1')?.folderName).toBe('');
+  });
+
+  it('marking a SECOND session done does not list Archive twice', async () => {
+    const store = createChatStore();
+    const { actions } = store.getState();
+    actions.setFolders(['Work']);
+    actions.upsertSession(row({ sessionId: 'br_1' }));
+    actions.upsertSession(row({ sessionId: 'br_2' }));
+    const api = fakeApi(OK);
+
+    await setSessionDone({ store, api }, 'br_1', true);
+    expect(store.getState().folders).toEqual(['Work', 'Archive']);
+
+    // The first call is what makes this discriminate: on the second, Archive is already
+    // there, so only the includes() check can keep the list at one header.
+    await setSessionDone({ store, api }, 'br_2', true);
+    expect(store.getState().folders).toEqual(['Work', 'Archive']);
+    expect(visibleSessions(store.getState()).map((g) => g.folder)).toEqual(['Work', 'Archive']);
   });
 
   it('a refused mark-done takes the invented Archive folder back out', async () => {

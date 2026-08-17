@@ -112,6 +112,48 @@ describe('list cache bound', () => {
     await cache.close();
   });
 
+  it('leaves a store ONE ROW under the bound alone — the case a negative slice length destroys', async () => {
+    // The case above cannot fail for the reason this one can, and the gap is
+    // arithmetic rather than taste. `enforceListBound` computes
+    // `over = length - limit` and returns early only because of the
+    // `if (over <= 0)` guard; delete that guard and the code reaches
+    // `oldestFirst.slice(0, over)` with a NEGATIVE length, which counts back
+    // from the END instead of returning nothing.
+    //
+    // A negative `over` is only VISIBLE while `length > limit - length`, i.e.
+    // while the store is more than half full. At 40 rows under a 100 cap
+    // `slice(0, -60)` clamps to empty and the unguarded code is
+    // indistinguishable from the guarded one — so the fixture above passes on
+    // both, and the guard it appears to cover is unpinned.
+    //
+    // 99 under 100 is the tightest under-limit case there is, and the worst:
+    // `slice(0, -1)` evicts 98 of the 99 rows the bound was asked to keep.
+    const cache = new SessionCache(true);
+    await cache.putList(aged(99));
+
+    expect(await enforceListBound(cache, 100)).toEqual([]);
+    expect(await cache.getList()).toHaveLength(99);
+    await cache.close();
+  });
+
+  it('evicts nothing at EXACTLY the bound, and one row past it evicts exactly one', async () => {
+    // The two sides of `over <= 0`. Straddling the boundary rather than sitting
+    // on one side of it is what makes the comparison itself load-bearing: an
+    // off-by-one to `over < 0` changes neither of the cases above.
+    const atLimit = new SessionCache(true);
+    await atLimit.putList(aged(100));
+    expect(await enforceListBound(atLimit, 100)).toEqual([]);
+    expect(await atLimit.getList()).toHaveLength(100);
+    await atLimit.close();
+
+    globalThis.indexedDB = new IDBFactory();
+    const overLimit = new SessionCache(true);
+    await overLimit.putList(aged(101));
+    expect(await enforceListBound(overLimit, 100)).toEqual([oldestNth(101, 0)]);
+    expect(await overLimit.getList()).toHaveLength(100);
+    await overLimit.close();
+  });
+
   it('keeps an old row whose turns are still cached', async () => {
     const cache = new SessionCache(true);
     const rows = aged(120);

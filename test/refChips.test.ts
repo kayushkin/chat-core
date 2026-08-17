@@ -205,4 +205,94 @@ describe('remarkRefChips', () => {
     // text('todo: ') + one chip — never a chip nested inside a chip.
     expect(kids.map((k) => k.type)).toEqual(['text', 'refChip']);
   });
+
+  // --- The decline paths: every place the walk refuses to rewrite. -----------
+  //
+  // A chip node carries its id as a `text` CHILD, so a chip is itself a parent
+  // and re-scanning one descends straight back into the id it was built from.
+  // Whether that produces a nested chip depends on which id: a bare uuid needs a
+  // cue word in front of it and so cannot re-chip, while a session id is
+  // unambiguous and chips wherever it appears. Every re-scan test below uses a
+  // session id for that reason — the test above uses a uuid, which is why it
+  // passes with the skip-past guard deleted.
+
+  it('skips a hole in a children array rather than reading `type` off it', () => {
+    const children: TestNode[] = [];
+    children[1] = { type: 'text', value: 'br_1234567890123456' };
+    const root = tree([{ type: 'paragraph', children }]);
+    expect(() => remarkRefChips()(root as never)).not.toThrow();
+    expect(root.children?.[0]?.children?.[1]?.type).toBe('refChip');
+  });
+
+  it('leaves a text node holding no reference as the SAME node, not a copy', () => {
+    // `toEqual` cannot see this: the rebuilt node has the same `type` and
+    // `value` and differs only by identity. Everything else a real mdast text
+    // node carries — `position` above all — is dropped by the rebuild, so the
+    // node that survives has to be the original object.
+    const original: TestNode = { type: 'text', value: 'no references in here' };
+    const root = tree([{ type: 'paragraph', children: [original] }]);
+    remarkRefChips()(root as never);
+    expect(root.children?.[0]?.children?.[0]).toBe(original);
+  });
+
+  it('leaves an EMPTY text node standing rather than splicing it away', () => {
+    // The other half of the same guard, and it needs its own fixture: an empty
+    // string parses to zero segments, so `.some(isChip)` is false for a reason
+    // the test above cannot distinguish — there, segments exist and none is a
+    // chip. A guard that only declined non-empty text would delete this node.
+    const original: TestNode = { type: 'text', value: '' };
+    const root = tree([{ type: 'paragraph', children: [original] }]);
+    remarkRefChips()(root as never);
+    expect(root.children?.[0]?.children).toHaveLength(1);
+    expect(root.children?.[0]?.children?.[0]).toBe(original);
+  });
+
+  it('leaves a code span holding no reference as the SAME node, not a copy', () => {
+    const original: TestNode = { type: 'inlineCode', value: 'npm run build' };
+    const root = tree([{ type: 'paragraph', children: [original] }]);
+    remarkRefChips()(root as never);
+    expect(root.children?.[0]?.children?.[0]).toBe(original);
+  });
+
+  it('turns a whitespace-only leftover into text, not an empty code span', () => {
+    // A span that is nothing but padding around an id leaves ' ' on either side.
+    // Re-emitting those as `inlineCode` renders a pair of empty tick-mark boxes
+    // flanking the chip. Distinct from the leftover rule the test above pins:
+    // there the leftover has content and MUST stay code.
+    const root = tree([
+      { type: 'paragraph', children: [{ type: 'inlineCode', value: ' br_1234567890123456 ' }] },
+    ]);
+    remarkRefChips()(root as never);
+    const kids = root.children?.[0]?.children ?? [];
+    expect(kids.map((k) => k.type)).toEqual(['text', 'refChip', 'text']);
+    expect(kids[0]?.value).toBe(' ');
+    expect(kids[2]?.value).toBe(' ');
+  });
+
+  it('does not rescan a chip it inserted into a TEXT node', () => {
+    const root = tree([
+      { type: 'paragraph', children: [{ type: 'text', value: 'see br_1234567890123456 here' }] },
+    ]);
+    remarkRefChips()(root as never);
+    const kids = root.children?.[0]?.children ?? [];
+    expect(kids.map((k) => k.type)).toEqual(['text', 'refChip', 'text']);
+    // The chip's own child is the id as plain text. Re-scanning the chip would
+    // chip that id a second time and nest a chip inside a chip.
+    expect(kids[1]?.children).toEqual([{ type: 'text', value: 'br_1234567890123456' }]);
+  });
+
+  it('does not rescan a chip it inserted into a CODE span', () => {
+    // The inlineCode branch carries its own copy of the skip-past guard, so the
+    // text-node test above says nothing about it.
+    const root = tree([
+      {
+        type: 'paragraph',
+        children: [{ type: 'inlineCode', value: 'see br_1234567890123456 here' }],
+      },
+    ]);
+    remarkRefChips()(root as never);
+    const kids = root.children?.[0]?.children ?? [];
+    expect(kids.map((k) => k.type)).toEqual(['inlineCode', 'refChip', 'inlineCode']);
+    expect(kids[1]?.children).toEqual([{ type: 'text', value: 'br_1234567890123456' }]);
+  });
 });
