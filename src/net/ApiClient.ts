@@ -517,7 +517,7 @@ export class ApiClient {
    * compaction runs async and its real completion is the `compact_boundary` system entry
    * on the session's event stream — `useSessionControls` watches for that, never faking a
    * done state.
-   * (bridge-ui: useBridgeSession.ts:1129.)
+   * (bridge-ui: useBridgeSession's `compact`.)
    */
   compact(id: string, summary?: string): Promise<unknown> {
     return this.postJSON(`/sessions/${id}/compact`, summary ? { summary } : {});
@@ -529,7 +529,7 @@ export class ApiClient {
    * "<parent> (fork)"). Returns the new `CreatedSession`, its id read from the canonical
    * `session_id` wire key. LOUD: throws on any non-2xx (e.g. the 409 the server returns
    * when the parent has no `harness_session_id` yet).
-   * (bridge-ui: useBridgeSession.ts:1143.)
+   * (bridge-ui: useBridgeSession's `forkSession`.)
    */
   async fork(id: string, displayName?: string): Promise<CreatedSession> {
     const wire = await this.postJSON<Record<string, unknown>>(`/sessions/${id}/fork`, {
@@ -545,7 +545,7 @@ export class ApiClient {
    * --resume so history is preserved. Returns the raw response (which carries an
    * `attach_token` for a pty switch); pty attach-token management is a bridge-ui concern,
    * so chat-core passes the payload through unchanged. LOUD: throws on any non-2xx.
-   * (bridge-ui: useBridgeSession.ts:973.)
+   * (bridge-ui: useBridgeSession's `switchMode`.)
    */
   switchMode(id: string, mode: 'events' | 'pty'): Promise<unknown> {
     return this.postJSON(`/sessions/${id}/mode`, { mode });
@@ -557,7 +557,8 @@ export class ApiClient {
    * sent (an absent field is never serialized as null). This is the canonical path
    * bridge-ui uses for BOTH the controls-bar model/effort pre-start settings (applied
    * right after create) and changing them on a live session. LOUD: throws on any non-2xx.
-   * (bridge-ui: useBridgeSession.ts:1176.)
+   * (bridge-ui: useBridgeSession's `postConfig`, shared by `sendConfig` and
+   * `raiseBudgetCeiling`.)
    */
   setConfig(id: string, config: SessionConfig): Promise<unknown> {
     const body: Record<string, unknown> = {};
@@ -572,7 +573,8 @@ export class ApiClient {
    * The registered harness types and their capabilities. GET /harnesses — the CANONICAL
    * registry the controls bar gates each control on (`capabilities`) and scopes the model
    * picker with (`supportedProviders`). Mapped snake_case → camelCase per harness. LOUD:
-   * throws on any non-2xx. (bridge-ui reads the same endpoint: BridgeChat.tsx:304.)
+   * throws on any non-2xx. (bridge-ui reads the same endpoint through
+   * `useBridgeHarnesses`.)
    */
   async getHarnesses(): Promise<HarnessMeta[]> {
     const wire = await this.getJSON<HarnessInfoWire[] | null>('/harnesses');
@@ -585,7 +587,8 @@ export class ApiClient {
    * model-store registry. Drops `enabled=false` rows (mirroring bridge-ui) and projects
    * each to a `ModelOption` carrying `provider` so `useModels` can filter by a harness's
    * supported providers, plus the `shortName` nickname a dense picker renders. LOUD:
-   * throws on any non-2xx. (bridge-ui: BridgeChat.tsx:260.)
+   * throws on any non-2xx. (bridge-ui reads the same endpoint in a `BridgeChat.tsx`
+   * effect.)
    */
   async getModels(): Promise<ModelOption[]> {
     const wire = await this.getJSON<StoreModelWire[] | null>('/models');

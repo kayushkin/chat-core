@@ -82,7 +82,7 @@ export function matchesFilter(
 }
 
 /** How well a session answers `query`, lower is better — a port of bridge-ui's
- *  `rankOf` (`SessionList.tsx:164-172`).
+ *  `rankOf` (bridge-ui `SessionList.tsx`).
  *
  *  `0` an exact session-id paste, `1` a name-or-id substring, `2` a content-only
  *  hit. Without the tiers a pasted id sinks under every transcript that merely
@@ -109,7 +109,8 @@ function searchRankOf(s: SessionSummary, query: string): number {
  *  other rank-1 rows — a rank-2 row is a content hit by definition.
  *
  *  ⚠️ This orders sessions WITHIN a folder group. dashv2 keeps its folder grouping
- *  while a query is active (bridge-ui flattens instead — `SessionList.tsx:504-510`),
+ *  while a query is active (bridge-ui flattens instead, in `SessionList.tsx`'s
+ *  `searchActive` branch),
  *  so the best hit still sits under whatever folder sorts first. Whether dashv2
  *  should flatten on query is a product choice, tracked as its own todo. */
 function bySearchRank(
