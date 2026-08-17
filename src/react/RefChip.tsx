@@ -9,6 +9,7 @@ import {
   useSessionRefTranscript,
   REF_TRANSCRIPT_TURNS,
 } from './refDetail.js';
+import { SessionSignals } from './SessionSignals.js';
 
 /** Props for the {@link RefChip} renderer. When used as a ReactMarkdown custom
  *  component the mdast hProperties (`kind` / `refId`) arrive as props; rehype may
@@ -419,6 +420,14 @@ function SessionRefPanel({
           </button>
         )}
       </div>
+
+      {/* The cross-session answer: open session A's chip while working in session
+          B and answer A's open question right here. The State row's "question"
+          badge is what says one is waiting; this is where it can be dealt with.
+          Renders nothing at all when the session has no open signals, or when
+          this bridge-server predates the signals route — no wrapper element, so
+          a session with nothing waiting leaves no empty box in the panel. */}
+      <SessionSignals sessionId={detail.sessionId || refId} compact />
 
       {/* Mounted only while expanded, which is also what gates the fetch. */}
       {showHistory && <SessionRefTranscript refId={refId} />}

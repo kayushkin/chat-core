@@ -551,6 +551,66 @@ export function clearRefDetailCache(): void;   // tests only
 export const REF_TRANSCRIPT_TURNS: number;     // 30
 export interface RefDetailState<T> { data: T | null; error: string | null; loading: boolean }
 
+// ---- Session signals (the open questions a session is waiting on) ----
+// A signal is the canonical record of anything a session surfaces to a human: a question
+// that needs an answer, or a notification that needs at most an acknowledgement
+// (llm-bridge `msg/signal.go`). `SessionSignals` is mounted inside the RefChip session
+// panel, so opening session A's chip while working in session B answers A's question in
+// place. It ships no CSS: stable unhashed `signal-*` classes, styled by the host.
+//
+// ⚠️ Answering is per PRODUCER, and the two paths share nothing:
+//   tool-sourced   (has requestId) — GET /sessions/{id}/hooks/pending to read the PARKED
+//                  tool input back, then POST .../hooks/{requestId}/resolve with
+//                  {behavior:'allow', updated_input:{...parkedInput, answers}}. The
+//                  refetch is mandatory: resolve REPLACES updated_input wholesale, so
+//                  rebuilding it from the signal rows drops multiSelect and option
+//                  previews. `answers` is keyed by signal TITLE — that is what the server
+//                  reads back to pair an answer to its row. A park that is gone is an
+//                  error the user sees, never a resolve posted into the void.
+//   derived        (no requestId) — POST /sessions/{id}/send. No hook was ever parked, so
+//                  the answer IS the session's next user message; the record closes
+//                  server-side, in the /send handler.
+// Decline is the same resolve endpoint with {behavior:'deny'} and no updated_input, and is
+// offered only where there is a requestId. Acknowledge/dismiss are the SIGNAL-level verb
+// (POST /signals/{id}/resolve); the server refuses `acknowledged` for a question on
+// purpose — a question nobody answered has not been handled.
+//
+// A 404 from /signals means this bridge-server predates the feature: the read answers
+// `null` (never `[]`, which would say "deployed and quiet") and every surface renders
+// nothing rather than erroring. Reads dedupe through a 30s promise cache like the chip
+// loaders, and every resolve announces in-process so other mounted surfaces refetch.
+export function SessionSignals(props: SessionSignalsProps): JSX.Element | null;
+export function SignalRequestList(props: SignalRequestListProps): JSX.Element | null;
+export function SignalCard(props: SignalCardProps): JSX.Element;         // reads NO context
+export function SignalRequestCard(props: SignalRequestCardProps): JSX.Element;  // owns submit
+export function useOpenSignals(sessionId?: string): OpenSignalsState;
+export function clearOpenSignalsCache(): void;   // tests only
+export interface OpenSignalsState {
+  signals: Signal[]; requests: SignalRequest[];
+  available: boolean;      // false once the server 404s — no signals route here
+  loading: boolean; error: string | null; reload: () => void;
+  resolve: (request: SignalRequest, answersBySignalId: Readonly<Record<string, SignalAnswer>>) => Promise<void>;
+}
+// The verbs, for a host rendering its own answer UI. Submit stays disabled until
+// `everyQuestionAnswered` — one AskUserQuestion call resolves once, so a partial submit
+// would answer some questions and discard the rest (`answerSignalRequest` enforces it too).
+export function answerSignalRequest(api: ApiClient, request: SignalRequest, answersBySignalId: Readonly<Record<string, SignalAnswer>>): Promise<void>;
+export function resolveSignalQuestions(api: ApiClient, sessionId: string, requestId: string, answersByTitle: Readonly<Record<string, string>>): Promise<void>;
+export function answerDerivedQuestion(api: ApiClient, sessionId: string, text: string): Promise<void>;
+export function declineSignalQuestions(api: ApiClient, sessionId: string, requestId: string): Promise<void>;
+export function acknowledgeSignal(api: ApiClient, signalId: string): Promise<void>;
+export function dismissSignal(api: ApiClient, signalId: string): Promise<void>;
+export function subscribeToSignalChanges(listener: () => void): () => void;
+export function everyQuestionAnswered(request: SignalRequest, answersBySignalId: Readonly<Record<string, SignalAnswer>>): boolean;
+export function questionsIn(request: SignalRequest): Signal[];
+export function answerTextOf(answer: SignalAnswer | undefined): string;  // option OR text, never both
+// Grouping key is request_id: one AskUserQuestion call mints one signal per question and
+// resolves as a unit, so the REQUEST is what gets answered. A signal with no request_id
+// gets a group of its own.
+export function groupSignalsByRequest(signals: readonly Signal[]): SignalRequest[];
+export function signalFromWire(w: SignalWire): Signal;
+export interface SignalRequest { requestId: string; sessionId: string; signals: Signal[] }
+
 // ---- NoteboardClient ----
 // A SECOND backend, not part of the bridge gateway, so it gets its own client rather than
 // a method on ApiClient. Read-only and deliberately narrow: ref chips are the only reason

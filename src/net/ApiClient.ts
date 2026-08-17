@@ -19,6 +19,8 @@ import type {
   ValidatorsResponse,
 } from './types.js';
 import { SUMMARY_FILTER_AXES } from './types.js';
+import type { Signal, SignalResolveState, SignalWire } from './signals.js';
+import { SIGNAL_STATE_OPEN, SIGNAL_SURFACE_CHAT, signalFromWire } from './signals.js';
 import type {
   HarnessConfigWire,
   HarnessInfoWire,
@@ -736,5 +738,75 @@ export class ApiClient {
       `/sessions/${id}/hooks/${encodeURIComponent(input.requestId)}/resolve`,
       body,
     );
+  }
+
+  // --- session signals (the questions a session is waiting on) ---
+
+  /**
+   * Open chat-surface signals — one session's when `sessionId` is given, every
+   * session's when it is not. GET /signals?state=open&surface=chat.
+   *
+   * ⚠️ Returns `null`, not an error and not an empty list, when the server
+   * answers 404. A 404 here means this bridge-server predates the signals API,
+   * and a server without the feature is not a failure to show anyone: every
+   * signal surface renders nothing at all in that case. `[]` would be a lie of a
+   * different kind — it says the feature is present and quiet. Any OTHER non-2xx
+   * is a real failure and throws, like every other read on this client.
+   *
+   * The cross-session route is used even for a single session, deliberately. The
+   * per-session route GET /sessions/{id}/signals answers 404 for BOTH "no
+   * signals route here" and "no such session", and those two mean opposite
+   * things to a caller; /signals only 404s for the first.
+   */
+  async getOpenChatSignals(opts?: {
+    sessionId?: string;
+    limit?: number;
+  }): Promise<Signal[] | null> {
+    const params = new URLSearchParams({
+      state: SIGNAL_STATE_OPEN,
+      surface: SIGNAL_SURFACE_CHAT,
+    });
+    if (opts?.sessionId) params.set('session_id', opts.sessionId);
+    if (opts?.limit != null) params.set('limit', String(opts.limit));
+    const path = `/signals?${params.toString()}`;
+    const res = await this.doFetch(`${this.basePath}${path}`);
+    if (res.status === 404) return null;
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new ApiError({
+        message: `GET ${path} failed: ${res.status} ${res.statusText}`,
+        status: res.status,
+        body,
+        method: 'GET',
+        path,
+      });
+    }
+    const wire: unknown = await res.json();
+    if (!Array.isArray(wire)) {
+      throw new Error(`GET ${path} returned ${typeof wire}, expected an array of signals`);
+    }
+    return (wire as SignalWire[]).map(signalFromWire);
+  }
+
+  /**
+   * Close one signal without answering it. POST /signals/{id}/resolve.
+   *
+   * This is the SIGNAL-level verb, and it is not how a question gets answered: a
+   * tool question resolves through its parked hook and a derived one through the
+   * session's next message (see `store/signalResolve.ts`). What closes here is a
+   * notification being acknowledged, or any signal being dismissed.
+   *
+   * The server refuses `acknowledged` for a question on purpose — a question
+   * nobody answered has not been handled, and grading it "seen" would read as
+   * handled on the surface that matters most, a worker's kanban card. That
+   * refusal arrives as a thrown `ApiError`, which is correct: it reaches here
+   * only from a click.
+   *
+   * LOUD for the same reason: unlike `getOpenChatSignals`, a 404 is NOT swallowed
+   * here. A button that silently does nothing is worse than an error.
+   */
+  resolveSignal(signalId: string, state: SignalResolveState): Promise<unknown> {
+    if (!signalId) return Promise.reject(new Error('a signal cannot be resolved without its id'));
+    return this.postJSON(`/signals/${encodeURIComponent(signalId)}/resolve`, { state });
   }
 }

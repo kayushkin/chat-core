@@ -37,6 +37,61 @@ export {
   type RefDetailState,
 } from './react/refDetail.js';
 
+// ---- Session signals (the open questions a session is waiting on) ----
+export {
+  SessionSignals,
+  SignalRequestList,
+  type SessionSignalsProps,
+  type SignalRequestListProps,
+} from './react/SessionSignals.js';
+export {
+  SignalCard,
+  SignalRequestCard,
+  type SignalCardProps,
+  type SignalRequestCardProps,
+} from './react/SignalCard.js';
+export {
+  useOpenSignals,
+  clearOpenSignalsCache,
+  type OpenSignalsState,
+} from './react/signals.js';
+export {
+  acknowledgeSignal,
+  answerDerivedQuestion,
+  answerSignalRequest,
+  answerTextOf,
+  declineSignalQuestions,
+  dismissSignal,
+  everyQuestionAnswered,
+  questionsIn,
+  resolveSignalQuestions,
+  subscribeToSignalChanges,
+} from './store/signalResolve.js';
+export {
+  groupSignalsByRequest,
+  signalFromWire,
+  SIGNAL_KIND_NOTIFICATION,
+  SIGNAL_KIND_QUESTION,
+  SIGNAL_SEVERITY_INFO,
+  SIGNAL_SEVERITY_WARN,
+  SIGNAL_SOURCE_DERIVED,
+  SIGNAL_SOURCE_TOOL,
+  SIGNAL_STATE_ACKNOWLEDGED,
+  SIGNAL_STATE_ANSWERED,
+  SIGNAL_STATE_DISMISSED,
+  SIGNAL_STATE_OPEN,
+  SIGNAL_SURFACE_CHAT,
+  SIGNAL_SURFACE_KANBAN,
+  type Signal,
+  type SignalAnswer,
+  type SignalAnswerWire,
+  type SignalOption,
+  type SignalOptionWire,
+  type SignalRequest,
+  type SignalResolveState,
+  type SignalWire,
+} from './net/signals.js';
+
 // ---- Wire types (docs/WIRE.md, src/net/types.ts) ----
 export type {
   SessionSummary,
