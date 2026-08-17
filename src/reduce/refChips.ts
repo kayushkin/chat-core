@@ -10,6 +10,10 @@
 //    rewriting text nodes into `<ref-chip>` hast elements, matching bridge-ui's
 //    behavior for consumers that already run react-markdown. It uses the same
 //    core matcher and imports nothing, so chat-core stays dependency-free.
+//
+// Three grammars are recognised, all by one regex: bare session ids, a cue word
+// in front of a noteboard uuid, and the producer/orchestrator's `[kind:id]`
+// bracket dialect (added here, not present upstream).
 
 /**
  * Which backend a chip queries.
@@ -41,6 +45,32 @@ export type RefSegment =
 const SESSION_ID = String.raw`br_\d{16,19}|(?:herald|autoworker)(?:-[a-z0-9]+)*-\d{16,19}`;
 const UUID = String.raw`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`;
 
+// The producer/orchestrator writes references in its own bracket dialect —
+// `[session:…]`, `[todo:…]`, `[note:…]`, `[task:…]` — where the brackets and the
+// kind prefix are part of the token, not prose around it. Matched whole and
+// consumed whole, so nothing of `[kind:` or `]` survives as stray literal text.
+//
+// Inside `[session:…]` the id is NOT required to look like SESSION_ID: the
+// producer emits harness session ids there too, which are uuids or other opaque
+// strings. Anything without whitespace or a closing bracket is taken verbatim.
+// The bracket + kind prefix is what disambiguates, so no shape check is needed.
+const BRACKET_SESSION_ID = String.raw`[^\]\s]+`;
+
+// The noteboard-backed bracket kinds. Unlike the session form these DO require a
+// uuid: an unconstrained id here would chip ordinary prose like `[todo:done]`,
+// and every noteboard item id is a uuid anyway.
+//
+// `task` is the producer's word for a kanban card, and a kanban card id IS a
+// noteboard item id — kanban-store owns only where a card sits, noteboard owns
+// what it says — so `[task:…]` resolves through the same noteboard lookup as a
+// todo and is therefore given kind `todo`, not a kind of its own.
+const BRACKET_ITEM_KIND = String.raw`todo|note|task`;
+
+// A markdown link is `[text](url)`, so a bracket token immediately followed by
+// `(` is a link label and must stay literal — otherwise `[session:x](http://…)`
+// loses its address to a chip.
+const NOT_A_LINK_LABEL = String.raw`(?!\()`;
+
 // Cue words, longest-first WITHIN each group: alternation is ordered, and with
 // `todo` ahead of `todo_id` the shorter one wins and the separator class (which
 // has no underscore) then fails to match `_id`, killing the whole alternative.
@@ -60,17 +90,28 @@ const NOTE_CUE_WORDS: ReadonlySet<string> = new Set([
 
 /** Which backend kind a matched cue word points at. Both note and todo cues
  *  resolve against the same noteboard endpoint; the kind only decides the
- *  chip's placeholder label before the real `type` arrives. */
+ *  chip's placeholder label before the real `type` arrives. Also serves the
+ *  bracket dialect's kind words, where it is what maps `task` onto `todo`. */
 function kindForCue(cue: string): RefKind {
   return NOTE_CUE_WORDS.has(cue.toLowerCase()) ? 'note' : 'todo';
 }
 
 // Group layout:
-//   1 = session id (whole match is the chip)
-//   2 = item cue word    3 = separator    4 = item uuid
+//   1 = bracket session id      (`[session:<id>]`, id taken verbatim)
+//   2 = bracket item kind word  3 = bracket item uuid  (`[todo|note|task:<uuid>]`)
+//   4 = bare session id (whole match is the chip)
+//   5 = item cue word    6 = separator    7 = item uuid
+//
+// The bracket alternatives come FIRST so a bracket token is consumed whole. They
+// start one character earlier than the cue alternative would (at `[` rather than
+// at the kind word), so leftmost-match already prefers them — but keeping them
+// ahead makes that independent of the scan position, and `[todo:<uuid>]` can
+// never come out as a cue match plus two leftover literals.
 function newTokenRe(): RegExp {
   return new RegExp(
-    String.raw`\b(${SESSION_ID})\b` +
+    String.raw`\[session:(${BRACKET_SESSION_ID})\]${NOT_A_LINK_LABEL}` +
+      String.raw`|\[(${BRACKET_ITEM_KIND}):(${UUID})\]${NOT_A_LINK_LABEL}` +
+      String.raw`|\b(${SESSION_ID})\b` +
       String.raw`|\b(${ITEM_CUE})([\s:=#]{1,4})(${UUID})\b`,
     'gi',
   );
@@ -89,12 +130,20 @@ export function parseRefChips(value: string): RefSegment[] {
     if (match.index > last) {
       out.push({ type: 'text', value: value.slice(last, match.index) });
     }
-    if (match[1]) {
+    if (match[1] !== undefined) {
+      // `[session:<id>]` — brackets and prefix are part of the token, so the
+      // whole match is replaced by the chip and nothing literal is left behind.
       out.push({ type: 'chip', kind: 'session', refId: match[1] });
+    } else if (match[2] !== undefined) {
+      // `[todo|note|task:<uuid>]` — same, and `task` maps to `todo` because a
+      // kanban card id is a noteboard item id (see BRACKET_ITEM_KIND).
+      out.push({ type: 'chip', kind: kindForCue(match[2]), refId: match[3] ?? '' });
+    } else if (match[4] !== undefined) {
+      out.push({ type: 'chip', kind: 'session', refId: match[4] });
     } else {
       // Keep the cue word + separator as plain text; chip only the uuid.
-      out.push({ type: 'text', value: (match[2] ?? '') + (match[3] ?? '') });
-      out.push({ type: 'chip', kind: kindForCue(match[2] ?? ''), refId: match[4] ?? '' });
+      out.push({ type: 'text', value: (match[5] ?? '') + (match[6] ?? '') });
+      out.push({ type: 'chip', kind: kindForCue(match[5] ?? ''), refId: match[7] ?? '' });
     }
     last = match.index + match[0].length;
   }
@@ -141,10 +190,10 @@ function chip(kind: RefKind, refId: string): RefChipNode {
 }
 
 /**
- * remark-compatible transformer. Rewrites bare session ids and cue-prefixed
- * noteboard uuids into `<ref-chip>` elements, and never re-scans what it
- * inserted. Dependency-free: it walks the tree itself rather than using
- * unist-util-visit.
+ * remark-compatible transformer. Rewrites bare session ids, cue-prefixed
+ * noteboard uuids and the producer's `[kind:id]` bracket tokens into
+ * `<ref-chip>` elements, and never re-scans what it inserted. Dependency-free:
+ * it walks the tree itself rather than using unist-util-visit.
  *
  * Two node types are treated as verbatim and left alone, for opposite reasons:
  *

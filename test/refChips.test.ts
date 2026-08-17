@@ -98,6 +98,144 @@ describe('parseRefChips — noteboard cues', () => {
   });
 });
 
+describe('parseRefChips — producer bracket dialect', () => {
+  // The producer/orchestrator writes `[kind:id]`, brackets and all. Before this
+  // was understood the bare id chipped and the literal `[session:` and `]` were
+  // left stranded on either side of it, which reads as a rendering bug.
+
+  it('chips [session:…] and consumes the brackets and prefix', () => {
+    expect(chips('[session:br_1786996794975654882]')).toEqual([
+      { kind: 'session', refId: 'br_1786996794975654882' },
+    ]);
+    expect(textOf(parseRefChips('[session:br_1786996794975654882]'))).toBe(
+      '[session:br_1786996794975654882]',
+    );
+    // textOf renders a chip in the same bracket shape, so pin the SEGMENTS too:
+    // exactly one, a chip, with no literal text on either side.
+    expect(parseRefChips('[session:br_1786996794975654882]')).toEqual([
+      { type: 'chip', kind: 'session', refId: 'br_1786996794975654882' },
+    ]);
+  });
+
+  it('accepts any opaque id inside [session:…], not just a snowflake', () => {
+    // Harness session ids are uuids or other opaque strings. The bracket and the
+    // kind prefix are what disambiguate, so no shape check is applied.
+    expect(chips(`[session:${UUID}]`)).toEqual([{ kind: 'session', refId: UUID }]);
+    expect(chips('[session:sess_abc.123/xyz]')).toEqual([
+      { kind: 'session', refId: 'sess_abc.123/xyz' },
+    ]);
+  });
+
+  it('chips [todo:…] and [note:…] with no stray literals', () => {
+    expect(parseRefChips(`[todo:${UUID}]`)).toEqual([
+      { type: 'chip', kind: 'todo', refId: UUID },
+    ]);
+    expect(parseRefChips(`[note:${UUID}]`)).toEqual([
+      { type: 'chip', kind: 'note', refId: UUID },
+    ]);
+  });
+
+  it('reads [task:…] as a todo, because a kanban card id IS a noteboard item id', () => {
+    // kanban-store owns only where a card sits; noteboard owns what it says, so
+    // the producer's `task` resolves through the same lookup as a todo.
+    expect(parseRefChips(`[task:${UUID}]`)).toEqual([
+      { type: 'chip', kind: 'todo', refId: UUID },
+    ]);
+  });
+
+  it('produces exactly ONE chip for [todo:…], not a chip plus leftovers', () => {
+    // The cue alternative also matches `todo:<uuid>` inside those brackets. If it
+    // won, the result would be text('[todo:') + chip + text(']').
+    expect(parseRefChips(`[todo:${UUID}]`)).toHaveLength(1);
+  });
+
+  it('surrounds a bracket token with plain prose only', () => {
+    expect(parseRefChips(`fixed [task:${UUID}] today`)).toEqual([
+      { type: 'text', value: 'fixed ' },
+      { type: 'chip', kind: 'todo', refId: UUID },
+      { type: 'text', value: ' today' },
+    ]);
+  });
+
+  it('handles several bracket tokens of mixed kinds in one string', () => {
+    expect(
+      chips(`[session:br_1234567890123456] closed [task:${UUID}] and [note:${OTHER_UUID}]`),
+    ).toEqual([
+      { kind: 'session', refId: 'br_1234567890123456' },
+      { kind: 'todo', refId: UUID },
+      { kind: 'note', refId: OTHER_UUID },
+    ]);
+  });
+
+  it('is case-insensitive about the bracket kind word', () => {
+    expect(chips(`[TASK:${UUID}]`)).toEqual([{ kind: 'todo', refId: UUID }]);
+    expect(chips('[Session:br_1234567890123456]')).toEqual([
+      { kind: 'session', refId: 'br_1234567890123456' },
+    ]);
+  });
+
+  it('leaves the bare-id and cue grammars untouched', () => {
+    // Same ids without brackets still behave exactly as before.
+    expect(textOf(parseRefChips(`todo: ${UUID}`))).toBe(`todo: [todo:${UUID}]`);
+    expect(chips('br_1234567890123456')).toEqual([
+      { kind: 'session', refId: 'br_1234567890123456' },
+    ]);
+  });
+
+  it('does not chip markdown link syntax', () => {
+    // `[text](url)` is a link label, not a reference token.
+    expect(chips('[the session](http://example.com/x)')).toEqual([]);
+    expect(chips('[session:x](http://example.com/s/x)')).toEqual([]);
+    expect(parseRefChips('[session:x](http://example.com/s/x)')).toEqual([
+      { type: 'text', value: '[session:x](http://example.com/s/x)' },
+    ]);
+  });
+
+  it('still applies the OLD cue grammar inside a link label, as it always did', () => {
+    // `[todo:<uuid>](url)` is refused as a BRACKET token — no `[todo:` or `]` is
+    // consumed — but the cue alternative then matches `todo:<uuid>` inside the
+    // label exactly as it did before the bracket dialect existed. Left alone on
+    // purpose: the pure parser's cue grammar is unchanged, and in the real mdast
+    // pipeline a link label lives in a `link` node, which the walk skips.
+    expect(textOf(parseRefChips(`[todo:${UUID}](http://example.com/t)`))).toBe(
+      `[todo:[todo:${UUID}]](http://example.com/t)`,
+    );
+  });
+
+  it('leaves malformed bracket forms as plain text', () => {
+    for (const bad of [
+      '[session:]',
+      '[:id]',
+      '[unknown:id]',
+      `[unknown:${UUID}]`,
+      '[session]',
+    ]) {
+      expect(chips(bad), bad).toEqual([]);
+    }
+  });
+
+  it('falls back to the bare-id grammar when the closing bracket is missing', () => {
+    // Not a bracket token, so the brackets and prefix stay literal — but the id
+    // itself is still unambiguous on its own and chips as it always did.
+    expect(textOf(parseRefChips('[session:br_1234567890123456'))).toBe(
+      '[session:[session:br_1234567890123456]',
+    );
+  });
+
+  it('requires a uuid for the noteboard bracket kinds', () => {
+    // An unconstrained id here would chip ordinary prose, and every noteboard
+    // item id is a uuid anyway.
+    expect(chips('[todo:done]')).toEqual([]);
+    expect(chips('[note:1]')).toEqual([]);
+  });
+
+  it('does not let a bracket token swallow whitespace or a stray bracket', () => {
+    expect(chips(`[todo: ${UUID}]`)).toEqual([{ kind: 'todo', refId: UUID }]);
+    // …but as the plain cue grammar, so the brackets survive as literal text.
+    expect(textOf(parseRefChips(`[todo: ${UUID}]`))).toBe(`[todo: [todo:${UUID}]]`);
+  });
+});
+
 describe('parseRefChips — segment shape', () => {
   it('returns a single text segment when nothing matches', () => {
     expect(parseRefChips('nothing here')).toEqual([{ type: 'text', value: 'nothing here' }]);
@@ -204,6 +342,44 @@ describe('remarkRefChips', () => {
     const kids = root.children?.[0]?.children ?? [];
     // text('todo: ') + one chip — never a chip nested inside a chip.
     expect(kids.map((k) => k.type)).toEqual(['text', 'refChip']);
+  });
+
+  it('rewrites a bracket token into a single chip with no literal siblings', () => {
+    const root = tree([
+      {
+        type: 'paragraph',
+        children: [{ type: 'text', value: '[session:br_1786996794975654882]' }],
+      },
+    ]);
+    remarkRefChips()(root as never);
+    const kids = root.children?.[0]?.children ?? [];
+    // No text('[session:') before it and no text(']') after it.
+    expect(kids.map((k) => k.type)).toEqual(['refChip']);
+    expect(kids[0]?.data).toEqual({
+      hName: 'ref-chip',
+      hProperties: { kind: 'session', refId: 'br_1786996794975654882' },
+    });
+  });
+
+  it('resolves a bracket token inside a single-backtick span', () => {
+    // Consistent with the existing cue behavior: a code span is prose emphasis.
+    const root = tree([
+      { type: 'paragraph', children: [{ type: 'inlineCode', value: `[task:${UUID}]` }] },
+    ]);
+    remarkRefChips()(root as never);
+    const kids = root.children?.[0]?.children ?? [];
+    expect(kids.map((k) => k.type)).toEqual(['refChip']);
+    expect(kids[0]?.data).toEqual({
+      hName: 'ref-chip',
+      hProperties: { kind: 'todo', refId: UUID },
+    });
+  });
+
+  it('leaves a bracket token inside a link alone', () => {
+    const original: TestNode = { type: 'text', value: `[todo:${UUID}]` };
+    const root = tree([{ type: 'link', children: [original] }]);
+    remarkRefChips()(root as never);
+    expect(root.children?.[0]?.children?.[0]).toBe(original);
   });
 
   // --- The decline paths: every place the walk refuses to rewrite. -----------
