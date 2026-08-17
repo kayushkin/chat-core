@@ -374,10 +374,16 @@ export function activeSummary(state: ChatState): SessionSummary | null {
 /**
  * The effective (reconciled) state of a session. If the session's cached/warm
  * TurnModel tail is terminal per `terminalStateFromTail`, a running/holding summary
- * state is overridden with the tail's verdict ('completed' | 'failed') — this clears
+ * state is overridden with the tail's verdict ('completed' | 'error') — this clears
  * the stale spinner the server's state derivation can strand (F1). A session that is
  * genuinely in flight (no terminal tail) or already in a settled/parked state is
  * returned unchanged.
+ *
+ * The verdict is returned verbatim. It used to be re-spelled through a
+ * `terminal === 'failed' ? 'failed' : 'completed'` ternary, which was an identity
+ * function over the two values `terminalStateFromTail` can return — a second place
+ * for the vocabulary to fork, doing no work. See that function on why the failure
+ * state is spelled 'error'.
  */
 export function effectiveState(state: ChatState, sessionId: string | null): string {
   if (!sessionId) return '';
@@ -386,7 +392,7 @@ export function effectiveState(state: ChatState, sessionId: string | null): stri
   if (!isRunningState(raw)) return raw;
   const terminal = terminalStateFromTail(state.turnsBySession.get(sessionId));
   if (!terminal) return raw;
-  return terminal === 'failed' ? 'failed' : 'completed';
+  return terminal;
 }
 
 /**
