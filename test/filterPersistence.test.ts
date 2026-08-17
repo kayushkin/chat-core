@@ -8,6 +8,7 @@ import {
   MAX_PERSISTED_FILTER_VALUES,
   PERSISTED_FILTER_AXES,
 } from '../src/store/filterStorage.js';
+import type { PersistedFilterAxis } from '../src/store/filterStorage.js';
 import type { WebStorageLike } from '../src/store/webStorage.js';
 
 // The sidebar's filter selection used to live in memory only: `ChatState.filter` was
@@ -49,6 +50,17 @@ function storedAxes(storage: WebStorageLike): Record<string, string[]> {
   return (JSON.parse(raw) as { axes: Record<string, string[]> }).axes;
 }
 
+/** The six axes this suite pins, written out rather than read from `filterStorage`.
+ *
+ *  ⚠️ Do not replace this with `PERSISTED_FILTER_AXES`. Comparing the shipped table
+ *  against itself agrees by construction: measured 2026-08-10, dropping `machine` from
+ *  BOTH authorings in `filterStorage.ts` — the array and the literal inside
+ *  `emptyPersistedFilterAxes` — compiles clean and leaves all 15 tests here green,
+ *  including the one named "restores all six axes and only those six". The word "six"
+ *  was asserted by nothing. Changing an axis should have to change this line too, and
+ *  the diff is where that decision becomes visible. */
+const EXPECTED_PERSISTED_AXES = ['harness', 'status', 'type', 'purpose', 'mode', 'machine'];
+
 describe('the sidebar filter survives a reload', () => {
   it('reads every persisted axis back synchronously at construction', () => {
     const storage = fakeStorage();
@@ -74,8 +86,14 @@ describe('the sidebar filter survives a reload', () => {
     });
 
     const restored = createChatStore({ filterStorage: storage, draftStorage: null }).getState().filter;
-    for (const axis of PERSISTED_FILTER_AXES) expect(restored[axis]).toHaveLength(1);
-    expect(Object.keys(storedAxes(storage)).sort()).toEqual([...PERSISTED_FILTER_AXES].sort());
+
+    // The count first, against the literal above — otherwise every line below is a claim
+    // about however many axes happen to ship, and "six" is decoration.
+    expect([...PERSISTED_FILTER_AXES].sort()).toEqual([...EXPECTED_PERSISTED_AXES].sort());
+    for (const axis of EXPECTED_PERSISTED_AXES) {
+      expect(restored[axis as PersistedFilterAxis]).toHaveLength(1);
+    }
+    expect(Object.keys(storedAxes(storage)).sort()).toEqual([...EXPECTED_PERSISTED_AXES].sort());
   });
 
   it('never persists the search query', () => {
