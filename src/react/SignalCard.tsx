@@ -35,9 +35,8 @@ export interface SignalCardProps {
   onAcknowledge?: () => void;
   busy?: boolean;
   /** Drops descriptions and the body for tight surfaces (the RefChip session
-   *  panel). The question and its options still render, and so does the freeform
-   *  box when there are NO options — dropping it there would leave a question
-   *  with no way to answer it at all. */
+   *  panel). The question, its options and its freeform box all still render:
+   *  compact trims chrome, never the means of answering. */
   compact?: boolean;
 }
 
@@ -111,12 +110,20 @@ export function SignalCard({
         </div>
       )}
 
-      {/* Compact hides the freeform box as chrome — but only when an option can
-          carry the answer instead. Both server producers set allow_freeform with
-          options left empty whenever the assistant enumerated no choices, and
-          such a question is answerable ONLY here: no radios render, and
-          `everyQuestionAnswered` keeps Submit disabled forever. */}
-      {!isNotification && signal.allowFreeform && (!compact || options.length === 0) && (
+      {/* Every question gets a freeform box, unconditionally.
+          NOT gated on `compact`: that hid the only way to answer a question the
+          producer minted with no options, and trimming chrome must never remove
+          the means of answering.
+          NOT gated on `signal.allowFreeform` either. Nothing sets that field
+          false — both producers hardcode it true (`signal_classifier.go:504`,
+          `signals.go:115`) and the server has no path that rejects a freeform
+          answer. What it does have is `signalFromWire` defaulting it to FALSE
+          when the key is absent, so an older row or a producer that omits it
+          loses its answer box with no way to tell. A display hint that is never
+          deliberately false, and fails closed onto an unanswerable card, is not
+          worth honouring. The field stays parsed — it is the wire's, and this
+          layer passes it through — it simply no longer decides this. */}
+      {!isNotification && (
         <textarea
           className="signal-freeform"
           placeholder={options.length > 0 ? '…or answer in your own words' : 'Type your answer'}

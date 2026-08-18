@@ -400,9 +400,8 @@ describe('SignalCard reads no context', () => {
     // A compact card is still answerable — the question and its options stay.
     expect(html).toContain('Postgres');
     expect(html).not.toContain('already deployed');
-    // The freeform box is dropped only because an option can carry the answer
-    // instead; see the next case for what happens when none can.
-    expect(html).not.toContain('textarea');
+    // Compact trims chrome, never the means of answering: the box stays.
+    expect(html).toContain('textarea');
   });
 
   it('keeps the freeform box when compact and the question has no options', () => {
@@ -423,17 +422,34 @@ describe('SignalCard reads no context', () => {
     expect(html).toContain('Type your answer');
   });
 
-  it('still drops the freeform box when compact and a derived question has no request', () => {
-    // The no-options rule keys off the options, not the producer: a derived
-    // signal with choices is answerable through them, compact or not.
-    const signal = question({
+  it('gives a question a freeform box even when allow_freeform is absent from the wire', () => {
+    // signalFromWire defaults the flag to FALSE when the key is missing, so
+    // honouring it meant an older row — or any producer that omits it — rendered
+    // a question nobody could answer. Nothing sets it false on purpose: both
+    // producers hardcode it true and the server never rejects a freeform answer.
+    const signal = signalFromWire({
       id: 'sig-2',
-      request_id: '',
-      allow_freeform: true,
-      options: [{ label: 'Postgres', value: 'pg' }],
-    });
-    const html = renderToStaticMarkup(createElement(SignalCard, { signal, compact: true }));
+      session_id: 'sess-1',
+      kind: 'question',
+      surface: 'chat',
+      title: 'Which classifier transport?',
+      state: 'open',
+    } as SignalWire);
+    expect(signal.allowFreeform).toBe(false);
+    const html = renderToStaticMarkup(createElement(SignalCard, { signal }));
+    expect(html).toContain('textarea');
+  });
+
+  it('never gives a notification a freeform box — it is acknowledged, not answered', () => {
+    const signal = signalFromWire({
+      id: 'sig-3',
+      session_id: 'sess-1',
+      kind: 'notification',
+      surface: 'chat',
+      title: 'Deploy finished',
+      state: 'open',
+    } as SignalWire);
+    const html = renderToStaticMarkup(createElement(SignalCard, { signal }));
     expect(html).not.toContain('textarea');
-    expect(html).toContain('Postgres');
   });
 });
