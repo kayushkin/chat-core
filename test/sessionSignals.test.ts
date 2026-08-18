@@ -400,7 +400,40 @@ describe('SignalCard reads no context', () => {
     // A compact card is still answerable — the question and its options stay.
     expect(html).toContain('Postgres');
     expect(html).not.toContain('already deployed');
-    // The freeform box is what compact drops, along with the body.
+    // The freeform box is dropped only because an option can carry the answer
+    // instead; see the next case for what happens when none can.
     expect(html).not.toContain('textarea');
+  });
+
+  it('keeps the freeform box when compact and the question has no options', () => {
+    // Both server producers mint exactly this: signal_classifier.go sets
+    // AllowFreeform with options empty unless the assistant enumerated choices,
+    // and signals.go copies a possibly-empty question.Options. dashv2's only
+    // signals surface renders compact, so suppressing the box here left such a
+    // question with no radios, no textarea, and a Submit that
+    // `everyQuestionAnswered` disables forever — unanswerable anywhere.
+    const signal = question({
+      id: 'sig-1',
+      request_id: 'req-7',
+      allow_freeform: true,
+      options: [],
+    });
+    const html = renderToStaticMarkup(createElement(SignalCard, { signal, compact: true }));
+    expect(html).toContain('textarea');
+    expect(html).toContain('Type your answer');
+  });
+
+  it('still drops the freeform box when compact and a derived question has no request', () => {
+    // The no-options rule keys off the options, not the producer: a derived
+    // signal with choices is answerable through them, compact or not.
+    const signal = question({
+      id: 'sig-2',
+      request_id: '',
+      allow_freeform: true,
+      options: [{ label: 'Postgres', value: 'pg' }],
+    });
+    const html = renderToStaticMarkup(createElement(SignalCard, { signal, compact: true }));
+    expect(html).not.toContain('textarea');
+    expect(html).toContain('Postgres');
   });
 });

@@ -34,9 +34,10 @@ export interface SignalCardProps {
    *  renders no action rather than one that leaves a resolved row on screen. */
   onAcknowledge?: () => void;
   busy?: boolean;
-  /** Drops descriptions and the freeform box for tight surfaces (the RefChip
-   *  session panel). The question and its options still render — a compact card
-   *  is still answerable. */
+  /** Drops descriptions and the body for tight surfaces (the RefChip session
+   *  panel). The question and its options still render, and so does the freeform
+   *  box when there are NO options — dropping it there would leave a question
+   *  with no way to answer it at all. */
   compact?: boolean;
 }
 
@@ -110,7 +111,12 @@ export function SignalCard({
         </div>
       )}
 
-      {!isNotification && signal.allowFreeform && !compact && (
+      {/* Compact hides the freeform box as chrome — but only when an option can
+          carry the answer instead. Both server producers set allow_freeform with
+          options left empty whenever the assistant enumerated no choices, and
+          such a question is answerable ONLY here: no radios render, and
+          `everyQuestionAnswered` keeps Submit disabled forever. */}
+      {!isNotification && signal.allowFreeform && (!compact || options.length === 0) && (
         <textarea
           className="signal-freeform"
           placeholder={options.length > 0 ? '…or answer in your own words' : 'Type your answer'}
