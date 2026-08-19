@@ -809,4 +809,27 @@ export class ApiClient {
     if (!signalId) return Promise.reject(new Error('a signal cannot be resolved without its id'));
     return this.postJSON(`/signals/${encodeURIComponent(signalId)}/resolve`, { state });
   }
+
+  /**
+   * Answer a question. POST /signals/{id}/answer.
+   *
+   * The ONE way to answer, whichever producer raised the question and whether
+   * or not its session is still running. The server picks the delivery — hand
+   * it to a still-blocked tool call, or send it as the session's next message,
+   * restarting a reaped session and reopening an archived one — because a
+   * request_id says a park EXISTED, not that it is still live, and only the
+   * server knows which.
+   *
+   * `answers` is keyed by SIGNAL ID, which is what a form holds. The
+   * title-keyed pairing a parked hook needs is derived server-side, next to
+   * the parked tool input it has to be merged into.
+   *
+   * LOUD, like every other write here: a refusal — an incomplete answer, a
+   * question already resolved — arrives as a thrown ApiError, because it
+   * reaches here only from a click.
+   */
+  answerSignal(signalId: string, answers: Record<string, string>): Promise<unknown> {
+    if (!signalId) return Promise.reject(new Error('a signal cannot be answered without its id'));
+    return this.postJSON(`/signals/${encodeURIComponent(signalId)}/answer`, { answers });
+  }
 }

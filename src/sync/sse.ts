@@ -131,6 +131,8 @@ export async function* connectListSSE(
       yield { type: 'upsert', session: wire, summary: summaryFromManaged(wire) };
     } else if (frame.type === 'delete' && data.session_id) {
       yield { type: 'delete', sessionId: String(data.session_id) };
+    } else if (frame.type === 'signal' && data.session_id) {
+      yield { type: 'signal', sessionId: String(data.session_id) };
     }
   }
 }

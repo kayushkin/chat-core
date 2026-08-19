@@ -11,7 +11,6 @@ import {
 import {
   acknowledgeSignal,
   answerSignalRequest,
-  declineSignalQuestions,
   dismissSignal,
   everyQuestionAnswered,
   resolveSignalQuestions,
@@ -119,123 +118,85 @@ function pendingHooksBody(requestId: string): Array<{ hook: Record<string, unkno
   ];
 }
 
-describe('answering a tool-sourced question is two steps', () => {
-  it('reads the parked hook back and merges the answers UNDER its input', async () => {
-    const { api, calls } = client((url) => {
-      if (url.endsWith('/sessions/br_a/hooks/pending')) return respond(200, pendingHooksBody('req-7'));
-      if (url.endsWith('/hooks/req-7/resolve')) return respond(200, {});
-      return undefined;
+describe('answering goes through one door, whatever raised the question', () => {
+  // The client used to choose the transport. It read requestId, then either
+  // re-fetched the parked hook, merged answers under its tool input and posted
+  // that to the hook route, or posted text to /send. Both were decisions made
+  // on evidence the client did not have: a requestId says a park EXISTED, not
+  // that it is still live. The server decides now, and these pin that the
+  // client stopped trying to.
+  const answerRoute = (url: string): Response | undefined =>
+    url.includes('/answer') ? new Response('{}', { status: 200 }) : undefined;
+
+  it('posts a parked question to /answer and nowhere else', async () => {
+    const { api, calls } = client(answerRoute);
+    const request = groupSignalsByRequest([
+      question({ id: 'sig-1', request_id: 'req-7', title: 'Ship it?' }),
+      question({ id: 'sig-2', request_id: 'req-7', title: 'Which branch?' }),
+    ])[0] as SignalRequest;
+
+    await answerSignalRequest(api, request, {
+      'sig-1': { text: 'Yes' },
+      'sig-2': { option: 'main' },
     });
 
-    const first = question({ id: 'sig-1', request_id: 'req-7', title: 'Which database?' });
-    const second = question({ id: 'sig-2', request_id: 'req-7', title: 'Ship it today?' });
-    const [request] = groupSignalsByRequest([first, second]);
-
-    await answerSignalRequest(api, request!, {
-      'sig-1': { option: 'Postgres' },
-      'sig-2': { text: '  not until the migration lands  ' },
-    });
-
-    expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual([
-      `GET ${BASE}/sessions/br_a/hooks/pending`,
-      `POST ${BASE}/sessions/br_a/hooks/req-7/resolve`,
-    ]);
-
-    const resolve = calls[1]!.body as Record<string, unknown>;
-    expect(resolve.behavior).toBe('allow');
-    expect(resolve.resolved_by).toBe('user');
-    // The whole parked input survives — rebuilding it from the two signal rows
-    // would have dropped `multiSelect` and every option description.
-    expect(resolve.updated_input).toEqual({
-      ...PARKED_INPUT,
-      answers: {
-        // Keyed by signal TITLE. That is what the server minted each row's title
-        // from and what it reads back to pair an answer to its row; keyed by
-        // signal id, every answer would be dropped on the floor.
-        'Which database?': 'Postgres',
-        'Ship it today?': 'not until the migration lands',
-      },
-    });
-  });
-
-  it('fails loudly, and writes NOTHING, when the hook is no longer parked', async () => {
-    const { api, calls } = client((url) => {
-      // The session moved on: the park is gone, so there is nothing to answer.
-      if (url.endsWith('/hooks/pending')) return respond(200, []);
-      if (url.includes('/resolve')) return respond(200, {});
-      return undefined;
-    });
-
-    await expect(
-      resolveSignalQuestions(api, 'br_a', 'req-7', { 'Which database?': 'Postgres' }),
-    ).rejects.toThrow(/no longer waiting for an answer/);
-
-    // A resolve posted into the void is worse than an error: it reports success
-    // for an answer nothing received.
-    expect(calls.map((c) => c.url)).toEqual([`${BASE}/sessions/br_a/hooks/pending`]);
-  });
-
-  it('refuses a request with no request_id — that is the derived path, not this one', async () => {
-    const { api, calls } = client(() => respond(200, {}));
-    await expect(resolveSignalQuestions(api, 'br_a', '', {})).rejects.toThrow(/no request_id/);
-    expect(calls).toEqual([]);
-  });
-});
-
-describe('answering a derived question', () => {
-  it('sends the answer as the session next message, and resolves nothing', async () => {
-    const { api, calls } = client((url) =>
-      url.endsWith('/sessions/br_b/send') ? respond(200, { message_id: 'm1' }) : undefined,
-    );
-
-    // A derived signal carries no request_id, so grouping gives it a group of
-    // its own keyed by signal id.
-    const derived = question({ id: 'sig-9', session_id: 'br_b', source: 'derived', title: 'Ready to deploy?' });
-    const [request] = groupSignalsByRequest([derived]);
-    expect(request!.requestId).toBe('');
-
-    await answerSignalRequest(api, request!, { 'sig-9': { text: 'yes, go ahead' } });
-
-    // One call. No pending-hook read, no hook resolve — there is no parked hook
-    // to read or resolve, and the record closes server-side in /send.
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.url).toBe(`${BASE}/sessions/br_b/send`);
-    expect(calls[0]!.method).toBe('POST');
-    expect(calls[0]!.body).toEqual({ message: 'yes, go ahead' });
+    expect(calls[0]?.url).toContain('/signals/sig-1/answer');
+    // Keyed by SIGNAL ID. The title-keyed pairing the parked hook needs is
+    // derived server-side now, beside the parked input it merges into — the
+    // client no longer knows that pairing exists.
+    expect(calls[0]?.body).toEqual({ answers: { 'sig-1': 'Yes', 'sig-2': 'main' } });
+    // Specifically NOT the two calls the old path made.
+    expect(calls.some((c) => c.url.includes('/hooks/'))).toBe(false);
+    expect(calls.some((c) => c.url.includes('/send'))).toBe(false);
   });
 
-  it('refuses an empty answer rather than sending a blank message', async () => {
-    const { api, calls } = client(() => respond(200, {}));
-    const derived = question({ id: 'sig-9', session_id: 'br_b', source: 'derived' });
-    const [request] = groupSignalsByRequest([derived]);
-    await expect(answerSignalRequest(api, request!, { 'sig-9': { text: '   ' } })).rejects.toThrow(
-      /has to be answered/,
+  it('posts a derived question to the same route, with the same shape', async () => {
+    const { api, calls } = client(answerRoute);
+    const request = groupSignalsByRequest([
+      question({ id: 'sig-9', request_id: '', title: 'Which transport?' }),
+    ])[0] as SignalRequest;
+
+    await answerSignalRequest(api, request, { 'sig-9': { text: 'codex' } });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toContain('/signals/sig-9/answer');
+    expect(calls[0]?.body).toEqual({ answers: { 'sig-9': 'codex' } });
+  });
+
+  it('refuses a partial answer before spending a round trip', async () => {
+    // The server enforces this too, and its copy is the one that counts. This
+    // one only saves a request, so it must not be the only guard — but it must
+    // also not send.
+    const { api, calls } = client(answerRoute);
+    const request = groupSignalsByRequest([
+      question({ id: 'sig-1', request_id: 'req-7', title: 'Ship it?' }),
+      question({ id: 'sig-2', request_id: 'req-7', title: 'Which branch?' }),
+    ])[0] as SignalRequest;
+
+    await expect(answerSignalRequest(api, request, { 'sig-1': { text: 'Yes' } })).rejects.toThrow(
+      /every question/i,
     );
-    expect(calls).toEqual([]);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('surfaces a server refusal instead of swallowing it', async () => {
+    const { api } = client((url) =>
+      url.includes('/answer')
+        ? new Response('{"error":{"code":"already_resolved"}}', { status: 409 })
+        : undefined,
+    );
+    const request = groupSignalsByRequest([
+      question({ id: 'sig-9', request_id: '', title: 'Which transport?' }),
+    ])[0] as SignalRequest;
+
+    await expect(answerSignalRequest(api, request, { 'sig-9': { text: 'codex' } })).rejects.toThrow();
   });
 });
+
 
 describe('declining a parked request', () => {
-  it('denies the hook with no updated_input, and does not read the park first', async () => {
-    const { api, calls } = client((url) =>
-      url.endsWith('/hooks/req-7/resolve') ? respond(200, {}) : undefined,
-    );
 
-    await declineSignalQuestions(api, 'br_a', 'req-7');
-
-    // A deny carries no answers, so the parked input is not needed — and the
-    // server records the decision even for a request whose park is already gone.
-    expect(calls).toHaveLength(1);
-    expect(calls[0]!.url).toBe(`${BASE}/sessions/br_a/hooks/req-7/resolve`);
-    expect(calls[0]!.body).toEqual({ behavior: 'deny', resolved_by: 'user' });
-    expect(calls[0]!.body).not.toHaveProperty('updated_input');
-  });
-
-  it('refuses to decline a derived question — there is no parked call to deny', async () => {
-    const { api, calls } = client(() => respond(200, {}));
-    await expect(declineSignalQuestions(api, 'br_b', '')).rejects.toThrow(/nothing to decline/);
-    expect(calls).toEqual([]);
-  });
 });
 
 describe('the signal-level verbs (acknowledge / dismiss)', () => {
@@ -263,24 +224,6 @@ describe('the signal-level verbs (acknowledge / dismiss)', () => {
 });
 
 describe('a resolve on one surface reaches the others', () => {
-  it('announces the change in-process, so every mounted panel refetches', async () => {
-    const { api } = client((url) =>
-      url.endsWith('/hooks/req-7/resolve') ? respond(200, {}) : undefined,
-    );
-    let announced = 0;
-    const stop = subscribeToSignalChanges(() => {
-      announced += 1;
-    });
-    try {
-      await declineSignalQuestions(api, 'br_a', 'req-7');
-      expect(announced).toBe(1);
-    } finally {
-      stop();
-    }
-    // Unsubscribed listeners stop hearing about it.
-    await declineSignalQuestions(api, 'br_a', 'req-7');
-    expect(announced).toBe(1);
-  });
 });
 
 describe('the whole request resolves at once', () => {

@@ -287,4 +287,9 @@ export interface StoreModelWire {
 export type SessionListFrame =
   | { type: 'hello' }
   | { type: 'upsert'; session: ManagedSessionWire }
-  | { type: 'delete'; sessionId: string };
+  | { type: 'delete'; sessionId: string }
+  /** A session's open questions moved: one was raised, answered, dismissed or
+   *  superseded. Carries no signal payload on purpose — it says WHICH session
+   *  changed, and the reader re-reads the open set through the signals API
+   *  rather than trusting a second encoding of it on this stream. */
+  | { type: 'signal'; sessionId: string };

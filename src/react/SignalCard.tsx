@@ -10,7 +10,6 @@ import {
 import {
   acknowledgeSignal,
   answerSignalRequest,
-  declineSignalQuestions,
   dismissSignal,
   everyQuestionAnswered,
   questionsIn,
@@ -243,10 +242,6 @@ export function SignalRequestCard({
     });
   }, [run, api, questions]);
 
-  const decline = useCallback(() => {
-    void run(() => declineSignalQuestions(api, request.sessionId, request.requestId));
-  }, [run, api, request]);
-
   return (
     <div className="signal-request" data-session-id={request.sessionId} data-request-id={request.requestId}>
       {header}
@@ -276,20 +271,19 @@ export function SignalRequestCard({
             disabled={busy || !allAnswered}
             onClick={submit}
           >
-            {request.requestId ? 'Submit' : 'Send answer'}
+            Answer
           </button>
-          {/* Declining means denying a parked tool call. A derived question parked
-              nothing, so there is nothing to deny — it simply stays open until
-              the session's next turn supersedes it. */}
-          {request.requestId !== '' && (
-            <button type="button" className="signal-decline" disabled={busy} onClick={decline}>
-              Decline
-            </button>
-          )}
-          {/* Dismiss is the derived half of the same act: it says out loud that no
-              answer is coming, which is the only thing that closes a derived
-              question short of answering it. */}
-          {request.requestId === '' && allowDismissWithoutAnswer && (
+          {/* One button for "no answer is coming", not the Decline/Dismiss pair
+              this used to render.
+              The pair existed because the two producers had different verbs —
+              deny the parked tool call, or dismiss the row — and the card chose
+              between them on `requestId`. That is evidence the card does not
+              have: a requestId says a park EXISTED, not that it is still live.
+              So a question whose park had died offered Decline, the only button
+              that could not work, and never offered the one that could.
+              The server picks now: dismissing a live park denies its tool call,
+              and dismissing anything else closes the row. */}
+          {allowDismissWithoutAnswer && (
             <button type="button" className="signal-dismiss" disabled={busy} onClick={dismiss}>
               Dismiss
             </button>

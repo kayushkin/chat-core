@@ -4,6 +4,8 @@ import { DEFAULT_LIST_CACHE_LIMIT, enforceCacheBound } from '../cache/evict.js';
 import type { ChatStoreApi } from '../store/ChatStore.js';
 import type { Validator } from '../net/types.js';
 import { connectListSSE, connectSessionSSE } from './sse.js';
+import { clearOpenSignalsCache } from '../react/signals.js';
+import { announceSignalsChanged } from '../store/signalResolve.js';
 
 // L2 sync (decision D6). Owns exactly:
 //   - ONE global list SSE (list deltas → session upsert/delete)
@@ -134,6 +136,17 @@ export class SyncEngine {
           } else if (frame.type === 'delete') {
             actions.removeSession(frame.sessionId);
             void this.cache.deleteSession(frame.sessionId);
+          } else if (frame.type === 'signal') {
+            // The server says this session's open questions moved. Drop the
+            // cached open set and let the surfaces showing it re-read.
+            //
+            // This is what the 30-second TTL was standing in for. A question
+            // answered anywhere else — another tab, the CLI, an orchestrator —
+            // used to sit on screen until that lapsed, and now that answering
+            // is a real round trip through the server, someone would watch it
+            // happen.
+            clearOpenSignalsCache();
+            announceSignalsChanged();
           }
         }
       } catch {

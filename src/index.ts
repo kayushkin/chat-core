@@ -57,14 +57,11 @@ export {
 } from './react/signals.js';
 export {
   acknowledgeSignal,
-  answerDerivedQuestion,
   answerSignalRequest,
   answerTextOf,
-  declineSignalQuestions,
   dismissSignal,
   everyQuestionAnswered,
   questionsIn,
-  resolveSignalQuestions,
   subscribeToSignalChanges,
 } from './store/signalResolve.js';
 export {

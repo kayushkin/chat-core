@@ -37,7 +37,7 @@ export function subscribeToSignalChanges(listener: () => void): () => void {
   };
 }
 
-function announceSignalsChanged(): void {
+export function announceSignalsChanged(): void {
   for (const listener of signalChangeListeners) listener();
 }
 
@@ -74,74 +74,22 @@ export function everyQuestionAnswered(
 }
 
 /**
- * Answer every question in one parked request.
- *
- * `answersByTitle` is keyed by SIGNAL TITLE, which is exactly what the server
- * minted each row's title from and exactly what it reads back to pair an answer
- * with its row (`resolveSignalsForRequest` in llm-bridge-server's
- * `internal/server/signals.go`). Nothing here may key it by signal id.
- *
- * ⚠️ This is TWO steps, and the first one is not optional. The parked hook's own
- * tool input is fetched and passed back untouched UNDER the answers, because the
- * resolve verb REPLACES the tool input wholesale — rebuilding it from the signal
- * rows would silently drop whatever the record does not carry (`multiSelect`,
- * option previews). If the request is no longer parked there is nothing to
- * answer, and that is an error the user sees rather than a resolve posted into
- * the void.
- */
-export async function resolveSignalQuestions(
-  api: ApiClient,
-  sessionId: string,
-  requestId: string,
-  answersByTitle: Readonly<Record<string, string>>,
-): Promise<void> {
-  if (!requestId) throw new Error('this signal carries no request_id — nothing to resolve');
-  const pending = await api.getPendingHooks(sessionId);
-  const hook = pending.find((h) => h.requestId === requestId);
-  if (!hook) {
-    throw new Error('this question is no longer waiting for an answer — its session moved on');
-  }
-  const parkedInput = (hook.input ?? {}) as Record<string, unknown>;
-  await api.resolveHook(sessionId, {
-    requestId,
-    behavior: 'allow',
-    updatedInput: { ...parkedInput, answers: answersByTitle },
-    resolvedBy: 'user',
-  });
-  announceSignalsChanged();
-}
-
-/**
- * Answer a derived question by sending its answer as the session's next user
- * message.
- *
- * Derived signals carry no `request_id` — no hook was ever parked for them — so
- * the hook-resolve verb cannot reach them. Sending a message IS their resolve
- * verb (SESSION-SIGNALS.md, "Resolve — per kind and source").
- *
- * The record closes SERVER-SIDE, in the /send handler, not here: a derived
- * question answered from the CLI or by an orchestrator has to close the same way
- * as one answered from a card, and only the server sees all of them. So this
- * posts the message and nothing else.
- */
-export async function answerDerivedQuestion(
-  api: ApiClient,
-  sessionId: string,
-  text: string,
-): Promise<void> {
-  const message = text.trim();
-  if (!message) throw new Error('an answer cannot be empty');
-  await api.send(sessionId, message);
-  announceSignalsChanged();
-}
-
-/**
  * Submit one whole request group, whichever producer minted it.
  *
- * This is the single place that decides which verb answers which signal, so a
- * host rendering its own answer UI branches the same way the shipped card does.
- * `answersBySignalId` is keyed by signal id (what a form holds); the title
- * keying the server needs is derived here, from the group.
+ * One POST, whatever raised the question and whether or not its session is
+ * still running: the SERVER decides how the answer is delivered.
+ *
+ * This function used to make that decision. It read `requestId`, then either
+ * re-fetched the parked tool input and posted a merged payload to the hook
+ * route, or posted text to /send. Both were transport choices made on evidence
+ * the client did not have — a `requestId` says a park EXISTED, not that it is
+ * still live, and only bridge-server can tell. So the client could send an
+ * answer into a park that had already died, and every other surface wanting to
+ * answer a question had to reimplement the whole decision.
+ *
+ * `answersBySignalId` is keyed by signal id, which is what a form holds, and
+ * that is now what goes on the wire. The title-keyed pairing the parked hook
+ * needs is derived server-side, where the parked input already lives.
  */
 export async function answerSignalRequest(
   api: ApiClient,
@@ -151,41 +99,20 @@ export async function answerSignalRequest(
   const questions = questionsIn(request);
   if (questions.length === 0) throw new Error('this request has no question to answer');
   if (!everyQuestionAnswered(request, answersBySignalId)) {
-    // The whole request resolves at once, so a partial submit would answer some
-    // questions and silently discard the rest.
+    // Kept as a local guard so a form can refuse before a round trip. The
+    // server enforces it too, and the server's copy is the one that counts —
+    // this one only saves a request.
     throw new Error('every question in this request has to be answered before it can be submitted');
   }
-  if (request.requestId) {
-    const answersByTitle: Record<string, string> = {};
-    for (const signal of questions) {
-      answersByTitle[signal.title] = answerTextOf(answersBySignalId[signal.id]);
-    }
-    await resolveSignalQuestions(api, request.sessionId, request.requestId, answersByTitle);
-    return;
+  const answers: Record<string, string> = {};
+  for (const signal of questions) {
+    answers[signal.id] = answerTextOf(answersBySignalId[signal.id]);
   }
-  // A derived question has no parked hook, so it resolves by becoming the
-  // session's next user message. Grouping puts exactly one derived signal in a
-  // group, so there is one answer to send.
-  const only = questions[0] as Signal;
-  await answerDerivedQuestion(api, request.sessionId, answerTextOf(answersBySignalId[only.id]));
-}
-
-/**
- * Decline every question in one parked request.
- *
- * Unlike answering, this needs no parked input: a deny carries no
- * `updated_input`, and bridge-server records the decision (and closes the signal
- * rows) even for a request whose park is already gone. Only offered where there
- * IS a request id — a derived question parked nothing, so there is nothing to
- * deny.
- */
-export async function declineSignalQuestions(
-  api: ApiClient,
-  sessionId: string,
-  requestId: string,
-): Promise<void> {
-  if (!requestId) throw new Error('this signal carries no request_id — nothing to decline');
-  await api.resolveHook(sessionId, { requestId, behavior: 'deny', resolvedBy: 'user' });
+  // Any question in the group addresses the whole group — the server resolves
+  // the request the signal belongs to, not the one row. The first is simply
+  // the one that is always there, having just been length-checked above.
+  const [first] = questions as [Signal, ...Signal[]];
+  await api.answerSignal(first.id, answers);
   announceSignalsChanged();
 }
 
