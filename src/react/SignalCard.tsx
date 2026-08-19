@@ -4,7 +4,7 @@ import {
   SIGNAL_KIND_NOTIFICATION,
   SIGNAL_SEVERITY_WARN,
   type Signal,
-  type SignalAnswer,
+  type SignalAnswerDraft,
   type SignalRequest,
 } from '../net/signals.js';
 import {
@@ -24,10 +24,10 @@ import {
 
 export interface SignalCardProps {
   signal: Signal;
-  /** The answer being composed for this signal. A signal is answered with an
-   *  option or with freeform text, NEVER both — picking one clears the other. */
-  answer?: SignalAnswer;
-  onChangeAnswer?: (answer: SignalAnswer) => void;
+  /** The answer being composed for this signal. A signal is answered with
+   *  options or with freeform text, NEVER both — picking one clears the other. */
+  answer?: SignalAnswerDraft;
+  onChangeAnswer?: (answer: SignalAnswerDraft) => void;
   /** Acknowledge a notification. Left optional because a surface that cannot
    *  refetch afterwards is better off not offering the button at all — the card
    *  renders no action rather than one that leaves a resolved row on screen. */
@@ -59,8 +59,27 @@ export function SignalCard({
 }: SignalCardProps): JSX.Element {
   const isNotification = signal.kind === SIGNAL_KIND_NOTIFICATION;
   const options = signal.options;
-  const chosen = answer?.option ?? '';
+  const chosen = answer?.pickedOptionValues ?? [];
   const text = answer?.text ?? '';
+  // The record is the ONLY authority on this. Never inferred from the option
+  // count or the question's wording: offering checkboxes for a pick-one
+  // question lets a human send an answer the tool will refuse, and offering
+  // radios for a pick-many one silently drops every choice after the first.
+  const multiple = !isNotification && signal.allowMultipleOptions;
+
+  /** Toggling an option replaces the composed answer, which is what clears any
+   *  typed text. On a pick-one question a second choice replaces the first; on
+   *  a pick-many one it is added or removed. */
+  const toggleOption = (value: string) => {
+    if (!multiple) {
+      onChangeAnswer?.({ pickedOptionValues: [value] });
+      return;
+    }
+    const next = chosen.includes(value)
+      ? chosen.filter((v) => v !== value)
+      : [...chosen, value];
+    onChangeAnswer?.({ pickedOptionValues: next });
+  };
 
   return (
     <div className={`signal-card${compact ? ' signal-card-compact' : ''}`} data-signal-id={signal.id}>
@@ -83,19 +102,26 @@ export function SignalCard({
             // separate machine value set it to the label, so the label is the
             // fallback rather than an invention.
             const value = option.value || option.label;
+            const picked = chosen.includes(value);
             return (
               <label
                 key={value}
-                className={`signal-option${chosen === value ? ' signal-option-selected' : ''}`}
+                className={`signal-option${picked ? ' signal-option-selected' : ''}`}
               >
                 <input
-                  type="radio"
+                  // Checkbox against radio is the whole visible difference
+                  // between "pick any that apply" and "pick one", and a human
+                  // reads it before touching anything. It is driven straight off
+                  // the record so the form cannot promise a choice the tool
+                  // will not take.
+                  type={multiple ? 'checkbox' : 'radio'}
+                  // `name` groups radios so picking one clears the rest. Left on
+                  // the checkboxes too: it is inert there, and dropping it would
+                  // mean two branches for one attribute.
                   name={`signal-${signal.id}`}
-                  checked={chosen === value}
+                  checked={picked}
                   disabled={busy || !onChangeAnswer}
-                  // An option and freeform text are exclusive: this replaces the
-                  // composed answer rather than merging into it.
-                  onChange={() => onChangeAnswer?.({ option: value })}
+                  onChange={() => toggleOption(value)}
                 />
                 <span className="signal-option-body">
                   <span className="signal-option-label">{option.label}</span>
@@ -186,14 +212,14 @@ export function SignalRequestCard({
   allowDismissWithoutAnswer,
 }: SignalRequestCardProps): JSX.Element {
   const { api } = useChatContext();
-  const [answers, setAnswers] = useState<Record<string, SignalAnswer>>({});
+  const [answers, setAnswers] = useState<Record<string, SignalAnswerDraft>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const questions = questionsIn(request);
   const allAnswered = everyQuestionAnswered(request, answers);
 
-  const setAnswer = useCallback((signalId: string, answer: SignalAnswer) => {
+  const setAnswer = useCallback((signalId: string, answer: SignalAnswerDraft) => {
     setAnswers((prev) => ({ ...prev, [signalId]: answer }));
   }, []);
 

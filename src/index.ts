@@ -81,6 +81,7 @@ export {
   SIGNAL_SURFACE_KANBAN,
   type Signal,
   type SignalAnswer,
+  type SignalAnswerDraft,
   type SignalAnswerWire,
   type SignalOption,
   type SignalOptionWire,

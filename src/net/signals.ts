@@ -55,6 +55,8 @@ export interface SignalWire {
   body?: string;
   options?: SignalOptionWire[];
   allow_freeform?: boolean;
+  /** Whether more than one of `options` may be picked at once. */
+  allow_multiple_options?: boolean;
   answer?: SignalAnswerWire | null;
   severity?: string;
   state: string;
@@ -72,10 +74,28 @@ export interface SignalOption {
   description: string;
 }
 
-/** camelCase of {@link SignalAnswerWire}. An answer carries an option or text,
- *  never both — see `answerTextOf` in `store/signalResolve.ts`. */
+/** camelCase of {@link SignalAnswerWire}: the answer a RESOLVED question was
+ *  closed with, as the server recorded it. Read-only here — nothing in this
+ *  client composes one. */
 export interface SignalAnswer {
   option?: string;
+  text?: string;
+}
+
+/** An answer being COMPOSED in a form, before anything is sent.
+ *
+ *  Deliberately not {@link SignalAnswer}. That type mirrors the server's record
+ *  and carries `option` singular, which cannot hold the answer to a question
+ *  that allows several — the two were one type only while every question was
+ *  pick-one, and sharing them again would put the multi-select answer somewhere
+ *  it does not fit.
+ *
+ *  A picked option and typed text stay exclusive: choosing either clears the
+ *  other. See `answerTextOf`. */
+export interface SignalAnswerDraft {
+  /** The `value` of every option picked. More than one entry only when the
+   *  signal's `allowMultipleOptions` says so. */
+  pickedOptionValues?: readonly string[];
   text?: string;
 }
 
@@ -95,6 +115,10 @@ export interface Signal {
   body: string;
   options: SignalOption[];
   allowFreeform: boolean;
+  /** Whether more than one option may be picked. Decides checkboxes against
+   *  radio buttons, and it is the ONLY thing that does — a card must never
+   *  guess multi-ness from the option count or the question's wording. */
+  allowMultipleOptions: boolean;
   /** null while the signal is open. NOT defaulted to an empty answer: "nobody
    *  has answered" and "answered with nothing" are different facts. */
   answer: SignalAnswer | null;
@@ -169,6 +193,11 @@ export function signalFromWire(w: SignalWire): Signal {
       description: o.description ?? '',
     })),
     allowFreeform: w.allow_freeform ?? false,
+    // Defaults FALSE, and that is the safe direction: a server that predates
+    // the field, or a producer that omits it, asked a pick-one question.
+    // Defaulting the other way would offer checkboxes for a question the tool
+    // will only accept one answer to.
+    allowMultipleOptions: w.allow_multiple_options ?? false,
     answer: w.answer ?? null,
     severity: w.severity ?? '',
     state: w.state,

@@ -5,14 +5,6 @@ import { groupSignalsByRequest, type SignalRequest } from '../net/signals.js';
 
 export interface SessionSignalsProps {
   sessionId: string;
-  /** `requestId`s the surrounding surface is already rendering itself. The
-   *  raising session's own chat passes its parked hooks: a permissions banner
-   *  renders those from the LIVE tool input, with the multi-select and option
-   *  previews the signal record does not carry, so showing a signal card for the
-   *  same question underneath it would be the same question twice. What is left
-   *  is what the banner cannot show — signals whose park has gone (a harness
-   *  restart), and derived ones. */
-  excludeRequestIds?: readonly string[];
   compact?: boolean;
   /** Heading above the cards. Omit for surfaces tight enough that the card's own
    *  "question"/"notification" label is heading enough. */
@@ -21,31 +13,31 @@ export interface SessionSignalsProps {
 
 /**
  * SessionSignals is the open chat signals raised by ONE session, answerable in
- * place. Renders nothing when the session has none, when the surrounding surface
- * already renders all of them, or when this bridge-server has no signals route.
+ * place. Renders nothing when the session has none, or when this bridge-server
+ * has no signals route.
+ *
+ * It used to take `excludeRequestIds`, so a host could drop the questions its
+ * own permission banner was already drawing from the live tool input. That prop
+ * was the last place a client still had to know which producer raised a
+ * question. It is gone because the duplication it worked around is: the record
+ * now carries `allowMultipleOptions`, which was the one thing the banner could
+ * render and the card could not, so a host has no reason left to draw a second
+ * form for a question that is already on this one.
  *
  * Ported from bridge-ui's `SessionSignals.tsx`.
  */
 export function SessionSignals({
   sessionId,
-  excludeRequestIds,
   compact,
   title,
 }: SessionSignalsProps): JSX.Element | null {
   const { signals, error, reload } = useOpenSignals(sessionId);
 
-  const excluded = excludeRequestIds ?? [];
-  // A derived signal has no request id and can never be the banner's; only a
-  // tool signal is ever excluded.
-  const shown = signals.filter((s) => s.requestId === '' || !excluded.includes(s.requestId));
-
   if (error !== null) return <p className="signal-error">Couldn’t load signals: {error}</p>;
 
-  // Grouped from what is actually on screen rather than from the hook's own
-  // `requests`, because the exclusion above changes which signals those are.
   return (
     <SignalRequestList
-      requests={groupSignalsByRequest(shown)}
+      requests={groupSignalsByRequest(signals)}
       compact={compact}
       title={title}
       onResolved={reload}

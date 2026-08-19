@@ -12,20 +12,25 @@ import {
   acknowledgeSignal,
   answerSignalRequest,
   dismissSignal,
+  announceSignalsChanged,
+  answerTextOf,
   everyQuestionAnswered,
-  resolveSignalQuestions,
   subscribeToSignalChanges,
 } from '../src/store/signalResolve.js';
 import { SignalCard } from '../src/react/SignalCard.js';
 import { SignalRequestList } from '../src/react/SessionSignals.js';
 
-// Answering a session signal is the one place in this package where a write is
-// preceded by a mandatory read, and the reason is invisible from the request
-// itself: the hook-resolve verb REPLACES the parked tool input wholesale, so
-// anything the signal record does not carry (multiSelect, option previews) is
-// destroyed unless the parked input is fetched back and merged under the
-// answers. Every case here exists because getting one of these wrong produces a
-// resolve the server accepts and a question the user answered wrongly, silently.
+// Answering a session signal used to be the one place in this package where a
+// write was preceded by a mandatory read: the hook-resolve verb REPLACES the
+// parked tool input wholesale, so anything the record did not carry was
+// destroyed unless the client fetched the parked input back and merged the
+// answers under it.
+//
+// None of that is here any more. POST /signals/{id}/answer is the one door, and
+// the server does the merge on the side of the wire where the parked input
+// already lives. What is left to pin is the shape of what this client sends and
+// the shape of what it draws — which is why the cases below are about ONE
+// request, and about a card that must not promise a choice the tool will refuse.
 
 const BASE = '/api/bridge';
 
@@ -83,41 +88,6 @@ function question(overrides: Partial<SignalWire>): Signal {
   });
 }
 
-/** The parked AskUserQuestion input, as the harness left it. `multiSelect` and
- *  the option `description`s are the fields the signal record does NOT carry —
- *  they are why the pending-hook refetch is mandatory. */
-const PARKED_INPUT = {
-  questions: [
-    {
-      question: 'Which database?',
-      multiSelect: false,
-      options: [
-        { label: 'Postgres', description: 'the one already deployed' },
-        { label: 'SQLite', description: 'file-local' },
-      ],
-    },
-    { question: 'Ship it today?', multiSelect: true, options: [{ label: 'yes' }, { label: 'no' }] },
-  ],
-};
-
-function pendingHooksBody(requestId: string): Array<{ hook: Record<string, unknown> }> {
-  // The endpoint answers with whole `msg.Event`s, so the hook rides under
-  // `.hook` — that is what `handleListPendingHooks` writes, and what
-  // `ApiClient.getPendingHooks` unwraps.
-  return [
-    {
-      hook: {
-        request_id: requestId,
-        event: 'PreToolUse',
-        phase: 'awaiting_resolution',
-        source: 'user_input',
-        tool_name: 'AskUserQuestion',
-        input: PARKED_INPUT,
-      },
-    },
-  ];
-}
-
 describe('answering goes through one door, whatever raised the question', () => {
   // The client used to choose the transport. It read requestId, then either
   // re-fetched the parked hook, merged answers under its tool input and posted
@@ -137,7 +107,7 @@ describe('answering goes through one door, whatever raised the question', () => 
 
     await answerSignalRequest(api, request, {
       'sig-1': { text: 'Yes' },
-      'sig-2': { option: 'main' },
+      'sig-2': { pickedOptionValues: ['main'] },
     });
 
     expect(calls).toHaveLength(1);
@@ -195,8 +165,29 @@ describe('answering goes through one door, whatever raised the question', () => 
 });
 
 
-describe('declining a parked request', () => {
+describe('closing a question nobody is going to answer', () => {
+  it('sends dismiss, and lets the server decide what that means for a live park', async () => {
+    // There used to be two buttons here, Decline and Dismiss, and the card
+    // picked between them on `requestId` — deny the parked tool call, or close
+    // the row. That was a decision made on evidence the client does not have: a
+    // requestId says a park EXISTED, not that it is still live. So a question
+    // whose park had died offered Decline, the only verb that could not work.
+    //
+    // One verb now, and the server denies the tool call when the park is still
+    // there. The point of this case is that the client sends the SAME request
+    // either way.
+    const { api, calls } = client((url) => (url.includes('/signals/') ? respond(200, {}) : undefined));
 
+    await dismissSignal(api, 'sig-from-a-live-park');
+    await dismissSignal(api, 'sig-that-never-parked-anything');
+
+    expect(calls.map((c) => c.url)).toEqual([
+      `${BASE}/signals/sig-from-a-live-park/resolve`,
+      `${BASE}/signals/sig-that-never-parked-anything/resolve`,
+    ]);
+    expect(calls[0]!.body).toEqual(calls[1]!.body);
+    expect(calls[0]!.body).toEqual({ state: 'dismissed' });
+  });
 });
 
 describe('the signal-level verbs (acknowledge / dismiss)', () => {
@@ -224,6 +215,29 @@ describe('the signal-level verbs (acknowledge / dismiss)', () => {
 });
 
 describe('a resolve on one surface reaches the others', () => {
+  it('announces to every subscriber, and stops on unsubscribe', async () => {
+    // Two surfaces can show the same session at once — a sidebar dropdown and
+    // the chat pane below it. Answering in one has to reach the other, or the
+    // second goes on offering a question that is already closed.
+    let sidebar = 0;
+    let chatPane = 0;
+    const stopSidebar = subscribeToSignalChanges(() => { sidebar += 1; });
+    const stopChatPane = subscribeToSignalChanges(() => { chatPane += 1; });
+
+    const { api } = client((url) => (url.includes('/signals/') ? respond(200, {}) : undefined));
+    await dismissSignal(api, 'sig-1');
+
+    expect(sidebar).toBe(1);
+    expect(chatPane).toBe(1);
+
+    // An unmounted surface must stop hearing about it, or a refetch fires
+    // against a component that is gone.
+    stopSidebar();
+    announceSignalsChanged();
+    expect(sidebar).toBe(1);
+    expect(chatPane).toBe(2);
+    stopChatPane();
+  });
 });
 
 describe('the whole request resolves at once', () => {
@@ -239,12 +253,12 @@ describe('the whole request resolves at once', () => {
     const [request] = groupSignalsByRequest([first, second, notification]);
 
     expect(everyQuestionAnswered(request!, {})).toBe(false);
-    expect(everyQuestionAnswered(request!, { 'sig-1': { option: 'Postgres' } })).toBe(false);
+    expect(everyQuestionAnswered(request!, { 'sig-1': { pickedOptionValues: ['Postgres'] } })).toBe(false);
     // A notification rides in the group but is acknowledged separately, so it
     // must never gate the submit.
     expect(
       everyQuestionAnswered(request!, {
-        'sig-1': { option: 'Postgres' },
+        'sig-1': { pickedOptionValues: ['Postgres'] },
         'sig-2': { text: 'no' },
       }),
     ).toBe(true);
@@ -253,7 +267,7 @@ describe('the whole request resolves at once', () => {
     // state wrong still cannot resolve a request with unanswered questions.
     const { api, calls } = client(() => respond(200, {}));
     await expect(
-      answerSignalRequest(api, request!, { 'sig-1': { option: 'Postgres' } }),
+      answerSignalRequest(api, request!, { 'sig-1': { pickedOptionValues: ['Postgres'] } }),
     ).rejects.toThrow(/every question/);
     expect(calls).toEqual([]);
   });
@@ -275,6 +289,64 @@ describe('the whole request resolves at once', () => {
       ['br_a', '', 1],
       ['br_a', '', 1],
     ]);
+  });
+});
+
+describe('a question that allows more than one answer', () => {
+  // This is the whole of what the permission banner could do and the card could
+  // not. dashv2 drew two forms for one parked AskUserQuestion — a banner built
+  // from the live tool input, and a signal card built from the record — and
+  // multiSelect existed only in the first. Folding the banner away is only
+  // honest if the card can render this, so these cases are the fold's floor.
+
+  it('draws checkboxes, and a pick-one question draws radios', () => {
+    const many = question({ id: 'sig-m', allow_multiple_options: true,
+      options: [{ label: 'a.go', value: 'a.go' }, { label: 'b.go', value: 'b.go' }] });
+    const one = question({ id: 'sig-o',
+      options: [{ label: 'Yes', value: 'Yes' }, { label: 'No', value: 'No' }] });
+
+    expect(renderToStaticMarkup(createElement(SignalCard, { signal: many })))
+      .toContain('type="checkbox"');
+    // Not merely "contains radio" — the pick-many form must contain NO radio at
+    // all, or the two controls disagree about the same question on one card.
+    expect(renderToStaticMarkup(createElement(SignalCard, { signal: many })))
+      .not.toContain('type="radio"');
+    expect(renderToStaticMarkup(createElement(SignalCard, { signal: one })))
+      .toContain('type="radio"');
+    expect(renderToStaticMarkup(createElement(SignalCard, { signal: one })))
+      .not.toContain('type="checkbox"');
+  });
+
+  it('reads the flag off the record and never infers it from the options', () => {
+    // Two options and no flag is a pick-one question. Guessing multi-ness from
+    // the option count would let a human send back an answer the tool refuses,
+    // with nothing on screen to say the extra choice was never allowed.
+    const twoOptionsNoFlag = question({
+      options: [{ label: 'a', value: 'a' }, { label: 'b', value: 'b' }],
+    });
+    expect(twoOptionsNoFlag.allowMultipleOptions).toBe(false);
+    expect(renderToStaticMarkup(createElement(SignalCard, { signal: twoOptionsNoFlag })))
+      .toContain('type="radio"');
+  });
+
+  it('comma-joins several picked options, which is what the tool schema takes', () => {
+    // AskUserQuestion accepts one string per question and reads a multiSelect
+    // answer as a comma-joined list. The banner joined them exactly this way,
+    // so the fold changed nothing about what reaches the tool.
+    expect(answerTextOf({ pickedOptionValues: ['a.go', 'b.go'] })).toBe('a.go, b.go');
+    expect(answerTextOf({ pickedOptionValues: ['a.go'] })).toBe('a.go');
+    // Picked options win over stale text: the card clears one when the other is
+    // touched, and this is the reader that holds the rule for anything else.
+    expect(answerTextOf({ pickedOptionValues: ['a.go'], text: 'left over' })).toBe('a.go');
+    expect(answerTextOf({ pickedOptionValues: [], text: 'typed' })).toBe('typed');
+    expect(answerTextOf(undefined)).toBe('');
+  });
+
+  it('counts a multi-select question as answered once any option is picked', () => {
+    const many = question({ id: 'sig-m', request_id: 'req-9', allow_multiple_options: true });
+    const [request] = groupSignalsByRequest([many]);
+    expect(everyQuestionAnswered(request!, { 'sig-m': { pickedOptionValues: [] } })).toBe(false);
+    expect(everyQuestionAnswered(request!, { 'sig-m': { pickedOptionValues: ['a.go'] } })).toBe(true);
   });
 });
 
@@ -324,7 +396,7 @@ describe('SignalCard reads no context', () => {
     // raising session's chat, in a cross-session inbox, and inside ANOTHER
     // session's RefChip panel, because it never asks which session is active.
     const html = renderToStaticMarkup(
-      createElement(SignalCard, { signal, answer: { option: 'pg' } }),
+      createElement(SignalCard, { signal, answer: { pickedOptionValues: ['pg'] } }),
     );
     expect(html).toContain('Which database?');
     expect(html).toContain('Postgres');

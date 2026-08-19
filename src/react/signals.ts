@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useChatContext } from './context.js';
-import { groupSignalsByRequest, type Signal, type SignalAnswer, type SignalRequest } from '../net/signals.js';
+import { groupSignalsByRequest, type Signal, type SignalAnswerDraft, type SignalRequest } from '../net/signals.js';
 import { answerSignalRequest, subscribeToSignalChanges } from '../store/signalResolve.js';
 
 // Data layer for session signals — the open questions and notifications a
@@ -64,7 +64,7 @@ export interface OpenSignalsState {
    */
   resolve: (
     request: SignalRequest,
-    answersBySignalId: Readonly<Record<string, SignalAnswer>>,
+    answersBySignalId: Readonly<Record<string, SignalAnswerDraft>>,
   ) => Promise<void>;
 }
 
@@ -76,11 +76,12 @@ function messageOf(e: unknown): string {
  * Open chat signals for one session, or across every session when `sessionId` is
  * omitted.
  *
- * There is no signal event on the SSE stream yet, so freshness comes from three
- * places and none of them is a timer: the 30s cache TTL, an explicit `reload`,
- * and the in-process announcement every resolve makes — which is what keeps two
- * surfaces showing the same session from disagreeing about whether its question
- * is still open.
+ * Freshness comes from four places and none of them is a timer: the `signal`
+ * frame on the session-events stream, which is how a question closed by anything
+ * OUTSIDE this tab reaches it (the session answered it itself, another client
+ * did, a turn ended and superseded it); the in-process announcement every local
+ * resolve makes, which keeps two surfaces in the same tab from disagreeing; an
+ * explicit `reload`; and, last, the 30s cache TTL.
  */
 export function useOpenSignals(sessionId?: string): OpenSignalsState {
   const { api } = useChatContext();
@@ -144,7 +145,7 @@ export function useOpenSignals(sessionId?: string): OpenSignalsState {
   const requests = useMemo(() => groupSignalsByRequest(signals), [signals]);
 
   const resolve = useCallback(
-    (request: SignalRequest, answersBySignalId: Readonly<Record<string, SignalAnswer>>) =>
+    (request: SignalRequest, answersBySignalId: Readonly<Record<string, SignalAnswerDraft>>) =>
       answerSignalRequest(api, request, answersBySignalId),
     [api],
   );

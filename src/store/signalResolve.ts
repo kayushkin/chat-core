@@ -4,7 +4,7 @@ import {
   SIGNAL_STATE_ACKNOWLEDGED,
   SIGNAL_STATE_DISMISSED,
   type Signal,
-  type SignalAnswer,
+  type SignalAnswerDraft,
   type SignalRequest,
 } from '../net/signals.js';
 
@@ -21,8 +21,9 @@ import {
 /** Every mounted signal surface reads the same records, so a resolve on one has
  *  to reach the others: answering in a sidebar inbox while a RefChip panel is
  *  open on the same session otherwise leaves the panel offering a question that
- *  is already answered. There is no signal event on the SSE stream yet, so the
- *  verbs below announce it in-process and every subscriber refetches.
+ *  is already answered. The server's `signal` frame covers changes made outside
+ *  this tab; this announcement covers the one the tab just made itself, without
+ *  waiting for the round trip back.
  *
  *  This is a refetch trigger, NOT a cache — each surface still asks the server
  *  what is open, so the server stays the single source of truth for state. */
@@ -41,14 +42,23 @@ export function announceSignalsChanged(): void {
   for (const listener of signalChangeListeners) listener();
 }
 
-/** What goes on the wire for one signal: the picked option's value, or the
- *  typed text. Empty means unanswered.
+/** What goes on the wire for one signal: the picked options, or the typed text.
+ *  Empty means unanswered.
  *
- *  A signal is answered with an option OR with freeform text, never both —
- *  picking one clears the other in the card, and this is the reader that holds
- *  the same rule for anything composing an answer without the card. */
-export function answerTextOf(answer: SignalAnswer | undefined): string {
-  return (answer?.option || answer?.text || '').trim();
+ *  A signal is answered with options OR with freeform text, never both — picking
+ *  one clears the other in the card, and this is the reader that holds the same
+ *  rule for anything composing an answer without the card.
+ *
+ *  Several picked options join with ', '. That is not a display choice: the
+ *  answer wire is one string per question, and a comma-joined list is what
+ *  AskUserQuestion's own input schema accepts for a multiSelect answer. The
+ *  permission banner that used to render these questions joined them the same
+ *  way, so folding it into the card changed nothing about what the tool
+ *  receives. */
+export function answerTextOf(answer: SignalAnswerDraft | undefined): string {
+  const picked = (answer?.pickedOptionValues ?? []).filter((v) => v !== '');
+  if (picked.length > 0) return picked.join(', ');
+  return (answer?.text ?? '').trim();
 }
 
 /** The signals in a request that need an ANSWER. Notifications ride in the same
@@ -65,7 +75,7 @@ export function questionsIn(request: SignalRequest): Signal[] {
  *  true. */
 export function everyQuestionAnswered(
   request: SignalRequest,
-  answersBySignalId: Readonly<Record<string, SignalAnswer>>,
+  answersBySignalId: Readonly<Record<string, SignalAnswerDraft>>,
 ): boolean {
   const questions = questionsIn(request);
   return (
@@ -94,7 +104,7 @@ export function everyQuestionAnswered(
 export async function answerSignalRequest(
   api: ApiClient,
   request: SignalRequest,
-  answersBySignalId: Readonly<Record<string, SignalAnswer>>,
+  answersBySignalId: Readonly<Record<string, SignalAnswerDraft>>,
 ): Promise<void> {
   const questions = questionsIn(request);
   if (questions.length === 0) throw new Error('this request has no question to answer');
