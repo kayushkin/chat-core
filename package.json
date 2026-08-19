@@ -2,6 +2,26 @@
   "name": "@kayushkin/chat-core",
   "version": "0.0.1",
   "description": "Framework-light data layer for the dashv2 chat surface: in-memory store, IndexedDB cache, SSE sync engine, and a non-destructive turn reducer. Renders from memory; the network only reconciles.",
+  "license": "MIT",
+  "author": "Slava Kayushkin <slava@kayushkin.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kayushkin/chat-core.git"
+  },
+  "homepage": "https://github.com/kayushkin/chat-core#readme",
+  "bugs": {
+    "url": "https://github.com/kayushkin/chat-core/issues"
+  },
+  "keywords": [
+    "chat",
+    "sse",
+    "indexeddb",
+    "zustand",
+    "react",
+    "offline-first",
+    "optimistic-ui",
+    "data-layer"
+  ],
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",

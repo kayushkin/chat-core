@@ -21,3 +21,6 @@ secrets.*
 # Scratch output from scripts/sabotage-failure-value.py and its scan
 mutation-results.json
 failure-value-tests.json
+
+# Playwright/vitest run output
+test-results/
