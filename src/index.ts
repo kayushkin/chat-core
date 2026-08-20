@@ -16,6 +16,7 @@ export {
   useSessionInfo,
   useManagedSession,
   useSessionControls,
+  useHarness,
   useHarnessCapabilities,
   useModels,
   useSessionCost,

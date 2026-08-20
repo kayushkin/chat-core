@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from 'zustand';
 import type {
   Entry,
+  HarnessMeta,
   HookResolveInput,
   ManagedSessionDetail,
   ModelOption,
@@ -907,6 +908,32 @@ export function useHarnessCapabilities(harnessId: string | null): Set<string> {
   useEnsureHarnesses();
   const harnesses = useStore(store, (s) => s.harnesses);
   return useMemo(() => harnessCapabilities(harnesses, harnessId), [harnesses, harnessId]);
+}
+
+/**
+ * A harness's whole registry row, or null while the registry is loading and for a
+ * harness it does not list.
+ *
+ * ⚠️ `capabilities` is NOT the whole of what a harness reports, and reading it as
+ * though it were is the mistake this exists to prevent. `pty` is a top-level boolean
+ * on the row — `GET /harnesses` returns `claude_code` with `pty: true` and
+ * `capabilities: ['compact','fork','model','tools','system_prompt']`, no `'pty'` among
+ * them — so `capabilities.has('pty')` is false for every harness that supports it, and
+ * a control gated that way would never appear. `supportedProviders`,
+ * `supportedPermissionModes` and `supportsDisableNetwork` are the same shape.
+ *
+ * Returns the row rather than a boolean per field, so the next such question needs no
+ * new hook. Same registry, same cache, same single fetch as
+ * `useHarnessCapabilities` — nothing extra goes on the wire.
+ */
+export function useHarness(harnessId: string | null): HarnessMeta | null {
+  const { store } = useChatContext();
+  useEnsureHarnesses();
+  const harnesses = useStore(store, (s) => s.harnesses);
+  return useMemo(
+    () => (harnessId ? (harnesses?.find((h) => h.name === harnessId) ?? null) : null),
+    [harnesses, harnessId],
+  );
 }
 
 /** The models for the controls-bar picker, from the CANONICAL `GET /models` registry
