@@ -678,6 +678,15 @@ function oneLine(s: string): string {
   return s.replace(/\s+/g, ' ').trim();
 }
 
+/** One line, capped. Returns the flattened string with an ellipsis when it had
+ *  to cut. `oneLine` above is uncapped and stays that way — the two callers
+ *  want different things, and a cap on the shared helper would silently
+ *  truncate every other row type. */
+function oneLineCapped(s: string, max: number): string {
+  const flat = oneLine(s);
+  return flat.length > max ? flat.slice(0, max) + '…' : flat;
+}
+
 function asString(v: unknown): string | undefined {
   return typeof v === 'string' && v.length > 0 ? v : undefined;
 }
@@ -707,9 +716,135 @@ function toolText(e: Entry): string | undefined {
   return s.length > 0 ? s : undefined;
 }
 
+/** How long a tool's one-line preview may run before it is cut.
+ *
+ *  The timeline draws one row per event and the row is a flex line, so an
+ *  uncapped preview is not merely ugly — a 40 KB `tool_result` string reaches
+ *  the DOM in full and every row of a long session carries one. */
+const TOOL_SNIPPET_MAX = 80;
+
+/** The input keys worth showing, best first.
+ *
+ *  A tool's arguments are not equally identifying. `command` tells you what a
+ *  Bash call did; `description` is the model's prose about it, and `file_path`
+ *  says which file an Edit touched while its `old_string`/`new_string` are the
+ *  bulk of the payload. Picking the first key that is present puts the
+ *  identifying argument on the row and leaves the rest to `fullText`.
+ *
+ *  Ported from bridge-ui's `chat/utils.ts` `toolSnippet`, which the original
+ *  chat's timeline has always used. Keep the order in step with it. */
+const TOOL_SNIPPET_KEYS = [
+  'command',
+  'file_path',
+  'path',
+  'pattern',
+  'url',
+  'query',
+  'description',
+  'prompt',
+] as const;
+
+/** A TodoWrite call's input is a whole todo list, and every key on it is an
+ *  array — so the generic path below can only ever say `todos[7]`. Count the
+ *  statuses instead and name the one in progress, which is the single thing a
+ *  reader wants from that row. */
+function formatTodoWrite(todos: unknown): string | undefined {
+  if (!Array.isArray(todos)) return undefined;
+  let done = 0;
+  let active = 0;
+  let pending = 0;
+  let current: string | undefined;
+  for (const raw of todos) {
+    if (!raw || typeof raw !== 'object') continue;
+    const todo = raw as { status?: string; content?: string; activeForm?: string };
+    if (todo.status === 'completed') done++;
+    else if (todo.status === 'in_progress') {
+      active++;
+      current = todo.activeForm || todo.content || current;
+    } else pending++;
+  }
+  const total = todos.length;
+  const bits: string[] = [`${total} todo${total === 1 ? '' : 's'}`];
+  const counts: string[] = [];
+  if (done) counts.push(`${done}✓`);
+  if (active) counts.push(`${active}⏺`);
+  if (pending) counts.push(`${pending}○`);
+  if (counts.length) bits.push(`(${counts.join(' ')})`);
+  if (current) bits.push(`— ${oneLineCapped(current, 60)}`);
+  return bits.join(' ');
+}
+
+/**
+ * The one line that says what a tool call was ASKED to do.
+ *
+ * ⚠️ Reads the input and never the result, and that is the whole point of it.
+ * `toolText` above joins both into `input → result`, which is what this row
+ * used to show, and the result is the bigger half by orders of magnitude — a
+ * Bash call reads `{"command":"npm run build","description":"…"} → {"stdout":"…`
+ * and the command, the only part that identifies the row, is buried behind the
+ * JSON punctuation of its own arguments. Whether the call SUCCEEDED is already
+ * on the row twice, as the icon and as the tone, so the result was paying for
+ * the line and answering a question the row had answered.
+ *
+ * `toolText` is still what `fullText` carries, so the result is one hover away
+ * and nothing a reader could see before is gone.
+ *
+ * Returns '' when there is nothing worth saying — no input, or an input with no
+ * keys. The caller leaves `detail` unset rather than drawing an empty span.
+ */
+function toolSnippet(e: Entry): string {
+  const input = e.toolInput;
+  if (input === undefined || input === null) return '';
+  // A string input has no keys to prefer; it IS the argument.
+  if (typeof input === 'string') return oneLineCapped(input, TOOL_SNIPPET_MAX);
+  if (typeof input !== 'object') return oneLineCapped(String(input), TOOL_SNIPPET_MAX);
+
+  const record = input as Record<string, unknown>;
+  const keys = Object.keys(record);
+  if (keys.length === 0) return '';
+
+  if (e.toolName === 'TodoWrite') {
+    const summary = formatTodoWrite(record.todos);
+    if (summary) return summary;
+  }
+
+  for (const key of TOOL_SNIPPET_KEYS) {
+    const value = record[key];
+    if (typeof value === 'string' && value) {
+      return `${key}=${oneLineCapped(value, TOOL_SNIPPET_MAX)}`;
+    }
+  }
+
+  // No preferred key. Fall back to the first one the input actually has, which
+  // at least names the shape of the call rather than dumping it.
+  //
+  // `keys` is non-empty — the guard above returned for the empty case — but the
+  // index signature says otherwise under `noUncheckedIndexedAccess`, so the
+  // check is written out rather than asserted away with `!`.
+  const firstKey = keys[0];
+  if (firstKey === undefined) return '';
+  const first = record[firstKey];
+  if (typeof first === 'string') return `${firstKey}=${oneLineCapped(first, TOOL_SNIPPET_MAX)}`;
+  if (Array.isArray(first)) return `${firstKey}[${first.length}]`;
+  return oneLineCapped(keys.join(','), TOOL_SNIPPET_MAX);
+}
+
 function makeItem(
   e: Entry,
-  o: { icon: string; label: string; tone: TimelineTone; text?: string; keySuffix?: string },
+  o: {
+    icon: string;
+    label: string;
+    tone: TimelineTone;
+    text?: string;
+    /** The rendered one-liner, when it is not just `text` flattened.
+     *
+     *  Only tool rows pass this. For every other row the preview IS the source
+     *  text with its whitespace collapsed, so deriving it is right; a tool row
+     *  picks out the one identifying argument instead (`toolSnippet`) while
+     *  `fullText` keeps the whole input-and-result for the hover. */
+    detail?: string;
+    keySuffix?: string;
+  },
 ): TimelineItem {
   const item: TimelineItem = {
     // A task's spawn and finish can come off the SAME entry when the harness
@@ -722,7 +857,10 @@ function makeItem(
     ts: e.ts,
     tone: o.tone,
   };
-  const line = o.text ? oneLine(o.text) : '';
+  // `detail` and `fullText` are set together or not at all, so a row never
+  // offers a hover that repeats what is already on screen — or, worse, a
+  // hover with no visible row content behind it.
+  const line = o.detail !== undefined ? oneLine(o.detail) : o.text ? oneLine(o.text) : '';
   if (line) {
     item.detail = line;
     item.fullText = o.text;
@@ -921,6 +1059,16 @@ function toTimelineItems(model: TurnModel): TimelineItem[] {
           icon: err ? '✗' : done ? '✓' : unresolvable ? '–' : '⚙',
           label: e.toolName || 'tool',
           tone: err ? 'tool-err' : done ? 'tool-done' : unresolvable ? 'tool-unknown' : 'tool',
+          // The row shows what the call was asked to do; the hover keeps the
+          // whole input and result. See `toolSnippet`.
+          //
+          // ⚠️ `|| undefined` is load-bearing. A standalone `tool_result` entry
+          // carries a result and NO input, so the snippet is empty for it —
+          // and an empty string handed to `makeItem` as an explicit detail
+          // would read as "this row has been given its preview" and leave the
+          // row blank. Undefined means "no snippet to offer", which is what
+          // sends `makeItem` back to `text` and keeps the result on screen.
+          detail: toolSnippet(e) || undefined,
           text: toolText(e),
         }),
       );
