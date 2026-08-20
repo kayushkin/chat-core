@@ -180,6 +180,32 @@ export function useActiveSession(): {
           .then((resp) => actions.setTurns(nextId, resp.model))
           .catch(() => actions.setTurnsLoading(nextId, false));
       }
+      // And warm the SUMMARY, on exactly the same principle. Selecting a session
+      // whose summary the store has never seen used to set `activeId` and stop:
+      // the turns arrived, `summary` stayed null, and a host rendering its header
+      // from that summary drew no session at all — an id in the URL and a blank
+      // pane.
+      //
+      // Unreachable from a sidebar row, which is why it survived: a row IS a
+      // summary. It is reachable from every surface that opens a session by ID —
+      // a `?session=` deeplink to something older than the loaded page, a
+      // `[session:…]` reference chip, and the cross-session signals inbox, whose
+      // whole purpose is the sessions that have sunk out of that page.
+      //
+      // A failure does not throw, because the host already handles a null summary
+      // — that is the honest state while the read is in flight — and throwing out
+      // of a click handler would take the navigation with it. It is not SILENT
+      // either: the pane the user just opened stays blank, and without a line in
+      // the console there is nothing anywhere to say why. The one case that
+      // reaches it is an id that resolves to nothing, i.e. a session that is gone.
+      if (!state.sessions.has(nextId)) {
+        void api
+          .getSessionDetail(nextId)
+          .then((detail) => actions.upsertSession(detail.summary))
+          .catch((err: unknown) => {
+            console.warn(`[chat-core] could not load session ${nextId}`, err);
+          });
+      }
       void prefetcher; // hover prefetch may already have warmed it.
     },
     [actions, api, store, prefetcher],

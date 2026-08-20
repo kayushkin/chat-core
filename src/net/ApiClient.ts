@@ -314,6 +314,16 @@ export class ApiClient {
     limit?: number;
     before?: string;
     filter?: SessionSummaryFilterAxes;
+    /** Look up these exact sessions, whatever their position in the recency
+     *  order. NOT a seventh filter axis — a LOOKUP, for a caller that already
+     *  holds ids and needs what they are called.
+     *
+     *  Paging cannot answer that question. The signals inbox lists open signals
+     *  across every session, and the row it needs a name from may be thousands
+     *  deep in a listing ordered by updated_at, so no page size the sidebar
+     *  would ever ask for reaches it. Sent as repeated parameters for the same
+     *  reason the axes are. */
+    sessionIds?: readonly string[];
   }): Promise<SummaryResponse> {
     const params = new URLSearchParams();
     if (opts?.limit != null) params.set('limit', String(opts.limit));
@@ -323,6 +333,7 @@ export class ApiClient {
         for (const value of opts.filter[axis] ?? []) params.append(axis, value);
       }
     }
+    for (const id of opts?.sessionIds ?? []) params.append('session_id', id);
     const qs = params.toString();
     return this.getJSON<SummaryResponse>(`/sessions/summary${qs ? `?${qs}` : ''}`);
   }

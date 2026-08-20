@@ -55,6 +55,7 @@ export {
   clearOpenSignalsCache,
   type OpenSignalsState,
 } from './react/signals.js';
+export { useSessionNames, clearSessionNameCache } from './react/sessionNames.js';
 export {
   acknowledgeSignal,
   answerSignalRequest,
