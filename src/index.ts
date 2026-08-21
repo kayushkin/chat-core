@@ -210,6 +210,15 @@ export {
   type LiveSubagent,
 } from './store/liveStatus.js';
 export { RUNNING_STATES, isRunningState } from './store/sessionStates.js';
+// The sessions a session spawned, joined on the server's own parent pointer
+// (`managerSessionId`). Reads the store AND the server: the store so a subagent
+// spawned a moment ago is there at once, the server because a child is ordered by
+// its own recency and is therefore unreachable by paging toward its parent.
+export {
+  useSubagentSessions,
+  compareSubagents,
+  clearSubagentCache,
+} from './react/subagents.js';
 // Tool call/result pairing. Exported for a host that renders tool cards: an
 // entry's `toolResult` alone answers "did this call finish?" only for the live
 // tail, and reports every cold-loaded call as still running. See toolPairing.ts.

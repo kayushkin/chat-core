@@ -324,6 +324,16 @@ export class ApiClient {
      *  would ever ask for reaches it. Sent as repeated parameters for the same
      *  reason the axes are. */
     sessionIds?: readonly string[];
+    /** Look up the CHILDREN of these sessions — "what did these spawn?". Also a
+     *  lookup rather than an axis, and unanswerable by paging for a sharper
+     *  reason than `sessionIds`: a child is ordered by its OWN recency, not its
+     *  parent's, so a session that spawned 106 subagents last week has them
+     *  scattered thousands of rows deep.
+     *
+     *  Several parents at once, deliberately. A caller asks about a whole page of
+     *  rows in ONE request, which is also what lets it learn WHICH rows have
+     *  children — no count exists anywhere, and none was added. */
+    managerSessionIds?: readonly string[];
   }): Promise<SummaryResponse> {
     const params = new URLSearchParams();
     if (opts?.limit != null) params.set('limit', String(opts.limit));
@@ -334,6 +344,7 @@ export class ApiClient {
       }
     }
     for (const id of opts?.sessionIds ?? []) params.append('session_id', id);
+    for (const id of opts?.managerSessionIds ?? []) params.append('manager_session_id', id);
     const qs = params.toString();
     return this.getJSON<SummaryResponse>(`/sessions/summary${qs ? `?${qs}` : ''}`);
   }
