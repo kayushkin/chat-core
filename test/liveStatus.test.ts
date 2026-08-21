@@ -207,6 +207,61 @@ describe('liveStatusFromModel — todo label (harness todo list)', () => {
     expect(liveStatusFromModel(s.model).todo).toBeUndefined();
   });
 
+  // The wire blob is untyped, and `inProgressTodoText` says so in its own docstring
+  // ("Read defensively -- the input is an untyped blob from the wire"). Until these
+  // cases existed, both of its defensive guards were unpinned: deleting either one
+  // left the whole suite green. The failure they prevent is not a wrong label, it is
+  // a TypeError thrown out of `deriveStatus`, which takes the entire live-status
+  // readout down -- tool calls and subagents included, none of which is malformed.
+  //
+  // Each case therefore asserts TWO things: that the readout is absent, and that the
+  // REST of the status still computed. Asserting `todo` alone would pass on a throw
+  // if a future caller ever wrapped this in a try/catch, and the point is that the
+  // guard returns rather than that something downstream copes.
+  it('ignores a TodoWrite input that is not an object at all, without throwing', () => {
+    for (const malformed of ['todos', 42, true, null]) {
+      const s = apply([
+        userMsg('t1', 'go'),
+        toolCall('t1', 'tu1', 'TodoWrite', malformed),
+      ]);
+      const status = liveStatusFromModel(s.model);
+      expect(status.todo).toBeUndefined();
+      expect(status.subagents).toEqual([]);
+    }
+  });
+
+  it('ignores a TodoWrite input whose `todos` is not an array, without throwing', () => {
+    // `'ab'` is the case a truthiness test lets through: a string is iterable, so a
+    // guard spelled `if (!todos)` walks it character by character and reports 'a'.
+    for (const malformed of [{ todos: 'ab' }, { todos: { first: 'a' } }, { todos: 7 }, {}]) {
+      const s = apply([
+        userMsg('t1', 'go'),
+        toolCall('t1', 'tu1', 'TodoWrite', malformed),
+      ]);
+      const status = liveStatusFromModel(s.model);
+      expect(status.todo).toBeUndefined();
+      expect(status.subagents).toEqual([]);
+    }
+  });
+
+  it('reads a well-formed list that arrives AFTER a malformed one, so a bad blob is not sticky', () => {
+    // The latest list wins outright (see the test above), and the search stops at the
+    // first TodoWrite it meets walking backwards. So a malformed blob must not park
+    // itself in front of the real list -- it must be rejected and the readout absent,
+    // and the next good list must still be read.
+    const s = apply([
+      userMsg('t1', 'go'),
+      toolCall('t1', 'tu1', 'TodoWrite', { todos: 'nonsense' }),
+      toolCall('t1', 'tu2', 'TodoWrite', todos([
+        { content: 'Run tests', status: 'in_progress' },
+      ])),
+    ]);
+    expect(liveStatusFromModel(s.model).todo).toEqual({
+      text: 'Run tests',
+      sinceTs: expect.any(String),
+    });
+  });
+
   it('persists across turns, unlike the tool-call scope', () => {
     const s = apply([
       userMsg('t1', 'go'),

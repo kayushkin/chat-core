@@ -183,6 +183,32 @@ describe('ApiClient.getPendingHooks — hydration', () => {
     expect(pending.map((h) => h.requestId)).toEqual(['req-1']);
   });
 
+  // A 2xx whose body is not a list. The server contract says an array, but this
+  // read is the parked-hook hydration that runs on every attach, and the body is
+  // whatever the other end actually sent -- an error envelope from a proxy, a
+  // `null` from a handler that forgot its empty case, a stray object. Until these
+  // cases existed the `Array.isArray` guard was unpinned in both directions:
+  // deleting it, and loosening it to a truthiness test, both left the suite green.
+  //
+  // The consequence of losing it is not a wrong list, it is a TypeError thrown out
+  // of `getPendingHooks` on attach. The caller cannot tell that apart from a failed
+  // request, so the permission banner stays blank and the tool call stays frozen
+  // with nothing on screen -- the exact failure the docstring says hydration exists
+  // to prevent.
+  //
+  // `'[]'` is the case a truthiness test lets through and an Array.isArray test does
+  // not: a non-empty string is iterable, so `for (const ev of events)` would walk it
+  // character by character and ask `pendingHookFromWire` about each character.
+  it('answers an empty set for a 2xx body that is not an array, rather than throwing', async () => {
+    for (const body of [null, {}, { hooks: [] }, '[]', 7, true]) {
+      const api = new ApiClient({
+        fetch: fakeFetch({ ok: true, jsonBody: body }),
+        basePath: '/api/bridge',
+      });
+      await expect(api.getPendingHooks('br_1')).resolves.toEqual([]);
+    }
+  });
+
   it('throws on a non-2xx rather than reporting an empty set', async () => {
     const api = new ApiClient({
       fetch: fakeFetch({ ok: false, status: 404, statusText: 'Not Found' }),
