@@ -679,9 +679,10 @@ function oneLine(s: string): string {
 }
 
 /** One line, capped. Returns the flattened string with an ellipsis when it had
- *  to cut. `oneLine` above is uncapped and stays that way — the two callers
- *  want different things, and a cap on the shared helper would silently
- *  truncate every other row type. */
+ *  to cut. `oneLine` above is uncapped and stays that way — of its three
+ *  callers only this one wants a cap; `makeItem` and `toTimelineItems` flatten
+ *  row text that must survive whole, and a cap on the shared helper would
+ *  silently truncate every one of those row types. */
 function oneLineCapped(s: string, max: number): string {
   const flat = oneLine(s);
   return flat.length > max ? flat.slice(0, max) + '…' : flat;
