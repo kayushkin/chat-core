@@ -475,7 +475,21 @@ export function useComposer(sessionId: string | null): {
             // `useSessionControls().setConfig` is the LOUD path for a live change.
             const config = pendingSessionConfig(pending);
             if (config) {
-              void api.setConfig(newId, config).catch(() => {});
+              void api.setConfig(newId, config).catch((err: unknown) => {
+                // Still best-effort — a refused config must not strand the message
+                // the user just sent, which is why this does not rethrow. But it is
+                // no longer SILENT, and that distinction is the whole reason this
+                // bug lived: the server answered 500 "session not running" for every
+                // new chat that carried a model, the pick was dropped, and the
+                // session ran on the harness default while the picker still showed
+                // the user's choice. A wrong answer with nothing anywhere to say so.
+                //
+                // The server no longer refuses it (llm-bridge-server persists the
+                // config for a session with no live process and applies it at
+                // spawn), so reaching this handler now means something else is
+                // wrong and there is a line in the console saying what.
+                console.warn(`[chat-core] could not apply settings to new session ${newId}`, err);
+              });
             }
             actions.appendOptimisticUser(newId, trimmed, clientId);
             actions.setSending(newId, true);
