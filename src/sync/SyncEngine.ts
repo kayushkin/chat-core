@@ -70,13 +70,16 @@ export class SyncEngine {
 
     void this.runListStream();
 
-    // React to activeId changes: attach/detach the single active-session SSE.
+    // React to activeId changes: attach/detach the single active-session SSE,
+    // and re-check that what we are about to render is still current.
     let lastActive = this.store.getState().activeId;
     this.attachActive(lastActive);
+    void this.revalidateActive(lastActive);
     this.unsubStore = this.store.subscribe((state) => {
       if (state.activeId !== lastActive) {
         lastActive = state.activeId;
         this.attachActive(lastActive);
+        void this.revalidateActive(lastActive);
       }
     });
 
@@ -240,7 +243,24 @@ export class SyncEngine {
    *  ones that both changed and are on screen. */
   private async repairChangedValidators(): Promise<void> {
     const state = this.store.getState();
-    const cachedIds = [...state.turnsBySession.keys()].slice(0, this.sweepLimit);
+    // ⚠️ The ACTIVE session is always checked, whatever its position in the map.
+    //
+    // `turnsBySession` is a Map, so `keys()` is INSERTION order — the sessions
+    // opened longest ago. Slicing it alone meant the sweep fetched validators for
+    // the 50 oldest-opened sessions and then repaired only the active one
+    // (`isDisplayed` below), so once a window had opened more than `sweepLimit`
+    // sessions the one actually on screen fell outside the slice and was never
+    // checked at all. Exactly backwards: it polled 50 tails nobody was looking at
+    // and skipped the only one that renders.
+    //
+    // That is the "leave a tab open for a while and it goes stale until you
+    // refresh" report, and its severity grows with how much you use the page.
+    const active = state.activeId;
+    const swept = [...state.turnsBySession.keys()].slice(0, this.sweepLimit);
+    const cachedIds =
+      active && state.turnsBySession.has(active) && !swept.includes(active)
+        ? [active, ...swept]
+        : swept;
     if (cachedIds.length === 0) return;
 
     let serverValidators;
@@ -272,6 +292,43 @@ export class SyncEngine {
    *  is never on screen, so its tail must not be refetched by the sweep. */
   private isDisplayed(sessionId: string): boolean {
     return this.store.getState().activeId === sessionId;
+  }
+
+  /**
+   * Re-check the session that just became active, without waiting for the sweep.
+   *
+   * ⚠️ A CACHED session was previously not re-read at all on open. `select()`
+   * fetches the tail only when the store has none (`hooks.ts`), which is what
+   * makes a warm switch land in single-digit milliseconds — and it means a
+   * session whose cached tail has since moved on renders stale and stays stale
+   * until the 15s sweep happens to cover it. The original chat has no such gap:
+   * `useBridgeSession` calls `loadHistory(id)` on EVERY open, cached or not.
+   *
+   * This keeps the fast paint and closes the gap behind it: the cache is drawn
+   * immediately, one cheap validator read follows, and the tail is refetched only
+   * if the server's validator disagrees. A session the store has never seen is
+   * skipped — `select()` is already fetching it, and asking twice would race.
+   *
+   * Placed on the activeId SUBSCRIPTION rather than inside `select()` so it holds
+   * for every way a session becomes active: a sidebar row, a `?session=`
+   * deeplink, a `[session:…]` ref chip, the signals inbox, and the subagent tree.
+   */
+  private async revalidateActive(sessionId: string | null): Promise<void> {
+    if (!sessionId) return;
+    const local = this.store.getState().turnsBySession.get(sessionId)?.validator;
+    if (!local) return;
+    let serverValidators;
+    try {
+      serverValidators = await this.api.getValidators([sessionId]);
+    } catch {
+      return; // The sweep will try again; a stale tail is not worth a thrown error.
+    }
+    if (validatorsEqual(local, serverValidators[sessionId])) return;
+    // Still the active one? The user may have moved on during the round trip, and
+    // repairing a session nobody is looking at is the over-poll this file already
+    // guards against everywhere else.
+    if (this.store.getState().activeId !== sessionId) return;
+    await this.repairSession(sessionId);
   }
 
   /** Silent repair: refetch the tail, repair the cache, and update VISIBLE store

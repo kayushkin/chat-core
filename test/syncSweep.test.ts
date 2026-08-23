@@ -140,3 +140,156 @@ describe('SyncEngine.sweepValidators — idle over-poll fix', () => {
     expect(getMessages).toHaveBeenCalledTimes(1);
   });
 });
+
+// ── Two ways a cached tail went stale and stayed stale ────────────────────────
+//
+// Reported symptom: "sometimes I need to refresh because a window has been open,
+// and dashv2 is not actively checking for updates on session change like the
+// original did." Both halves are real and independent.
+
+describe('the sweep always checks the session that is on screen', () => {
+  /** `sweepLimit` cached sessions, then one more that is the ACTIVE one — so the
+   *  active session is last in insertion order and outside any slice from the
+   *  front. */
+  function setupBeyondTheLimit(sweepLimit: number) {
+    const store = createChatStore();
+    const validator = { maxEventId: 5, eventCount: 5, updatedAt: '' };
+    for (let i = 0; i < sweepLimit; i++) {
+      const id = `br_old_${i}`;
+      store.getState().actions.setTurns(id, modelWith(id, validator));
+    }
+    const active = 'br_active';
+    store.getState().actions.setTurns(active, modelWith(active, validator));
+    store.getState().actions.setActive(active);
+
+    const getValidators = vi.fn(async (ids: string[]) =>
+      Object.fromEntries(ids.map((id) => [id, { maxEventId: 6, eventCount: 6, updatedAt: '' }])),
+    );
+    const getMessages = vi.fn(async (id: string) => ({
+      model: modelWith(id, { maxEventId: 6, eventCount: 6, updatedAt: '' }),
+    }));
+    const api = { getValidators, getMessages } as unknown as ApiClient;
+    const cache = { isEnabled: false, putTurns: vi.fn(async () => {}) } as unknown as SessionCache;
+    const engine = new SyncEngine({ store, api, cache, sweepLimit });
+    return { engine, active, getValidators, getMessages };
+  }
+
+  it('repairs the active session even when it is past sweepLimit in the cache', async () => {
+    // ⚠️ The bug. `turnsBySession` is a Map, so `keys()` is INSERTION order —
+    // oldest-opened first. Slicing from the front meant the sweep fetched
+    // validators for the `sweepLimit` sessions opened longest ago and then
+    // repaired only the active one, so a window that had opened more than
+    // `sweepLimit` sessions never checked the tail it was actually rendering.
+    // It polled 50 tails nobody was looking at and skipped the only one visible.
+    const { engine, active, getValidators, getMessages } = setupBeyondTheLimit(3);
+    await engine.sweepValidators();
+
+    expect(getValidators.mock.calls[0]![0]).toContain(active);
+    expect(getMessages).toHaveBeenCalledWith(active, expect.anything());
+  });
+
+  it('does not ask about the active session twice when it is already in the slice', async () => {
+    // A small cache: the active session is inside the slice, so prepending it
+    // would send a duplicate id.
+    const store = createChatStore();
+    const sid = 'br_only';
+    store.getState().actions.setTurns(sid, modelWith(sid, { maxEventId: 5, eventCount: 5, updatedAt: '' }));
+    store.getState().actions.setActive(sid);
+    const getValidators = vi.fn(async () => ({ [sid]: { maxEventId: 5, eventCount: 5, updatedAt: '' } }));
+    const api = { getValidators, getMessages: vi.fn() } as unknown as ApiClient;
+    const cache = { isEnabled: false, putTurns: vi.fn(async () => {}) } as unknown as SessionCache;
+    const engine = new SyncEngine({ store, api, cache });
+
+    await engine.sweepValidators();
+    const asked = getValidators.mock.calls[0]![0] as string[];
+    expect(asked.filter((id) => id === sid)).toHaveLength(1);
+  });
+});
+
+describe('opening a session re-checks it, without waiting for the sweep', () => {
+  /** A cached session whose server-side validator has moved on, plus a store
+   *  with nothing selected yet. */
+  function setupOpenable() {
+    const store = createChatStore();
+    const sid = 'br_cached';
+    store.getState().actions.setTurns(sid, modelWith(sid, { maxEventId: 5, eventCount: 5, updatedAt: '' }));
+    const getValidators = vi.fn(async () => ({ [sid]: { maxEventId: 9, eventCount: 9, updatedAt: '' } }));
+    const getMessages = vi.fn(async () => ({
+      model: modelWith(sid, { maxEventId: 9, eventCount: 9, updatedAt: '' }),
+    }));
+    const api = {
+      getValidators,
+      getMessages,
+      // `start()` opens the list stream; a rejection here is caught by the engine.
+      fetchFor: () => async () => {
+        throw new Error('no stream in this test');
+      },
+      basePath: '',
+    } as unknown as ApiClient;
+    const cache = { isEnabled: false, putTurns: vi.fn(async () => {}) } as unknown as SessionCache;
+    const engine = new SyncEngine({ store, api, cache });
+    return { store, engine, sid, getValidators, getMessages };
+  }
+
+  it('refetches a CACHED session whose tail has moved on', async () => {
+    // ⚠️ The other half. `select()` fetches only when the store has NO tail — that
+    // is what makes a warm switch land in single-digit milliseconds — so a cached
+    // session rendered from a stale cache and stayed stale. The original chat has
+    // no such gap: it calls `loadHistory(id)` on every open, cached or not.
+    const { store, engine, sid, getMessages } = setupOpenable();
+    engine.start();
+    store.getState().actions.setActive(sid);
+    await vi.waitFor(() => expect(getMessages).toHaveBeenCalledTimes(1));
+    engine.stop();
+  });
+
+  it('leaves an UNCHANGED cached session alone — the cheap check is the whole cost', async () => {
+    // The fast warm switch has to survive the fix. A session whose validator still
+    // matches must cost one validator read and no tail.
+    const store = createChatStore();
+    const sid = 'br_fresh';
+    const same = { maxEventId: 5, eventCount: 5, updatedAt: '' };
+    store.getState().actions.setTurns(sid, modelWith(sid, same));
+    const getValidators = vi.fn(async () => ({ [sid]: same }));
+    const getMessages = vi.fn();
+    const api = {
+      getValidators,
+      getMessages,
+      fetchFor: () => async () => {
+        throw new Error('no stream in this test');
+      },
+      basePath: '',
+    } as unknown as ApiClient;
+    const cache = { isEnabled: false, putTurns: vi.fn(async () => {}) } as unknown as SessionCache;
+    const engine = new SyncEngine({ store, api, cache });
+
+    engine.start();
+    store.getState().actions.setActive(sid);
+    await vi.waitFor(() => expect(getValidators).toHaveBeenCalled());
+    expect(getMessages).not.toHaveBeenCalled();
+    engine.stop();
+  });
+
+  it('does not fetch for a session the store has never cached', async () => {
+    // `select()` is already fetching that one; asking here too would race it and
+    // double the cost of every cold open.
+    const store = createChatStore();
+    const getValidators = vi.fn();
+    const api = {
+      getValidators,
+      getMessages: vi.fn(),
+      fetchFor: () => async () => {
+        throw new Error('no stream in this test');
+      },
+      basePath: '',
+    } as unknown as ApiClient;
+    const cache = { isEnabled: false, putTurns: vi.fn(async () => {}) } as unknown as SessionCache;
+    const engine = new SyncEngine({ store, api, cache });
+
+    engine.start();
+    store.getState().actions.setActive('br_never_seen');
+    await new Promise((r) => setTimeout(r, 20));
+    expect(getValidators).not.toHaveBeenCalled();
+    engine.stop();
+  });
+});
