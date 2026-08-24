@@ -153,6 +153,60 @@ describe('setTurns merges instead of replacing', () => {
     expect(holders).toHaveLength(1);
   })
 
+  it('supersedes the OPTIMISTIC user row when the page reports the real prompt', () => {
+    // Observed live (session br_1787614088376534890): the optimistic row has no
+    // folded event ids, so the event-id rule keeps it forever, and it rendered as
+    // a duplicate "You" row after the first repair. The page reporting the same
+    // prompt — by client request id or normalized text — is its supersession.
+    const store = createChatStore();
+    const a = store.getState().actions;
+    a.appendOptimisticUser(SID, 'List the files', 'c1');
+
+    a.setTurns(
+      SID,
+      page([
+        matEntry({
+          id: 'e_5', kind: 'text', eventId: 5, role: 'user', text: 'List the files',
+          raw: { client_request_id: 'c1' } as unknown,
+        } as never),
+      ]),
+    );
+
+    const users = Object.values(modelOf(store).entries).filter(
+      (e) => e.role === 'user' && e.text === 'List the files',
+    );
+    expect(users.map((e) => e.id)).toEqual(['e_5']);
+  })
+
+  it('an already-seen user_message event still strips the optimistic row', () => {
+    // The trap: a repair page lands first, so the SSE user_message's event id is
+    // already in seenEventIds and applyEvent no-ops — the strip must still commit
+    // rather than being discarded with the no-op. The page here carries the event
+    // under DIFFERENT text (server-side templating), so the merge-time supersession
+    // above cannot fire and only the SSE strip can reconcile it.
+    const store = createChatStore();
+    const a = store.getState().actions;
+    a.appendOptimisticUser(SID, 'hello there', 'c9');
+    a.setTurns(
+      SID,
+      page([matEntry({ id: 'e_7', kind: 'text', eventId: 7, role: 'user', text: '<templated prompt>' })]),
+    );
+    // Optimistic still present (texts differ, no client id on the page raw).
+    expect(
+      Object.values(modelOf(store).entries).some((e) => e.text === 'hello there'),
+    ).toBe(true);
+
+    // The SSE copy of event 7 arrives, strippable by client_request_id.
+    a.applyTailEvent(SID, ev(7, 'user_message', {
+      client_request_id: 'c9',
+      result: { text: '<templated prompt>' },
+    }));
+
+    expect(
+      Object.values(modelOf(store).entries).some((e) => e.text === 'hello there'),
+    ).toBe(false);
+  })
+
   it('keeps paged-up older turns through a repair, ordered before the page', () => {
     const store = createChatStore();
     const a = store.getState().actions;

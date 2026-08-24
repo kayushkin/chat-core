@@ -18,6 +18,7 @@ import {
   carryForwardAggregates,
   initTailState,
   mergeMaterializedPage,
+  normalizeText,
   reseedTailKeepingFoldHistory,
   type TailState,
 } from '../reduce/TurnReducer.js';
@@ -599,7 +600,8 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
             set({ activity });
           }
         }
-        let tail = getOrInitTail(state, sessionId);
+        const before = getOrInitTail(state, sessionId);
+        let tail = before;
         // Strip a matching optimistic user row when the real user_message lands,
         // so the two don't double-show (both are harness-sourced, so the OTel
         // annotator won't collapse them). Correlation prefers the client request id,
@@ -609,7 +611,13 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
           tail = stripOptimisticUser(tail, event);
         }
         const next = applyEvent(tail, event);
-        if (next === tail) return; // idempotent no-op
+        // ⚠️ Compare against the ORIGINAL tail, not the stripped one. When this
+        // event's id is already in seenEventIds (a repair page landed first — the
+        // normal case now that the merge accumulates seen ids), applyEvent no-ops
+        // and returns the stripped tail unchanged. Comparing against `tail` then
+        // silently DISCARDED the strip, leaving the optimistic row alive as a
+        // duplicate "You" row (observed live 2026-08-24).
+        if (next === before) return; // idempotent no-op — nothing changed at all
         const tails = new Map(state.tails);
         tails.set(sessionId, next);
         const turnsBySession = new Map(state.turnsBySession);
@@ -990,10 +998,6 @@ function appendOptimistic(tail: TailState, text: string, clientId: string): Tail
   const turnIndex = new Map(tail.turnIndex);
   turnIndex.set(turnId, turns.length - 1);
   return { ...tail, model, turnIndex };
-}
-
-function normalizeText(s: string): string {
-  return s.replace(/\s+/g, ' ').trim();
 }
 
 /**

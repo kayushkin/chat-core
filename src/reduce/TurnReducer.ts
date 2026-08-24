@@ -154,6 +154,13 @@ export function initTailState(sessionId: string, model?: TurnModel): TailState {
   return { sessionId, model: base, turnIndex, entryEventIds, seenEventIds };
 }
 
+/** Trim + collapse whitespace, the correlation form for optimistic-user matching.
+ *  One definition, used by both the SSE-time strip (ChatStore) and the merge-time
+ *  supersession below, so the two paths cannot drift. */
+export function normalizeText(s: string): string {
+  return s.replace(/\s+/g, ' ').trim();
+}
+
 /** Whether an incoming materialized entry is the SAME content as one already held, so
  *  the held object can be reused and row memos keep hitting. The compared scalars are
  *  sufficient: a materialized entry is a pure function of its stored event rows (same
@@ -243,6 +250,24 @@ export function mergeMaterializedPage(
     const held = prior.model.entries[id];
     if (!held) continue;
     if (incoming.entries[id]) continue; // same id (materialized↔materialized): incoming wins below
+    // An OPTIMISTIC user row is superseded the moment the page reports the real
+    // prompt — by client request id when the page's raw carries it, else by
+    // normalized text. It has no folded event ids (it never came from an event),
+    // so the event-id rule below would keep it FOREVER; under the old replace
+    // semantics every setTurns wiped it, which hid the gap. Left in, it renders
+    // as a duplicate "You" row after the first repair (observed live 2026-08-24,
+    // session br_1787614088376534890).
+    const heldRaw = held.raw as { optimistic?: boolean; clientId?: string } | undefined;
+    if (heldRaw?.optimistic) {
+      const normHeld = normalizeText(held.text ?? '');
+      const reported = Object.values(incoming.entries).some((inc) => {
+        if (inc.role !== 'user' || !inc.text) return false;
+        const incRaw = inc.raw as { client_request_id?: string } | undefined;
+        if (heldRaw.clientId && incRaw?.client_request_id === heldRaw.clientId) return true;
+        return !!normHeld && normalizeText(inc.text) === normHeld;
+      });
+      if (reported) continue;
+    }
     const folded = prior.entryEventIds.get(id);
     const allReported =
       !!folded && folded.size > 0 && [...folded].every((n) => pageEventIds.has(n));
