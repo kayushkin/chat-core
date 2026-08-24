@@ -154,6 +154,190 @@ export function initTailState(sessionId: string, model?: TurnModel): TailState {
   return { sessionId, model: base, turnIndex, entryEventIds, seenEventIds };
 }
 
+/** Whether an incoming materialized entry is the SAME content as one already held, so
+ *  the held object can be reused and row memos keep hitting. The compared scalars are
+ *  sufficient: a materialized entry is a pure function of its stored event rows (same
+ *  id + same eventId ⇒ same payload) plus the annotation passes, whose outputs are
+ *  exactly the annotation fields compared here. Object-typed fields (raw, toolInput,
+ *  toolResult, usage) derive from the same stored event and need no deep compare. */
+function sameMaterializedEntry(held: Entry, incoming: Entry): boolean {
+  return (
+    held.eventId === incoming.eventId &&
+    held.kind === incoming.kind &&
+    held.role === incoming.role &&
+    held.source === incoming.source &&
+    held.text === incoming.text &&
+    held.ts === incoming.ts &&
+    held.turnId === incoming.turnId &&
+    held.duplicate === incoming.duplicate &&
+    held.primary === incoming.primary &&
+    held.groupId === incoming.groupId &&
+    held.messageId === incoming.messageId &&
+    held.toolName === incoming.toolName &&
+    held.subtype === incoming.subtype
+  );
+}
+
+/**
+ * Fold a freshly materialized page into the session's tail state — MERGE, never
+ * replace (dash docs/dashv2-turns-per-message.md §6). `setTurns` used to swap the
+ * whole model and rebuild the tail from the incoming page alone, which is the
+ * "everything resets" bug: live-only content vanished, fold history was forgotten,
+ * and what the tail had already applied was left unprotected from re-application.
+ *
+ * ⚠️ The join is the EVENT-ID SETS, not the entry ids. The two paths name the same
+ * content differently — live entries `${msgId}_${kind}` / `tool_<toolId>`,
+ * materialized entries `e_<rowid>` — so the id spaces never overlap and an id-keyed
+ * merge would call every incoming entry new and every held entry unreported. The
+ * tail already records which log-store event ids folded into each entry
+ * (`entryEventIds`); that is the honest join:
+ *
+ *  - a held entry whose folded event ids ALL appear in the page is superseded — the
+ *    server now reports that content — and is dropped in favour of the page's
+ *    version;
+ *  - a held entry with ANY event id the page lacks is kept: the server has not
+ *    materialized it (or it is off this window), and dropping it is the bug;
+ *  - carve-out, folding in what `carryForwardReasoning` did as a separate pass: a
+ *    held `thinking` entry WITH TEXT is kept even when fully reported, because the
+ *    materialized copy is structurally unable to carry the text (Claude Code stores
+ *    thinking blocks empty + signature). The page's empty copy arrives `duplicate`,
+ *    so nothing renders twice;
+ *  - an incoming entry equal to one already held keeps the HELD object, so identity
+ *    survives and memos hit;
+ *  - an entry with an EMPTY folded set (its events carried no id) cannot be proven
+ *    reported and is kept.
+ *
+ * Turns merge by turn id — the page's version of a shared turn wins its entry list,
+ * kept held entries re-seat into it by eventId — and the final order is by each
+ * turn's minimum eventId, which is the same ordering rule the rows use (§4).
+ * log-store is append-only, so a held turn off the page's window is history, not a
+ * deletion, and stays.
+ *
+ * The returned tail is seeded from the MERGED model and keeps the fold history:
+ * kept entries keep their full event-id sets, and `seenEventIds` is the union of
+ * everything applied before with everything the page reports — so a Last-Event-ID
+ * replay stays a no-op after a repair, which the old rebuild-from-page silently
+ * broke.
+ */
+export function mergeMaterializedPage(
+  prior: TailState | undefined,
+  incoming: TurnModel,
+): TailState {
+  if (
+    !prior ||
+    (prior.model.turns.length === 0 && Object.keys(prior.model.entries).length === 0)
+  ) {
+    return initTailState(incoming.sessionId, incoming);
+  }
+
+  const pageEventIds = new Set<number>();
+  for (const id of Object.keys(incoming.entries)) {
+    const evId = incoming.entries[id]?.eventId;
+    if (evId) pageEventIds.add(evId);
+  }
+
+  // Partition the held entries: kept (the page cannot answer for them) vs
+  // superseded (the page reports every event they hold).
+  const keptHeldIds: string[] = [];
+  for (const id of Object.keys(prior.model.entries)) {
+    const held = prior.model.entries[id];
+    if (!held) continue;
+    if (incoming.entries[id]) continue; // same id (materialized↔materialized): incoming wins below
+    const folded = prior.entryEventIds.get(id);
+    const allReported =
+      !!folded && folded.size > 0 && [...folded].every((n) => pageEventIds.has(n));
+    const reasoningCarveOut = held.kind === 'thinking' && !!held.text;
+    if (!allReported || reasoningCarveOut) keptHeldIds.push(id);
+  }
+
+  // Entries: the page's, reusing held objects for unchanged content, plus the kept.
+  const entries: Record<string, Entry> = {};
+  for (const id of Object.keys(incoming.entries)) {
+    const inc = incoming.entries[id]!;
+    const held = prior.model.entries[id];
+    entries[id] = held && sameMaterializedEntry(held, inc) ? held : inc;
+  }
+  for (const id of keptHeldIds) entries[id] = prior.model.entries[id]!;
+
+  // Turns. The page's version of a shared turn wins its entry list; kept held
+  // entries re-seat into their turn by eventId; held-only turns keep only their
+  // kept entries and drop out entirely when nothing survives.
+  const keptByTurn = new Map<string, string[]>();
+  for (const id of keptHeldIds) {
+    const turnId = entries[id]!.turnId;
+    const list = keptByTurn.get(turnId);
+    if (list) list.push(id);
+    else keptByTurn.set(turnId, [id]);
+  }
+  const entryEventIdOf = (id: string): number => entries[id]?.eventId ?? Number.MAX_SAFE_INTEGER;
+
+  const incomingTurnIds = new Set(incoming.turns.map((t) => t.id));
+  const turns: Turn[] = [];
+  for (const turn of incoming.turns) {
+    const extra = keptByTurn.get(turn.id);
+    const entryIds = extra
+      ? [...turn.entryIds, ...extra].sort((a, b) => entryEventIdOf(a) - entryEventIdOf(b))
+      : turn.entryIds;
+    turns.push(extra ? { ...turn, entryIds } : turn);
+  }
+  for (const turn of prior.model.turns) {
+    if (incomingTurnIds.has(turn.id)) continue;
+    const surviving = turn.entryIds.filter((id) => entries[id]);
+    if (surviving.length === 0) continue;
+    turns.push(surviving.length === turn.entryIds.length ? turn : { ...turn, entryIds: surviving });
+  }
+  const minEventIdOf = (turn: Turn): number =>
+    turn.entryIds.reduce(
+      (min, id) => Math.min(min, entryEventIdOf(id)),
+      Number.MAX_SAFE_INTEGER,
+    );
+  turns.sort((a, b) => minEventIdOf(a) - minEventIdOf(b));
+
+  const model: TurnModel = {
+    ...incoming,
+    turns,
+    entries,
+  };
+
+  // Tail bookkeeping, from the merged model — kept entries keep their full folded
+  // sets, and everything ever applied stays protected from re-application.
+  const turnIndex = new Map<string, number>();
+  turns.forEach((t, i) => turnIndex.set(t.id, i));
+  const entryEventIds = new Map<string, Set<number>>();
+  for (const id of Object.keys(entries)) {
+    const priorSet = prior.entryEventIds.get(id);
+    if (priorSet && priorSet.size > 0) {
+      entryEventIds.set(id, new Set(priorSet));
+    } else {
+      const evId = entries[id]!.eventId;
+      entryEventIds.set(id, new Set(evId ? [evId] : []));
+    }
+  }
+  const seenEventIds = new Set(prior.seenEventIds);
+  for (const n of pageEventIds) seenEventIds.add(n);
+
+  return { sessionId: incoming.sessionId, model, turnIndex, entryEventIds, seenEventIds };
+}
+
+/** Reseed a tail from a merged model while KEEPING the fold history of every entry
+ *  that survived. `prependOlder` used to reseed with `initTailState` alone, which
+ *  collapsed a live entry's folded event-id set to its single latest id — so a
+ *  Last-Event-ID replay after paging up could re-fold text the entry already held. */
+export function reseedTailKeepingFoldHistory(
+  sessionId: string,
+  model: TurnModel,
+  prior: TailState | undefined,
+): TailState {
+  const tail = initTailState(sessionId, model);
+  if (!prior) return tail;
+  for (const [id, ids] of prior.entryEventIds) {
+    if (!tail.entryEventIds.has(id) || ids.size === 0) continue;
+    tail.entryEventIds.set(id, new Set(ids));
+  }
+  for (const n of prior.seenEventIds) tail.seenEventIds.add(n);
+  return tail;
+}
+
 function eventIdOf(ev: WireEvent): number {
   if (typeof ev.data.event_id === 'number') return ev.data.event_id;
   if (ev.id) return Number(ev.id) || 0;

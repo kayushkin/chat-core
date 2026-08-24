@@ -16,8 +16,9 @@ import type { WireEvent } from '../net/wireEvents.js';
 import {
   applyEvent,
   carryForwardAggregates,
-  carryForwardReasoning,
   initTailState,
+  mergeMaterializedPage,
+  reseedTailKeepingFoldHistory,
   type TailState,
 } from '../reduce/TurnReducer.js';
 import { foldHookEvent } from './pendingHooks.js';
@@ -536,27 +537,27 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
       },
 
       setTurns(sessionId, incoming) {
-        // The freshly materialized page wins outright — EXCEPT that a page which carries
-        // no cost/context roll-up does not get to erase the one already known for this
-        // session. `aggregates` is computed per-page by log-store and omitted when the
-        // page held no spend/usage event, so blanking on absence reports "no cost data"
-        // for a session whose spend event merely fell outside this window. See
-        // `carryForwardAggregates`.
+        // MERGE, never replace (dash docs/dashv2-turns-per-message.md §6). This used
+        // to swap the whole model for the incoming page and rebuild the tail from the
+        // page alone — the "everything resets" bug: live-only content vanished and the
+        // fold history was forgotten. `mergeMaterializedPage` joins on the tail's
+        // event-id sets (the entry-id spaces of the two paths never overlap), keeps
+        // what the page cannot answer for — including the reasoning carve-out that
+        // `carryForwardReasoning` used to apply as a separate pass — and reuses held
+        // entry objects for unchanged content so row memos keep hitting.
+        //
+        // `carryForwardAggregates` still runs first: a page carrying no cost/context
+        // roll-up does not get to erase the one already known for this session.
         const prior = get().turnsBySession.get(sessionId);
-        // Two carry-forwards, both guarding against the same mistake: a materialized
-        // page erasing what it is structurally unable to report. Aggregates because
-        // log-store computes them per-page and omits them when the page held no spend
-        // event; reasoning because the reasoning TEXT never reaches storage at all —
-        // Claude Code signs its thinking blocks and stores them empty, so the live
-        // stream is the only place a session's reasoning exists.
-        const model = carryForwardReasoning(
-          prior,
+        const tail = mergeMaterializedPage(
+          get().tails.get(sessionId),
           carryForwardAggregates(prior, incoming),
         );
+        const model = tail.model;
         const turnsBySession = new Map(get().turnsBySession);
         turnsBySession.set(sessionId, model);
         const tails = new Map(get().tails);
-        tails.set(sessionId, initTailState(sessionId, model));
+        tails.set(sessionId, tail);
         const moreBySession = new Map(get().moreBySession);
         moreBySession.set(sessionId, model.more);
         const turnsLoading = new Set(get().turnsLoading);
@@ -689,7 +690,10 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
         const turnsBySession = new Map(get().turnsBySession);
         turnsBySession.set(sessionId, merged);
         const tails = new Map(get().tails);
-        tails.set(sessionId, initTailState(sessionId, merged));
+        // Keeps every surviving entry's folded event-id set — a plain reseed collapsed
+        // them to one id each, leaving a Last-Event-ID replay free to re-fold text the
+        // entry already held.
+        tails.set(sessionId, reseedTailKeepingFoldHistory(sessionId, merged, get().tails.get(sessionId)));
         const moreBySession = new Map(get().moreBySession);
         moreBySession.set(sessionId, older.more);
         set({ turnsBySession, tails, moreBySession });
