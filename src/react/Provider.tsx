@@ -1,6 +1,7 @@
 import { useEffect, useRef, type JSX, type ReactNode } from 'react';
 import { ApiClient } from '../net/ApiClient.js';
 import { NoteboardClient } from '../net/NoteboardClient.js';
+import { ResolveClient } from '../net/ResolveClient.js';
 import { SessionCache } from '../cache/SessionCache.js';
 import { SyncEngine } from '../sync/SyncEngine.js';
 import { Prefetcher } from '../boot/Prefetcher.js';
@@ -15,6 +16,10 @@ export interface ChatProviderProps {
    *  chips render but say lookup is not configured here — they never guess a
    *  path, because a wrong one would 404 as if the item did not exist. */
   noteboardBasePath?: string;
+  /** The host's reference-resolver endpoint, e.g. dash's '/api/resolve'. Omit
+   *  it and bare-uuid ref chips render as plain text — with no resolver there
+   *  is no honest way to say what an unclassified id names. */
+  resolveEndpoint?: string;
   recentN?: number; // warm-cache size, default 20
   turnsPerBundle?: number; // last-N turns per bundled session, default 30
   sessionsPerPage?: number; // sidebar sessions per page, default 100
@@ -35,6 +40,7 @@ export function ChatProvider(props: ChatProviderProps): JSX.Element {
     fetch: fetchFn,
     basePath,
     noteboardBasePath,
+    resolveEndpoint,
     recentN = 20,
     turnsPerBundle = 30,
     sessionsPerPage,
@@ -67,7 +73,10 @@ export function ChatProvider(props: ChatProviderProps): JSX.Element {
     const noteboard = noteboardBasePath
       ? new NoteboardClient({ fetch: fetchFn, basePath: noteboardBasePath })
       : null;
-    ctxRef.current = { store, api, cache: sessionCache, sync, prefetcher, noteboard };
+    const resolve = resolveEndpoint
+      ? new ResolveClient({ fetch: fetchFn, endpoint: resolveEndpoint })
+      : null;
+    ctxRef.current = { store, api, cache: sessionCache, sync, prefetcher, noteboard, resolve };
   }
 
   const ctx = ctxRef.current;

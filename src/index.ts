@@ -32,11 +32,19 @@ export { RefChip, type RefChipProps } from './react/RefChip.js';
 export {
   useSessionRefDetail,
   useNoteboardRefDetail,
+  useResolvedRef,
   useSessionRefTranscript,
   clearRefDetailCache,
   REF_TRANSCRIPT_TURNS,
   type RefDetailState,
 } from './react/refDetail.js';
+export {
+  ResolveClient,
+  type ResolveClientConfig,
+  type ResolvedRefMatch,
+  type ResolveRefError,
+  type ResolveResponse,
+} from './net/ResolveClient.js';
 
 // ---- Session signals (the open questions a session is waiting on) ----
 export {

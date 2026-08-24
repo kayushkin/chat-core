@@ -11,9 +11,11 @@
 //    behavior for consumers that already run react-markdown. It uses the same
 //    core matcher and imports nothing, so chat-core stays dependency-free.
 //
-// Three grammars are recognised, all by one regex: bare session ids, a cue word
-// in front of a noteboard uuid, and the producer/orchestrator's `[kind:id]`
-// bracket dialect (added here, not present upstream).
+// Four grammars are recognised, all by one regex: bare session ids, a cue word
+// in front of a noteboard uuid, the producer/orchestrator's `[kind:id]`
+// bracket dialect (added here, not present upstream), and a bare uuid with no
+// cue at all — kind `uuid`, which the renderer classifies through the host's
+// reference resolver instead of guessing from the surrounding prose.
 
 /**
  * Which backend a chip queries.
@@ -24,8 +26,15 @@
  * in front of the uuid — it is a hint about where to look, never a claim about
  * what the row is. The item's own `type` field is the authority, and a chip
  * labels itself from that once loaded (see NoteboardClient.getItem).
+ *
+ * `uuid` is a bare uuid with no cue word at all: the text says nothing about
+ * what it names, so the chip asks the host's reference resolver (dash's
+ * `POST /api/resolve`, see ResolveClient), which probes the stores registered
+ * in the entity-type registry and reports every one that recognizes the id.
+ * This is the kind that makes chips independent of how the author phrased the
+ * mention — "note <uuid>", "saved as <uuid>", or the uuid alone all resolve.
  */
-export type RefKind = 'session' | 'note' | 'todo';
+export type RefKind = 'session' | 'note' | 'todo' | 'uuid';
 
 /** An ordered piece of a parsed message: literal text or a detected reference. */
 export type RefSegment =
@@ -101,18 +110,25 @@ function kindForCue(cue: string): RefKind {
 //   2 = bracket item kind word  3 = bracket item uuid  (`[todo|note|task:<uuid>]`)
 //   4 = bare session id (whole match is the chip)
 //   5 = item cue word    6 = separator    7 = item uuid
+//   8 = bare uuid, no cue — kind `uuid`, classified by the host's resolver
 //
 // The bracket alternatives come FIRST so a bracket token is consumed whole. They
 // start one character earlier than the cue alternative would (at `[` rather than
 // at the kind word), so leftmost-match already prefers them — but keeping them
 // ahead makes that independent of the scan position, and `[todo:<uuid>]` can
 // never come out as a cue match plus two leftover literals.
+//
+// The bare-uuid alternative comes LAST for the same reason inverted: when a cue
+// word precedes the uuid, the cue alternative's match starts earlier in the
+// string, so leftmost-match prefers it and the cue's kind hint survives. The
+// bare alternative only fires when nothing better claimed the uuid.
 function newTokenRe(): RegExp {
   return new RegExp(
     String.raw`\[session:(${BRACKET_SESSION_ID})\]${NOT_A_LINK_LABEL}` +
       String.raw`|\[(${BRACKET_ITEM_KIND}):(${UUID})\]${NOT_A_LINK_LABEL}` +
       String.raw`|\b(${SESSION_ID})\b` +
-      String.raw`|\b(${ITEM_CUE})([\s:=#]{1,4})(${UUID})\b`,
+      String.raw`|\b(${ITEM_CUE})([\s:=#]{1,4})(${UUID})\b` +
+      String.raw`|\b(${UUID})\b`,
     'gi',
   );
 }
@@ -140,10 +156,13 @@ export function parseRefChips(value: string): RefSegment[] {
       out.push({ type: 'chip', kind: kindForCue(match[2]), refId: match[3] ?? '' });
     } else if (match[4] !== undefined) {
       out.push({ type: 'chip', kind: 'session', refId: match[4] });
-    } else {
+    } else if (match[5] !== undefined) {
       // Keep the cue word + separator as plain text; chip only the uuid.
       out.push({ type: 'text', value: (match[5] ?? '') + (match[6] ?? '') });
       out.push({ type: 'chip', kind: kindForCue(match[5] ?? ''), refId: match[7] ?? '' });
+    } else {
+      // A bare uuid with no cue: the resolver decides what it names.
+      out.push({ type: 'chip', kind: 'uuid', refId: match[8] ?? '' });
     }
     last = match.index + match[0].length;
   }

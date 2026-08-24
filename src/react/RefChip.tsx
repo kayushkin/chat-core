@@ -3,8 +3,10 @@ import { createPortal } from 'react-dom';
 import type { RefKind } from '../reduce/refChips.js';
 import type { ManagedSessionDetail, TurnModel } from '../net/types.js';
 import type { NoteboardItem } from '../net/NoteboardClient.js';
+import type { ResolvedRefMatch } from '../net/ResolveClient.js';
 import {
   useNoteboardRefDetail,
+  useResolvedRef,
   useSessionRefDetail,
   useSessionRefTranscript,
   REF_TRANSCRIPT_TURNS,
@@ -63,11 +65,17 @@ export function RefChip(props: RefChipProps): JSX.Element {
   // than an empty chip so the message loses no content.
   if (!refId) return <>{String(props.children ?? '')}</>;
 
-  return kind === 'session' ? (
-    <SessionRefChip refId={refId} className={props.className} onActivate={props.onActivate} />
-  ) : (
-    <NoteboardRefChip refId={refId} kind={kind} className={props.className} />
-  );
+  if (kind === 'session') {
+    return (
+      <SessionRefChip refId={refId} className={props.className} onActivate={props.onActivate} />
+    );
+  }
+  if (kind === 'uuid') {
+    return (
+      <UnclassifiedRefChip refId={refId} className={props.className} onActivate={props.onActivate} />
+    );
+  }
+  return <NoteboardRefChip refId={refId} kind={kind} className={props.className} />;
 }
 
 /** Gap in px between the chip and its panel, and the margin the panel keeps
@@ -629,6 +637,114 @@ function NoteboardRefPanel({ item }: { item: NoteboardItem }): JSX.Element {
         </>
       )}
     </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Unclassified chip (a bare uuid, classified through the host's resolver)
+// ---------------------------------------------------------------------------
+
+/**
+ * A bare uuid detected with no cue word. The surrounding text says nothing
+ * about what it names, so the host's reference resolver is asked, and the chip
+ * re-renders as whichever kind the id turns out to be:
+ *
+ *  - one `session` match → the session chip;
+ *  - one `note` match (noteboard's one id space — note, todo, rank,
+ *    workspace) → the noteboard chip, which labels itself from the item;
+ *  - several matches, or a type this renderer has no chip for → a generic chip
+ *    whose panel lists every match, because picking one silently would be a
+ *    guess presented as a fact;
+ *  - no match, no resolver, or a resolver error → the id as plain text, which
+ *    is exactly what the message showed before detection existed. An error
+ *    carries a tooltip so the failure is discoverable without being noisy.
+ */
+function UnclassifiedRefChip({
+  refId,
+  className,
+  onActivate,
+}: {
+  refId: string;
+  className?: string;
+  onActivate?: (kind: string, refId: string) => void;
+}): JSX.Element {
+  const { data: matches, error, loading } = useResolvedRef(refId);
+
+  if (loading || matches === null || matches.length === 0) {
+    return (
+      <span data-ref-kind="uuid" data-ref-id={refId} title={error ?? undefined}>
+        {refId}
+      </span>
+    );
+  }
+  if (matches.length === 1) {
+    const match = matches[0] as ResolvedRefMatch;
+    if (match.type === 'session') {
+      return <SessionRefChip refId={refId} className={className} onActivate={onActivate} />;
+    }
+    if (match.type === 'note') {
+      // The fetched item's own `type` labels the chip; the match's registry
+      // type only says which store answered.
+      const itemType = (match.data as { type?: string } | null)?.type ?? 'note';
+      return <NoteboardRefChip refId={refId} kind={itemType} className={className} />;
+    }
+  }
+  return <MultiMatchRefChip refId={refId} matches={matches} className={className} />;
+}
+
+/** The honest rendering for an id that resolved ambiguously (several stores
+ *  recognize it) or to a type this renderer has no dedicated chip for: a chip
+ *  whose panel lists every match, so the reader does the picking. */
+function MultiMatchRefChip({
+  refId,
+  matches,
+  className,
+}: {
+  refId: string;
+  matches: ResolvedRefMatch[];
+  className?: string;
+}): JSX.Element {
+  const { open, toggle, wrapRef, panelRef, panelStyle } = useAnchoredPanel();
+  const label =
+    matches.length === 1 ? `${matches[0]?.type} ${idTail(refId)}` : idTail(refId);
+
+  return (
+    <span className="ref-chip-wrap" ref={wrapRef} data-ref-kind="resolved" data-ref-id={refId}>
+      <button
+        type="button"
+        className={`${className ?? 'ref-chip'} ref-chip-item${open ? ' ref-chip-open' : ''}`}
+        onClick={toggle}
+        aria-expanded={open}
+        title={refId}
+      >
+        <span className="ref-chip-glyph" aria-hidden>
+          🔗
+        </span>
+        <span className="ref-chip-label">{label}</span>
+        <span className="ref-chip-caret-inline" aria-hidden>
+          ▾
+        </span>
+      </button>
+      {open && (
+        <AnchoredPanel
+          panelRef={panelRef}
+          panelStyle={panelStyle}
+          label="Reference details"
+          refId={refId}
+          refKind="resolved"
+        >
+          <div className="ref-chip-panel-title">{refId}</div>
+          {matches.length > 1 && (
+            <div className="ref-chip-panel-loading">
+              This id resolves in {matches.length} stores:
+            </div>
+          )}
+          {matches.map((m) => (
+            <RefRow key={`${m.service}/${m.type}`} label={m.type} value={m.service} />
+          ))}
+        </AnchoredPanel>
+      )}
+    </span>
   );
 }
 

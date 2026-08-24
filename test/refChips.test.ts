@@ -39,10 +39,13 @@ describe('parseRefChips — session ids', () => {
 });
 
 describe('parseRefChips — noteboard cues', () => {
-  it('needs a cue word: a bare uuid is never a chip', () => {
-    // Noteboard ids are plain uuids and collide with harness session uuids and
-    // unrelated ones, so chipping them unprompted would linkify noise.
-    expect(chips(`the id is ${UUID}`)).toEqual([]);
+  it('chips a bare uuid with kind `uuid`, for the resolver to classify', () => {
+    // The reversal of the original cue-word contract: a bare uuid IS detected,
+    // but as kind `uuid` — no claim about which store it belongs to. The
+    // renderer asks the host's reference resolver, and an id no store
+    // recognizes falls back to plain text there. Detection no longer depends
+    // on how the author phrased the mention.
+    expect(chips(`the id is ${UUID}`)).toEqual([{ kind: 'uuid', refId: UUID }]);
   });
 
   it('maps todo-family cues to the todo kind', () => {
@@ -83,10 +86,13 @@ describe('parseRefChips — noteboard cues', () => {
     );
   });
 
-  it('does not fire on a word that merely ends with a cue', () => {
-    // `\b` guards the left edge: "footnote" must not read as "note".
-    expect(chips(`footnote ${UUID}`)).toEqual([]);
-    expect(chips(`notes ${UUID}`)).toEqual([]);
+  it('does not read a word that merely ends with a cue as a cue', () => {
+    // `\b` guards the left edge: "footnote" must not read as "note". The uuid
+    // still chips — as the unclassified `uuid` kind, not as a note — so the
+    // cue grammar's job is now only to carry the kind hint, never to gate
+    // detection.
+    expect(chips(`footnote ${UUID}`)).toEqual([{ kind: 'uuid', refId: UUID }]);
+    expect(chips(`notes ${UUID}`)).toEqual([{ kind: 'uuid', refId: UUID }]);
   });
 
   it('handles several references of mixed kinds in one string', () => {
@@ -95,6 +101,45 @@ describe('parseRefChips — noteboard cues', () => {
       { kind: 'todo', refId: UUID },
       { kind: 'note', refId: OTHER_UUID },
     ]);
+  });
+});
+
+describe('parseRefChips — bare uuids (the resolver-classified kind)', () => {
+  it('prefers the cue kinds when a cue is present', () => {
+    // Leftmost-match: the cue alternative starts at the cue word, earlier in
+    // the string than the uuid itself, so a cued uuid keeps its note/todo kind
+    // hint and never degrades to the unclassified kind.
+    expect(chips(`note: ${UUID}`)).toEqual([{ kind: 'note', refId: UUID }]);
+    expect(chips(`todo: ${UUID}`)).toEqual([{ kind: 'todo', refId: UUID }]);
+  });
+
+  it('chips the phrasings that historically failed the cue grammar', () => {
+    // The shapes from the session that motivated this kind ("Baritone playlist
+    // fit"): an em-dash separator the cue grammar refuses, and a cue word too
+    // far from the uuid. Both contain the id, and containing the id is now
+    // enough — the resolver classifies it.
+    for (const text of [
+      `**1. The reference note** — ${UUID}`,
+      `Saved to noteboard: ${UUID} — every track judged`,
+    ]) {
+      expect(chips(text), text).toEqual([{ kind: 'uuid', refId: UUID }]);
+    }
+    // With a cue adjacent the cue grammar still wins and carries its kind hint.
+    expect(chips(`Saved as a personal note: ${UUID}`)).toEqual([{ kind: 'note', refId: UUID }]);
+  });
+
+  it('chips each uuid separately in a list of several', () => {
+    expect(chips(`${UUID} and ${OTHER_UUID}`)).toEqual([
+      { kind: 'uuid', refId: UUID },
+      { kind: 'uuid', refId: OTHER_UUID },
+    ]);
+  });
+
+  it('does not fire inside a longer hex run', () => {
+    // `\b` guards both edges: a uuid-shaped substring embedded in a longer
+    // token (a hash, a longer id) is not an id of its own.
+    expect(chips(`deadbeef${UUID}`)).toEqual([]);
+    expect(chips(`${UUID}0`)).toEqual([]);
   });
 });
 
@@ -203,15 +248,14 @@ describe('parseRefChips — producer bracket dialect', () => {
   });
 
   it('leaves malformed bracket forms as plain text', () => {
-    for (const bad of [
-      '[session:]',
-      '[:id]',
-      '[unknown:id]',
-      `[unknown:${UUID}]`,
-      '[session]',
-    ]) {
+    for (const bad of ['[session:]', '[:id]', '[unknown:id]', '[session]']) {
       expect(chips(bad), bad).toEqual([]);
     }
+    // A malformed bracket around a real uuid: the bracket grammar refuses it,
+    // but the uuid inside is still an id and chips as the unclassified kind —
+    // the brackets and unknown prefix stay literal text around it.
+    expect(chips(`[unknown:${UUID}]`)).toEqual([{ kind: 'uuid', refId: UUID }]);
+    expect(textOf(parseRefChips(`[unknown:${UUID}]`))).toBe(`[unknown:[uuid:${UUID}]]`);
   });
 
   it('falls back to the bare-id grammar when the closing bracket is missing', () => {
@@ -257,6 +301,30 @@ describe('remarkRefChips', () => {
   function tree(children: TestNode[]): TestNode {
     return { type: 'root', children };
   }
+
+  it('chips a backticked uuid split from its cue by markdown node boundaries', () => {
+    // The exact mdast shape of the Baritone session's messages: the cue word
+    // ("note") lives in a text node while the uuid lives in the following
+    // inlineCode node, so no cue grammar can ever see them together. The bare
+    // uuid inside the code span chips on its own, as the resolver-classified
+    // kind.
+    const root = tree([
+      {
+        type: 'paragraph',
+        children: [
+          { type: 'text', value: 'Saved as a personal note: ' },
+          { type: 'inlineCode', value: '0d195aec-5ad0-4399-9b5d-75fe03262145' },
+        ],
+      },
+    ]);
+    remarkRefChips()(root as never);
+    const kids = root.children?.[0]?.children ?? [];
+    expect(kids.map((k) => k.type)).toEqual(['text', 'refChip']);
+    expect(kids[1]?.data).toEqual({
+      hName: 'ref-chip',
+      hProperties: { kind: 'uuid', refId: '0d195aec-5ad0-4399-9b5d-75fe03262145' },
+    });
+  });
 
   it('rewrites text nodes into ref-chip elements', () => {
     const root = tree([{ type: 'paragraph', children: [{ type: 'text', value: 'br_1234567890123456' }] }]);

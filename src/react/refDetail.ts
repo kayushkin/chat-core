@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useChatContext } from './context.js';
 import type { ManagedSessionDetail, TurnModel } from '../net/types.js';
 import type { NoteboardItem } from '../net/NoteboardClient.js';
+import type { ResolveClient, ResolvedRefMatch } from '../net/ResolveClient.js';
 
 // Data layer for reference chips. A chip is a passive linkification of an id
 // that happens to appear in a message, so the same id can appear dozens of
@@ -47,6 +48,7 @@ function takeCached<T>(
 const sessionDetailCache = new Map<string, CacheSlot<ManagedSessionDetail>>();
 const noteboardItemCache = new Map<string, CacheSlot<NoteboardItem>>();
 const transcriptCache = new Map<string, CacheSlot<TurnModel>>();
+const resolvedRefCache = new Map<string, CacheSlot<ResolvedRefMatch[]>>();
 
 /** Drop every cached reference. Tests call this between cases; nothing in the
  *  app does, because entries age out on their own. */
@@ -54,6 +56,88 @@ export function clearRefDetailCache(): void {
   sessionDetailCache.clear();
   noteboardItemCache.clear();
   transcriptCache.clear();
+  resolvedRefCache.clear();
+}
+
+// --- batched reference resolution ---
+//
+// A transcript can mention dozens of bare uuids, each mounting its own chip in
+// the same render pass. The resolver takes a batch, so instead of one POST per
+// chip the ids queue for one flush window and go out together. The queue is
+// keyed by client (WeakMap) so two providers on one page never cross wires.
+
+/** One flush window. Long enough to collect every chip a render pass mounts,
+ *  short enough to be invisible next to the network round-trip. */
+const RESOLVE_FLUSH_MS = 25;
+/** dash's per-call cap; a bigger queue goes out as several calls. */
+const RESOLVE_BATCH_MAX = 128;
+
+interface ResolveWaiter {
+  resolve: (m: ResolvedRefMatch[]) => void;
+  reject: (e: unknown) => void;
+}
+
+interface ResolveQueue {
+  /** Waiters per id — an array, so a second request for an id already queued
+   *  (a cache eviction racing a flush) waits alongside rather than silently
+   *  replacing the first waiter and leaving its promise unsettled. */
+  pending: Map<string, ResolveWaiter[]>;
+  timer: ReturnType<typeof setTimeout> | null;
+}
+
+const resolveQueues = new WeakMap<ResolveClient, ResolveQueue>();
+
+async function flushResolveQueue(client: ResolveClient, queue: ResolveQueue): Promise<void> {
+  queue.timer = null;
+  const taken = queue.pending;
+  queue.pending = new Map();
+  const ids = [...taken.keys()];
+  for (let start = 0; start < ids.length; start += RESOLVE_BATCH_MAX) {
+    const batch = ids.slice(start, start + RESOLVE_BATCH_MAX);
+    try {
+      const response = await client.resolve(batch);
+      // A per-id error means that id's misses are NOT definitive — reject it so
+      // the promise cache evicts and the next mount retries, rather than
+      // caching a store outage as "this id names nothing".
+      const errorsByID = new Map((response.errors ?? []).map((e) => [e.id, e.error]));
+      for (const id of batch) {
+        const waiters = taken.get(id) ?? [];
+        const idError = errorsByID.get(id);
+        const matches = response.results[id];
+        for (const waiter of waiters) {
+          if (idError !== undefined) {
+            waiter.reject(new Error(idError));
+          } else if (matches === undefined) {
+            waiter.reject(new Error('resolver response is missing this id'));
+          } else {
+            waiter.resolve(matches);
+          }
+        }
+      }
+    } catch (e) {
+      for (const id of batch) {
+        for (const waiter of taken.get(id) ?? []) waiter.reject(e);
+      }
+    }
+  }
+}
+
+function enqueueResolve(client: ResolveClient, id: string): Promise<ResolvedRefMatch[]> {
+  let queue = resolveQueues.get(client);
+  if (!queue) {
+    queue = { pending: new Map(), timer: null };
+    resolveQueues.set(client, queue);
+  }
+  const q = queue;
+  return new Promise<ResolvedRefMatch[]>((resolve, reject) => {
+    const waiters = q.pending.get(id);
+    if (waiters) {
+      waiters.push({ resolve, reject });
+    } else {
+      q.pending.set(id, [{ resolve, reject }]);
+    }
+    q.timer ??= setTimeout(() => void flushResolveQueue(client, q), RESOLVE_FLUSH_MS);
+  });
 }
 
 /** What a chip knows about its target at any moment. `data` and `error` are
@@ -138,6 +222,26 @@ export function useNoteboardRefDetail(itemId: string): RefDetailState<NoteboardI
       return Promise.reject(new Error('noteboard lookup is not configured here'));
     }
     return takeCached(noteboardItemCache, itemId, () => noteboard.getItem(itemId));
+  });
+}
+
+/**
+ * What a bare uuid names, per the host's reference resolver: every registered
+ * store that recognizes the id, or an empty array for a definitive miss. Used
+ * by the `uuid` chip kind — an id detected with no cue word, where the text
+ * itself says nothing about the store.
+ *
+ * When the host configured no resolver this reports it as an error, and the
+ * chip renders the id as plain text: with nowhere to ask, plain text is the
+ * only honest rendering of an unclassified id.
+ */
+export function useResolvedRef(refId: string): RefDetailState<ResolvedRefMatch[]> {
+  const { resolve } = useChatContext();
+  return useCachedRef(refId, refId !== '', () => {
+    if (!resolve) {
+      return Promise.reject(new Error('reference resolver is not configured here'));
+    }
+    return takeCached(resolvedRefCache, refId, () => enqueueResolve(resolve, refId));
   });
 }
 
