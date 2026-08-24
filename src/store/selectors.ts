@@ -574,9 +574,17 @@ export function visibleEntryIdsFor(
   if (!model) return [];
   const turn = model.turns.find((t) => t.id === turnId);
   if (!turn) return [];
+  // A dangling id (no entry in the map) sorts to the END, not the front:
+  // `?? 0` here used to put it before every real entry, which was harmless
+  // only because the renderers skip missing entries — a sort that quietly
+  // fronts unknowns is a bug waiting for its first reader that does not.
   const ids = turn.entryIds
     .slice()
-    .sort((a, b) => (model.entries[a]?.eventId ?? 0) - (model.entries[b]?.eventId ?? 0));
+    .sort(
+      (a, b) =>
+        (model.entries[a]?.eventId ?? Number.MAX_SAFE_INTEGER) -
+        (model.entries[b]?.eventId ?? Number.MAX_SAFE_INTEGER),
+    );
   if (view === 'raw') return ids;
   return ids.filter((id) => !model.entries[id]?.duplicate);
 }
