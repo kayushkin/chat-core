@@ -16,6 +16,7 @@ import type { WireEvent } from '../net/wireEvents.js';
 import {
   applyEvent,
   carryForwardAggregates,
+  carryForwardReasoning,
   initTailState,
   type TailState,
 } from '../reduce/TurnReducer.js';
@@ -541,7 +542,17 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
         // page held no spend/usage event, so blanking on absence reports "no cost data"
         // for a session whose spend event merely fell outside this window. See
         // `carryForwardAggregates`.
-        const model = carryForwardAggregates(get().turnsBySession.get(sessionId), incoming);
+        const prior = get().turnsBySession.get(sessionId);
+        // Two carry-forwards, both guarding against the same mistake: a materialized
+        // page erasing what it is structurally unable to report. Aggregates because
+        // log-store computes them per-page and omits them when the page held no spend
+        // event; reasoning because the reasoning TEXT never reaches storage at all —
+        // Claude Code signs its thinking blocks and stores them empty, so the live
+        // stream is the only place a session's reasoning exists.
+        const model = carryForwardReasoning(
+          prior,
+          carryForwardAggregates(prior, incoming),
+        );
         const turnsBySession = new Map(get().turnsBySession);
         turnsBySession.set(sessionId, model);
         const tails = new Map(get().tails);

@@ -55,6 +55,82 @@ export function carryForwardAggregates(
   return { ...fresher, aggregates: staler.aggregates };
 }
 
+/**
+ * Keep the reasoning the live stream produced across a page that carries none.
+ *
+ * Same shape and same justification as `carryForwardAggregates` above: a materialized
+ * page must not erase what it is structurally unable to report.
+ *
+ * ⚠️ Reasoning TEXT does not survive into storage, and the loss is upstream of this
+ * whole stack. Measured on this host: Claude Code's own transcript records 607 thinking
+ * blocks for one session with `thinking: ""` and a 472–724 byte signature — it records
+ * that reasoning happened and signs it, never what it said. log-store therefore holds
+ * 98,959 thinking blocks of which ZERO carry text, and reasoning text last appeared in
+ * quantity in 2026-04 (70 events), then 3 in May and none since.
+ *
+ * So the live stream is the ONLY place a session's reasoning ever exists. Replacing the
+ * live model with a materialized page — which `setTurns` does on every validator repair
+ * and every session open — deleted it. That is the reported bug in all three of its
+ * shapes: the aside vanishing when the final text lands, an open aside collapsing when
+ * more text streams in (the entry is gone, so the element is unmounted), and reasoning
+ * appearing to stop at the latest block.
+ *
+ * The rule is deliberately narrow. An entry is carried forward only when it is
+ * `thinking`, carries text, and the fresher page has no entry under that id. Nothing
+ * else is preserved: for every other kind the server IS authoritative, and a page that
+ * drops a text entry is reporting a real edit — a compaction, a redaction — that the
+ * client must honour. Carried entries keep their place in their turn, and a turn the
+ * fresher page does not contain is not resurrected: it is off the loaded window and
+ * renders nothing either way.
+ *
+ * This does not fabricate. Every preserved character was streamed to this client by the
+ * server for this session. It is the client declining to throw away the only copy.
+ */
+export function carryForwardReasoning(
+  staler: TurnModel | undefined,
+  fresher: TurnModel,
+): TurnModel {
+  if (!staler) return fresher;
+
+  const fresherTurnIds = new Set(fresher.turns.map((t) => t.id));
+  const preserved: Record<string, Entry> = {};
+  for (const id of Object.keys(staler.entries)) {
+    const entry = staler.entries[id];
+    if (!entry || entry.kind !== 'thinking' || !entry.text) continue;
+    if (fresher.entries[id]) continue;
+    if (!entry.turnId || !fresherTurnIds.has(entry.turnId)) continue;
+    preserved[id] = entry;
+  }
+  const preservedIds = Object.keys(preserved);
+  if (preservedIds.length === 0) return fresher;
+
+  // Re-seated by eventId, not appended. The Turns view joins a turn's reasoning in
+  // `entryIds` order, so appending would put earlier reasoning after later reasoning
+  // in the same aside — right text, wrong order, and nothing on screen to say so.
+  const byTurn = new Map<string, string[]>();
+  for (const id of preservedIds) {
+    const turnId = preserved[id]!.turnId!;
+    const list = byTurn.get(turnId);
+    if (list) list.push(id);
+    else byTurn.set(turnId, [id]);
+  }
+  const eventIdOfEntry = (id: string): number =>
+    fresher.entries[id]?.eventId ?? preserved[id]?.eventId ?? 0;
+
+  return {
+    ...fresher,
+    entries: { ...fresher.entries, ...preserved },
+    turns: fresher.turns.map((turn) => {
+      const extra = byTurn.get(turn.id);
+      if (!extra) return turn;
+      const merged = [...turn.entryIds, ...extra].sort(
+        (a, b) => eventIdOfEntry(a) - eventIdOfEntry(b),
+      );
+      return { ...turn, entryIds: merged };
+    }),
+  };
+}
+
 /** Build a fresh, empty tail state, or seed it from a server-materialized
  *  TurnModel (the warm/cold-switch path: reduce only the tail on top of this). */
 export function initTailState(sessionId: string, model?: TurnModel): TailState {
