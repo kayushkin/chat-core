@@ -558,22 +558,41 @@ export interface RefDetailState<T> { data: T | null; error: string | null; loadi
 // panel, so opening session A's chip while working in session B answers A's question in
 // place. It ships no CSS: stable unhashed `signal-*` classes, styled by the host.
 //
-// ⚠️ Answering is per PRODUCER, and the two paths share nothing:
-//   tool-sourced   (has requestId) — GET /sessions/{id}/hooks/pending to read the PARKED
-//                  tool input back, then POST .../hooks/{requestId}/resolve with
-//                  {behavior:'allow', updated_input:{...parkedInput, answers}}. The
-//                  refetch is mandatory: resolve REPLACES updated_input wholesale, so
-//                  rebuilding it from the signal rows drops multiSelect and option
-//                  previews. `answers` is keyed by signal TITLE — that is what the server
-//                  reads back to pair an answer to its row. A park that is gone is an
-//                  error the user sees, never a resolve posted into the void.
-//   derived        (no requestId) — POST /sessions/{id}/send. No hook was ever parked, so
-//                  the answer IS the session's next user message; the record closes
-//                  server-side, in the /send handler.
-// Decline is the same resolve endpoint with {behavior:'deny'} and no updated_input, and is
-// offered only where there is a requestId. Acknowledge/dismiss are the SIGNAL-level verb
-// (POST /signals/{id}/resolve); the server refuses `acknowledged` for a question on
-// purpose — a question nobody answered has not been handled.
+// Answering is ONE door: POST /signals/{id}/answer, keyed by signal id, whichever producer
+// raised the question and whether or not the session is still running. The client used to
+// choose the transport — refetch the parked tool input and post it to the hook route, or
+// post text to /send — on evidence it does not have: a requestId says a park EXISTED, not
+// that it is still live. The server picks now, and the title-keyed pairing a parked hook
+// needs is derived where the parked input already lives. Dismiss is the SIGNAL-level verb
+// (POST /signals/{id}/resolve {state:'dismissed'}), and the server reads it the same way:
+// it denies a live parked call and closes a dead one. Acknowledge is that verb with
+// `acknowledged`, which the server refuses for a QUESTION on purpose — a question nobody
+// answered has not been handled.
+//
+// How a card answers:
+//   pick-one     — plain buttons that SEND on the click, with no Submit and no radios: a
+//                  radio holds a choice until a Submit, and there is none to hold it for.
+//                  Only when the request holds this question and no other, because one
+//                  AskUserQuestion call resolves ONCE with every answer together.
+//   pick-many    — checkboxes plus a Submit, driven off `allowMultipleOptions` and never
+//                  inferred from the option count. A pick-many answer is comma-joined,
+//                  which is what the tool's own schema takes.
+//   any option   — rewritable in place. The editor opens on the LABEL (the words you are
+//                  amending; a machine `value` cannot be amended into a sentence) and the
+//                  rewritten text is what goes on the wire. An untouched pick still sends
+//                  `value || label`.
+//   freeform     — a textarea, for every question that has no editable option to rewrite
+//                  instead. Never gated on `allowFreeform`: `signalFromWire` defaults that
+//                  to FALSE when the key is absent, so honouring it fails closed onto an
+//                  unanswerable card.
+//
+// `compact` trims chrome (descriptions, body) for tight surfaces and never the means of
+// answering. `startCollapsedToAnswers` opens a card on its answers alone, with a
+// disclosure for the question — for a chat pane, whose transcript already carries the
+// question directly above. That one also drops the freeform box wherever the question HAS
+// options, because each option is editable. ⚠️ A host's composer is not the fallback: a
+// bare POST /sessions/{id}/send deliberately leaves a tool-parked question open, because
+// the harness is blocked on its hook and not on stdin.
 //
 // A 404 from /signals means this bridge-server predates the feature: the read answers
 // `null` (never `[]`, which would say "deployed and quiet") and every surface renders
@@ -595,9 +614,9 @@ export interface OpenSignalsState {
 // `everyQuestionAnswered` — one AskUserQuestion call resolves once, so a partial submit
 // would answer some questions and discard the rest (`answerSignalRequest` enforces it too).
 export function answerSignalRequest(api: ApiClient, request: SignalRequest, answersBySignalId: Readonly<Record<string, SignalAnswer>>): Promise<void>;
-export function resolveSignalQuestions(api: ApiClient, sessionId: string, requestId: string, answersByTitle: Readonly<Record<string, string>>): Promise<void>;
-export function answerDerivedQuestion(api: ApiClient, sessionId: string, text: string): Promise<void>;
-export function declineSignalQuestions(api: ApiClient, sessionId: string, requestId: string): Promise<void>;
+// What one composed answer becomes on the wire: the picked options comma-joined, or the
+// typed text. Empty means unanswered — options OR text, never both.
+export function answerTextOf(answer: SignalAnswerDraft | undefined): string;
 export function acknowledgeSignal(api: ApiClient, signalId: string): Promise<void>;
 export function dismissSignal(api: ApiClient, signalId: string): Promise<void>;
 export function subscribeToSignalChanges(listener: () => void): () => void;

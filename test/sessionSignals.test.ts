@@ -1,4 +1,4 @@
-import { createElement } from 'react';
+import { createElement, type ReactElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { ApiClient } from '../src/net/ApiClient.js';
@@ -6,6 +6,7 @@ import {
   groupSignalsByRequest,
   signalFromWire,
   type Signal,
+  type SignalRequest,
   type SignalWire,
 } from '../src/net/signals.js';
 import {
@@ -17,8 +18,9 @@ import {
   everyQuestionAnswered,
   subscribeToSignalChanges,
 } from '../src/store/signalResolve.js';
-import { SignalCard } from '../src/react/SignalCard.js';
+import { SignalCard, SignalRequestCard } from '../src/react/SignalCard.js';
 import { SignalRequestList } from '../src/react/SessionSignals.js';
+import { ChatContext, type ChatContextValue } from '../src/react/context.js';
 
 // Answering a session signal used to be the one place in this package where a
 // write was preceded by a mandatory read: the hook-resolve verb REPLACES the
@@ -299,7 +301,7 @@ describe('a question that allows more than one answer', () => {
   // multiSelect existed only in the first. Folding the banner away is only
   // honest if the card can render this, so these cases are the fold's floor.
 
-  it('draws checkboxes, and a pick-one question draws radios', () => {
+  it('draws checkboxes for a pick-many question, and buttons for a pick-one', () => {
     const many = question({ id: 'sig-m', allow_multiple_options: true,
       options: [{ label: 'a.go', value: 'a.go' }, { label: 'b.go', value: 'b.go' }] });
     const one = question({ id: 'sig-o',
@@ -307,14 +309,19 @@ describe('a question that allows more than one answer', () => {
 
     expect(renderToStaticMarkup(createElement(SignalCard, { signal: many })))
       .toContain('type="checkbox"');
-    // Not merely "contains radio" — the pick-many form must contain NO radio at
-    // all, or the two controls disagree about the same question on one card.
-    expect(renderToStaticMarkup(createElement(SignalCard, { signal: many })))
+    // A pick-one question answers ON the click, so it draws no radio anywhere.
+    // A radio's whole job is to hold a choice until a Submit, and a card that
+    // sends on the click has no Submit to hold it for.
+    expect(renderToStaticMarkup(createElement(SignalCard, { signal: one })))
       .not.toContain('type="radio"');
     expect(renderToStaticMarkup(createElement(SignalCard, { signal: one })))
-      .toContain('type="radio"');
-    expect(renderToStaticMarkup(createElement(SignalCard, { signal: one })))
       .not.toContain('type="checkbox"');
+    expect(renderToStaticMarkup(createElement(SignalCard, { signal: one })))
+      .toContain('signal-option-pick');
+    // And the pick-many form keeps its checkboxes to itself — a card drawing
+    // both controls would be two opinions about the same question.
+    expect(renderToStaticMarkup(createElement(SignalCard, { signal: many })))
+      .not.toContain('signal-option-pick');
   });
 
   it('reads the flag off the record and never infers it from the options', () => {
@@ -326,7 +333,7 @@ describe('a question that allows more than one answer', () => {
     });
     expect(twoOptionsNoFlag.allowMultipleOptions).toBe(false);
     expect(renderToStaticMarkup(createElement(SignalCard, { signal: twoOptionsNoFlag })))
-      .toContain('type="radio"');
+      .not.toContain('type="checkbox"');
   });
 
   it('comma-joins several picked options, which is what the tool schema takes', () => {
@@ -466,5 +473,164 @@ describe('SignalCard reads no context', () => {
     } as SignalWire);
     const html = renderToStaticMarkup(createElement(SignalCard, { signal }));
     expect(html).not.toContain('textarea');
+  });
+});
+
+/** A SignalRequestCard needs one thing from context — the ApiClient — and these
+ *  cases never let it reach the wire, so a bare provider around it is the whole
+ *  of the wiring. Deliberately NOT a ChatProvider: that builds a cache, a sync
+ *  engine and a boot sequence to answer a question about a button. */
+function inChatContext(node: ReactElement): ReactElement {
+  const { api } = client(() => respond(200, {}));
+  return createElement(ChatContext.Provider, { value: { api } as ChatContextValue }, node);
+}
+
+function requestOf(...signals: Signal[]): SignalRequest {
+  const [request] = groupSignalsByRequest(signals);
+  if (!request) throw new Error('no request grouped');
+  return request;
+}
+
+describe('an answer you can rewrite before you send it', () => {
+  // A suggested answer is a suggestion. Every option carries an edit control, so
+  // "yes, but only the staging cluster" is one keystroke off the option that
+  // nearly said it — rather than a retype into a separate box that clears the
+  // choice you were amending.
+
+  it('gives every option its own edit control', () => {
+    const signal = question({
+      options: [{ label: 'Yes', value: 'Yes' }, { label: 'No', value: 'No' }],
+    });
+    const html = renderToStaticMarkup(
+      createElement(SignalCard, { signal, onChangeAnswer: () => {} }),
+    );
+    expect(html.match(/signal-option-edit"/g)).toHaveLength(2);
+    // Named after what it rewrites, so a screen reader says which answer is
+    // about to change rather than "button" — and named WITHOUT the word
+    // "answer", or every pencil on the card answers to the Submit button's name.
+    expect(html).toContain('Rewrite “Yes”');
+    expect(html).not.toContain('before answering');
+  });
+
+  it('keeps the pencil OUT of the pick-many label', () => {
+    // A <button> inside a <label> is activated by the label, so a pencil nested
+    // there would tick the box it sits on every time it was clicked. Same reason
+    // the pick-one control is a sibling and not a child.
+    const many = question({
+      allow_multiple_options: true,
+      options: [{ label: 'a.go', value: 'a.go' }],
+    });
+    const html = renderToStaticMarkup(
+      createElement(SignalCard, { signal: many, onChangeAnswer: () => {} }),
+    );
+    expect(html).toContain('</label><button type="button" class="signal-option-edit"');
+  });
+});
+
+describe('a question that answers on the click', () => {
+  // One click is the whole answer when a request holds a single pick-one
+  // question, so the card sends it and draws no Submit. The three conditions are
+  // each load-bearing, and the cases below are one per condition.
+
+  it('draws no Submit for a lone pick-one question in the chat pane', () => {
+    const one = question({ id: 'sig-1', request_id: 'req-1',
+      options: [{ label: 'Yes', value: 'Yes' }, { label: 'No', value: 'No' }] });
+    const html = renderToStaticMarkup(
+      inChatContext(createElement(SignalRequestCard, {
+        request: requestOf(one),
+        startCollapsedToAnswers: true,
+      })),
+    );
+    expect(html).not.toContain('signal-submit');
+    expect(html).toContain('signal-option-pick');
+  });
+
+  it('keeps Submit for a pick-many question — it is not finished until you say so', () => {
+    const many = question({ id: 'sig-1', request_id: 'req-1', allow_multiple_options: true,
+      options: [{ label: 'a.go', value: 'a.go' }, { label: 'b.go', value: 'b.go' }] });
+    const html = renderToStaticMarkup(
+      inChatContext(createElement(SignalRequestCard, {
+        request: requestOf(many),
+        startCollapsedToAnswers: true,
+      })),
+    );
+    expect(html).toContain('signal-submit');
+  });
+
+  it('keeps Submit when the request carries a second question', () => {
+    // The request resolves ONCE, with every answer together. Sending on the
+    // first click would resolve it with the rest blank.
+    const first = question({ id: 'sig-1', request_id: 'req-1',
+      options: [{ label: 'Yes', value: 'Yes' }] });
+    const second = question({ id: 'sig-2', request_id: 'req-1', title: 'Which branch?',
+      options: [{ label: 'main', value: 'main' }] });
+    const html = renderToStaticMarkup(
+      inChatContext(createElement(SignalRequestCard, {
+        request: requestOf(first, second),
+        startCollapsedToAnswers: true,
+      })),
+    );
+    expect(html).toContain('signal-submit');
+  });
+
+  it('keeps Submit wherever a freeform box is still on the card', () => {
+    // The sidebar surfaces keep their box, and text typed into it has nothing
+    // else to send it — the options answer on the click, the box does not.
+    const one = question({ id: 'sig-1', request_id: 'req-1',
+      options: [{ label: 'Yes', value: 'Yes' }] });
+    const html = renderToStaticMarkup(
+      inChatContext(createElement(SignalRequestCard, { request: requestOf(one) })),
+    );
+    expect(html).toContain('textarea');
+    expect(html).toContain('signal-submit');
+  });
+});
+
+describe('a card opened showing only its answers', () => {
+  // The chat pane's cards sit directly under the transcript that already carries
+  // the question, so repeating it there is the same words twice.
+
+  it('hides the question and its summary behind a disclosure', () => {
+    const signal = question({
+      title: 'Which database?',
+      body: 'Postgres is already deployed; SQLite would be new.',
+      options: [{ label: 'Postgres', value: 'pg', description: 'already deployed' }],
+    });
+    const html = renderToStaticMarkup(
+      createElement(SignalCard, { signal, startCollapsedToAnswers: true }),
+    );
+    expect(html).not.toContain('Which database?');
+    expect(html).not.toContain('already deployed');
+    // The answers are what is left, and the control that puts the rest back is
+    // named for what it does.
+    expect(html).toContain('Postgres');
+    expect(html).toContain('Show the question');
+  });
+
+  it('drops the freeform box when there are options to rewrite instead', () => {
+    const signal = question({ options: [{ label: 'Yes', value: 'Yes' }] });
+    expect(
+      renderToStaticMarkup(createElement(SignalCard, { signal, startCollapsedToAnswers: true })),
+    ).not.toContain('textarea');
+  });
+
+  it('keeps the freeform box when the question has no options at all', () => {
+    // Otherwise the card has no answer field left. The chat composer is NOT the
+    // fallback: a bare /send deliberately leaves a tool-parked question open,
+    // because the harness is blocked on its hook and not on stdin
+    // (TestAnswerDerivedQuestionsLeavesToolParksToTheHookVerb, llm-bridge-server).
+    const signal = question({ options: [] });
+    expect(
+      renderToStaticMarkup(createElement(SignalCard, { signal, startCollapsedToAnswers: true })),
+    ).toContain('textarea');
+  });
+
+  it('never collapses a notification — a notification IS its title', () => {
+    const note = question({ kind: 'notification', title: 'The deploy finished' });
+    const html = renderToStaticMarkup(
+      createElement(SignalCard, { signal: note, startCollapsedToAnswers: true }),
+    );
+    expect(html).toContain('The deploy finished');
+    expect(html).not.toContain('signal-disclosure');
   });
 });

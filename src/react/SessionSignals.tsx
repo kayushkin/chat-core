@@ -52,6 +52,8 @@ export interface SignalRequestListProps {
   onResolved?: () => void;
   /** Passed through to every card — see `SignalRequestCard`. */
   allowDismissWithoutAnswer?: boolean;
+  /** Passed through to every card — see `SignalCardProps.startCollapsedToAnswers`. */
+  startCollapsedToAnswers?: boolean;
 }
 
 /**
@@ -69,6 +71,7 @@ export function SignalRequestList({
   title,
   onResolved,
   allowDismissWithoutAnswer,
+  startCollapsedToAnswers,
 }: SignalRequestListProps): JSX.Element | null {
   if (requests.length === 0) return null;
   return (
@@ -84,6 +87,7 @@ export function SignalRequestList({
           compact={compact}
           onResolved={onResolved}
           allowDismissWithoutAnswer={allowDismissWithoutAnswer}
+          startCollapsedToAnswers={startCollapsedToAnswers}
         />
       ))}
     </div>

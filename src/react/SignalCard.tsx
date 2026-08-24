@@ -28,6 +28,16 @@ export interface SignalCardProps {
    *  options or with freeform text, NEVER both — picking one clears the other. */
   answer?: SignalAnswerDraft;
   onChangeAnswer?: (answer: SignalAnswerDraft) => void;
+  /** Send this answer immediately, without waiting for a Submit.
+   *
+   *  Supplied ONLY when this signal is the single question in its request, so
+   *  one click is the whole answer. A request carrying several questions
+   *  resolves once, with every answer together, and clicking option one of
+   *  question one there would resolve it with the rest blank.
+   *
+   *  The card uses it for a pick-ONE question only: a pick-many question is not
+   *  finished until the human says it is. */
+  onAnswerAndSubmit?: (answer: SignalAnswerDraft) => void;
   /** Acknowledge a notification. Left optional because a surface that cannot
    *  refetch afterwards is better off not offering the button at all — the card
    *  renders no action rather than one that leaves a resolved row on screen. */
@@ -37,6 +47,32 @@ export interface SignalCardProps {
    *  panel). The question, its options and its freeform box all still render:
    *  compact trims chrome, never the means of answering. */
   compact?: boolean;
+  /** Open showing nothing but the answers, with a disclosure that reveals the
+   *  question and its summary.
+   *
+   *  For the chat pane, where the transcript directly above already carries the
+   *  question — repeating it under the transcript is the same words twice, and
+   *  the answers are the only part you cannot read further up.
+   *
+   *  It also drops the separate freeform box on a card that HAS options, because
+   *  every option is editable: rewriting one is how you answer in your own words
+   *  there. A question minted with no options keeps its box, or it would have no
+   *  answer field left at all. ⚠️ The chat composer is NOT that field — a bare
+   *  /send deliberately leaves a tool-parked question open
+   *  (`TestAnswerDerivedQuestionsLeavesToolParksToTheHookVerb` in
+   *  llm-bridge-server), because the harness is blocked on its hook, not on
+   *  stdin. */
+  startCollapsedToAnswers?: boolean;
+}
+
+/** Whether a card renders its own freeform answer box.
+ *
+ *  Read by {@link SignalRequestCard} as well as by the card, because the box is
+ *  the one thing a Submit button is still needed for once a question answers on
+ *  the click. One rule, one place. */
+function rendersFreeformBox(signal: Signal, startCollapsedToAnswers: boolean): boolean {
+  if (signal.kind === SIGNAL_KIND_NOTIFICATION) return false;
+  return !(startCollapsedToAnswers && signal.options.length > 0);
 }
 
 /**
@@ -45,55 +81,139 @@ export interface SignalCardProps {
  * raising session's chat, in a cross-session inbox, and inside another session's
  * RefChip panel.
  *
- * It composes an answer but never submits one: a tool question is one of several
- * sharing a parked request, and that whole request resolves at once.
- * {@link SignalRequestCard} below owns the submit.
+ * It composes an answer, and submits one only when the surface hands it
+ * {@link SignalCardProps.onAnswerAndSubmit} — which a surface does only for a
+ * request holding this question and no other. Everything else resolves through
+ * {@link SignalRequestCard} below, because a tool question is one of several
+ * sharing a parked request and that whole request resolves at once.
  */
 export function SignalCard({
   signal,
   answer,
   onChangeAnswer,
+  onAnswerAndSubmit,
   onAcknowledge,
   busy,
   compact,
+  startCollapsedToAnswers,
 }: SignalCardProps): JSX.Element {
   const isNotification = signal.kind === SIGNAL_KIND_NOTIFICATION;
   const options = signal.options;
   const chosen = answer?.pickedOptionValues ?? [];
   const text = answer?.text ?? '';
   // The record is the ONLY authority on this. Never inferred from the option
-  // count or the question's wording: offering checkboxes for a pick-one
-  // question lets a human send an answer the tool will refuse, and offering
-  // radios for a pick-many one silently drops every choice after the first.
+  // count or the question's wording: offering a pick-many form for a pick-one
+  // question lets a human send an answer the tool will refuse, and offering a
+  // pick-one form for a pick-many one silently drops every choice after the
+  // first.
   const multiple = !isNotification && signal.allowMultipleOptions;
+  // A pick-one question is answered BY the click, so it draws plain buttons and
+  // no radio group: a radio's whole job is to hold a choice until a Submit, and
+  // there is no Submit to hold it for. Radios stay on nothing; checkboxes stay
+  // on the pick-many form, which really does wait.
+  const submitsOnPick = !multiple && onAnswerAndSubmit !== undefined;
 
-  /** Toggling an option replaces the composed answer, which is what clears any
-   *  typed text. On a pick-one question a second choice replaces the first; on
-   *  a pick-many one it is added or removed. */
+  // A notification IS its title, so it is never collapsed — there would be
+  // nothing left of it.
+  const collapsible = startCollapsedToAnswers === true && !isNotification;
+  const [questionShown, setQuestionShown] = useState(false);
+  const questionVisible = !collapsible || questionShown;
+
+  /** The text of one option that has been rewritten, keyed by the option's own
+   *  value. Local, ephemeral view state: what the human typed goes into the
+   *  composed answer immediately, and this only remembers it so the row keeps
+   *  showing the edit instead of snapping back to the label. */
+  const [editedTextByOptionValue, setEditedTextByOptionValue] = useState<Record<string, string>>(
+    {},
+  );
+  const [optionBeingEdited, setOptionBeingEdited] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState('');
+
+  /** Pick one option, replacing whatever was picked before. */
+  const chooseOne = (value: string) => {
+    const draft: SignalAnswerDraft = { pickedOptionValues: [value] };
+    if (submitsOnPick) onAnswerAndSubmit?.(draft);
+    else onChangeAnswer?.(draft);
+  };
+
+  /** Add or remove one option on a pick-many question. Toggling replaces the
+   *  composed answer, which is what clears any typed text. */
   const toggleOption = (value: string) => {
-    if (!multiple) {
-      onChangeAnswer?.({ pickedOptionValues: [value] });
-      return;
-    }
-    const next = chosen.includes(value)
-      ? chosen.filter((v) => v !== value)
-      : [...chosen, value];
+    const next = chosen.includes(value) ? chosen.filter((v) => v !== value) : [...chosen, value];
     onChangeAnswer?.({ pickedOptionValues: next });
   };
 
+  /** Open the editor on one option. `startingText` is what the human reads on the
+   *  row, which is the thing they are about to amend — see the field itself. */
+  const startEditing = (optionValue: string, startingText: string) => {
+    setOptionBeingEdited(optionValue);
+    setEditDraft(startingText);
+  };
+
+  const cancelEditing = () => {
+    setOptionBeingEdited(null);
+    setEditDraft('');
+  };
+
+  const commitEdit = (optionValue: string) => {
+    const rewritten = editDraft.trim();
+    // An empty answer is not an answer: `answerTextOf` reads it as unanswered,
+    // so committing it would leave a filled-in-looking field and a request that
+    // will not submit. The editor stays open instead.
+    if (rewritten === '') return;
+    const previous = editedTextByOptionValue[optionValue] ?? optionValue;
+    setEditedTextByOptionValue((prev) => ({ ...prev, [optionValue]: rewritten }));
+    setOptionBeingEdited(null);
+    setEditDraft('');
+    // Rewriting an answer is choosing it — nobody retypes an option they are not
+    // going to send.
+    if (multiple) {
+      onChangeAnswer?.({
+        pickedOptionValues: [...chosen.filter((v) => v !== previous), rewritten],
+      });
+    } else {
+      chooseOne(rewritten);
+    }
+  };
+
   return (
-    <div className={`signal-card${compact ? ' signal-card-compact' : ''}`} data-signal-id={signal.id}>
+    <div
+      className={`signal-card${compact ? ' signal-card-compact' : ''}${
+        collapsible && !questionShown ? ' signal-card-answers-only' : ''
+      }`}
+      data-signal-id={signal.id}
+    >
       <div className="signal-card-header">
-        <span className={`signal-kind signal-kind-${isNotification ? 'notification' : 'question'}`}>
-          {isNotification ? 'notification' : 'question'}
-        </span>
+        {collapsible ? (
+          <button
+            type="button"
+            className="signal-disclosure"
+            aria-expanded={questionShown}
+            aria-label={questionShown ? 'Hide the question' : 'Show the question'}
+            title={questionShown ? 'Hide the question' : 'Show the question'}
+            onClick={() => setQuestionShown((shown) => !shown)}
+          >
+            <span className="signal-disclosure-caret" aria-hidden>
+              {questionShown ? '▾' : '▸'}
+            </span>
+            <span className="signal-kind signal-kind-question">question</span>
+          </button>
+        ) : (
+          <span
+            className={`signal-kind signal-kind-${isNotification ? 'notification' : 'question'}`}
+          >
+            {isNotification ? 'notification' : 'question'}
+          </span>
+        )}
         {isNotification && signal.severity === SIGNAL_SEVERITY_WARN && (
           <span className="signal-severity">warn</span>
         )}
       </div>
 
-      <p className="signal-title">{signal.title}</p>
-      {signal.body !== '' && !compact && <p className="signal-body">{signal.body}</p>}
+      {questionVisible && <p className="signal-title">{signal.title}</p>}
+      {signal.body !== '' && !compact && questionVisible && (
+        <p className="signal-body">{signal.body}</p>
+      )}
 
       {!isNotification && options.length > 0 && (
         <div className="signal-options">
@@ -101,41 +221,124 @@ export function SignalCard({
             // `value` is what the resolve verb sends back; producers with no
             // separate machine value set it to the label, so the label is the
             // fallback rather than an invention.
-            const value = option.value || option.label;
-            const picked = chosen.includes(value);
+            const optionValue = option.value || option.label;
+            const rewritten = editedTextByOptionValue[optionValue];
+            // What this row will actually send, rewritten or not. Selection is
+            // tested against it, so an edited option stays picked.
+            const answerValue = rewritten ?? optionValue;
+            const shownLabel = rewritten ?? option.label;
+            const picked = chosen.includes(answerValue);
+            const editing = optionBeingEdited === optionValue;
+            const body = (
+              <span className="signal-option-body">
+                <span className="signal-option-label">{shownLabel}</span>
+                {option.description !== '' && !compact && questionVisible && (
+                  <span className="signal-option-desc">{option.description}</span>
+                )}
+              </span>
+            );
             return (
-              <label
-                key={value}
-                className={`signal-option${picked ? ' signal-option-selected' : ''}`}
+              <div
+                key={optionValue}
+                className={`signal-option${picked ? ' signal-option-selected' : ''}${
+                  editing ? ' signal-option-editing' : ''
+                }`}
               >
-                <input
-                  // Checkbox against radio is the whole visible difference
-                  // between "pick any that apply" and "pick one", and a human
-                  // reads it before touching anything. It is driven straight off
-                  // the record so the form cannot promise a choice the tool
-                  // will not take.
-                  type={multiple ? 'checkbox' : 'radio'}
-                  // `name` groups radios so picking one clears the rest. Left on
-                  // the checkboxes too: it is inert there, and dropping it would
-                  // mean two branches for one attribute.
-                  name={`signal-${signal.id}`}
-                  checked={picked}
-                  disabled={busy || !onChangeAnswer}
-                  onChange={() => toggleOption(value)}
-                />
-                <span className="signal-option-body">
-                  <span className="signal-option-label">{option.label}</span>
-                  {option.description !== '' && !compact && (
-                    <span className="signal-option-desc">{option.description}</span>
-                  )}
-                </span>
-              </label>
+                {editing ? (
+                  <>
+                    <input
+                      className="signal-option-edit-input"
+                      // Prefilled with the LABEL — the words on the row — and not
+                      // with the option's machine value, on the one thing this
+                      // control is for: amending the answer you are reading.
+                      // "b" is not amendable into "b, but staging first"; the
+                      // sentence it stands for is. The cost is that opening the
+                      // editor on an option whose value differs from its label
+                      // and pressing Enter sends the label, which is visible in
+                      // the field the whole time — where sending an unreadable
+                      // token would not be.
+                      value={editDraft}
+                      autoFocus
+                      disabled={busy}
+                      aria-label={`Answer instead of “${option.label}”`}
+                      onChange={(e) => setEditDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          commitEdit(optionValue);
+                        }
+                        if (e.key === 'Escape') {
+                          e.preventDefault();
+                          cancelEditing();
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="signal-option-save"
+                      disabled={busy || editDraft.trim() === ''}
+                      onClick={() => commitEdit(optionValue)}
+                    >
+                      {submitsOnPick ? 'Answer' : 'Use'}
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    {multiple ? (
+                      <label className="signal-option-choice">
+                        <input
+                          // A checkbox is the whole visible difference between
+                          // "pick any that apply" and "pick one", and a human
+                          // reads it before touching anything. It is driven
+                          // straight off the record so the form cannot promise a
+                          // choice the tool will not take.
+                          type="checkbox"
+                          checked={picked}
+                          disabled={busy || !onChangeAnswer}
+                          onChange={() => toggleOption(answerValue)}
+                        />
+                        {body}
+                      </label>
+                    ) : (
+                      <button
+                        type="button"
+                        className="signal-option-choice signal-option-pick"
+                        // Pressed-ness is a claim about a control that HOLDS a
+                        // state. When the click submits, nothing is held, and
+                        // saying otherwise would leave a screen reader announcing
+                        // a toggle that resolved the question and went away.
+                        aria-pressed={submitsOnPick ? undefined : picked}
+                        disabled={busy || !onChangeAnswer}
+                        onClick={() => chooseOne(answerValue)}
+                      >
+                        {body}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="signal-option-edit"
+                      // "Rewrite", never "Edit … before answering". The name a
+                      // control answers to has to be the one thing it is: an
+                      // accessible name carrying the word "answer" made every
+                      // pencil on the card a match for the Submit button, by
+                      // name, for a screen reader and a test alike.
+                      aria-label={`Rewrite “${shownLabel}”`}
+                      title="Rewrite this answer"
+                      disabled={busy || !onChangeAnswer}
+                      onClick={() => startEditing(optionValue, shownLabel || answerValue)}
+                    >
+                      ✎
+                    </button>
+                  </>
+                )}
+              </div>
             );
           })}
         </div>
       )}
 
-      {/* Every question gets a freeform box, unconditionally.
+      {/* The freeform box, for every question that has no editable option to
+          rewrite instead — see `startCollapsedToAnswers`.
           NOT gated on `compact`: that hid the only way to answer a question the
           producer minted with no options, and trimming chrome must never remove
           the means of answering.
@@ -148,7 +351,7 @@ export function SignalCard({
           deliberately false, and fails closed onto an unanswerable card, is not
           worth honouring. The field stays parsed — it is the wire's, and this
           layer passes it through — it simply no longer decides this. */}
-      {!isNotification && (
+      {rendersFreeformBox(signal, startCollapsedToAnswers === true) && (
         <textarea
           className="signal-freeform"
           placeholder={options.length > 0 ? '…or answer in your own words' : 'Type your answer'}
@@ -178,6 +381,8 @@ export interface SignalRequestCardProps {
    *  the raising session; the in-session surfaces pass nothing. */
   header?: ReactNode;
   compact?: boolean;
+  /** Passed to every card — see {@link SignalCardProps.startCollapsedToAnswers}. */
+  startCollapsedToAnswers?: boolean;
   /** Offer to close a question nobody is going to answer.
    *
    *  Only meaningful for a DERIVED question: a parked tool question already has
@@ -197,7 +402,9 @@ export interface SignalRequestCardProps {
  * One AskUserQuestion call carries several questions and resolves once, so
  * answering a single question in isolation would resolve the whole request with
  * the rest unanswered. Submit stays disabled until every question in the request
- * has an answer.
+ * has an answer — and the one shape where that leaves nothing to wait for, a
+ * request holding a single pick-one question, answers on the click instead and
+ * draws no Submit at all.
  *
  * ⚠️ The only thing this reads from context is the `ApiClient` singleton — never
  * the active session. Which session it is answering comes from `request`, and
@@ -209,6 +416,7 @@ export function SignalRequestCard({
   onResolved,
   header,
   compact,
+  startCollapsedToAnswers,
   allowDismissWithoutAnswer,
 }: SignalRequestCardProps): JSX.Element {
   const { api } = useChatContext();
@@ -218,6 +426,21 @@ export function SignalRequestCard({
 
   const questions = questionsIn(request);
   const allAnswered = everyQuestionAnswered(request, answers);
+
+  /** The question that answers on a click, or null.
+   *
+   *  Three conditions, each of them load-bearing: it is the ONLY question in the
+   *  request (the request resolves once, with everything), it takes ONE choice
+   *  (a pick-many answer is not finished until the human says so), and it HAS
+   *  options (nothing to click otherwise). */
+  const sole = questions.length === 1 ? questions[0] : undefined;
+  const answersOnPick =
+    sole !== undefined && !sole.allowMultipleOptions && sole.options.length > 0 ? sole : null;
+  // The Submit button survives auto-submit only where a freeform box does: text
+  // typed into that box has nothing else to send it.
+  const submitShown =
+    answersOnPick === null ||
+    rendersFreeformBox(answersOnPick, startCollapsedToAnswers === true);
 
   const setAnswer = useCallback((signalId: string, answer: SignalAnswerDraft) => {
     setAnswers((prev) => ({ ...prev, [signalId]: answer }));
@@ -244,13 +467,33 @@ export function SignalRequestCard({
     [busy, onResolved],
   );
 
+  /** Send a specific set of answers. Takes them as an argument rather than
+   *  reading state, because the click that completes an answer has to submit the
+   *  map INCLUDING that answer — a `setAnswers` before a read would still see the
+   *  old one. */
+  const submitAnswers = useCallback(
+    (composed: Record<string, SignalAnswerDraft>) => {
+      if (!everyQuestionAnswered(request, composed)) return;
+      // One verb for both producers: it sends a tool request's answers back
+      // through its parked hook, and a derived question's answer as the session's
+      // next message. The branch lives in the store, not in this card.
+      void run(() => answerSignalRequest(api, request, composed));
+    },
+    [run, api, request],
+  );
+
   const submit = useCallback(() => {
-    if (!allAnswered) return;
-    // One verb for both producers: it sends a tool request's answers back through
-    // its parked hook, and a derived question's answer as the session's next
-    // message. The branch lives in the store, not in this card.
-    void run(() => answerSignalRequest(api, request, answers));
-  }, [allAnswered, run, api, request, answers]);
+    submitAnswers(answers);
+  }, [submitAnswers, answers]);
+
+  const answerAndSubmit = useCallback(
+    (signalId: string, answer: SignalAnswerDraft) => {
+      const composed = { ...answers, [signalId]: answer };
+      setAnswers(composed);
+      submitAnswers(composed);
+    },
+    [answers, submitAnswers],
+  );
 
   const acknowledge = useCallback(
     (signalId: string) => {
@@ -282,23 +525,31 @@ export function SignalRequestCard({
           onChangeAnswer={
             signal.kind === SIGNAL_KIND_NOTIFICATION ? undefined : (a) => setAnswer(signal.id, a)
           }
+          onAnswerAndSubmit={
+            answersOnPick !== null && answersOnPick.id === signal.id
+              ? (a) => answerAndSubmit(signal.id, a)
+              : undefined
+          }
           onAcknowledge={
             signal.kind === SIGNAL_KIND_NOTIFICATION ? () => acknowledge(signal.id) : undefined
           }
           busy={busy}
           compact={compact}
+          startCollapsedToAnswers={startCollapsedToAnswers}
         />
       ))}
-      {questions.length > 0 && (
+      {questions.length > 0 && (submitShown || allowDismissWithoutAnswer === true) && (
         <div className="signal-actions">
-          <button
-            type="button"
-            className="signal-submit"
-            disabled={busy || !allAnswered}
-            onClick={submit}
-          >
-            Answer
-          </button>
+          {submitShown && (
+            <button
+              type="button"
+              className="signal-submit"
+              disabled={busy || !allAnswered}
+              onClick={submit}
+            >
+              Answer
+            </button>
+          )}
           {/* One button for "no answer is coming", not the Decline/Dismiss pair
               this used to render.
               The pair existed because the two producers had different verbs —
