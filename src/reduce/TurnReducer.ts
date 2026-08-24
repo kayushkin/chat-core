@@ -324,6 +324,17 @@ function applyPayload(prev: Entry, ev: WireEvent): Entry {
     default:
       break;
   }
+  // The canonical message id, carried as a field on every entry that has one —
+  // including TOOL entries, whose key `tool_<toolId>` does not encode it and
+  // which the per-message view must be able to ask "did this message tool?" of.
+  // For a tool entry the CALL's message is the one that question is about (the
+  // result arrives under a different message id), so the call's id wins; every
+  // other entry's folded events share one id by construction (groupKeyFor).
+  if (ev.type === 'tool_call' && raw.message_id) {
+    next.messageId = raw.message_id;
+  } else if (!next.messageId && raw.message_id) {
+    next.messageId = raw.message_id;
+  }
   // Recovered-assistant provenance rides on extensions (block events); never gates
   // visibility — it's a presentation marker only.
   if (raw.extensions?.recovered === true) next.recovered = true;

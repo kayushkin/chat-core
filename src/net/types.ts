@@ -81,6 +81,16 @@ export interface Entry {
   eventId: number; // the log-store event row id — monotonic, used for ordering + resume
   ts: string; // RFC3339 + offset
 
+  /** Canonical bridge-assigned id of the chat message this entry belongs to
+   *  (`message_id` on every event; `messageId` on the materialized wire). The
+   *  per-message Turns view groups and keys rows by it — see dash
+   *  docs/dashv2-turns-per-message.md. Carried as a field even on entries
+   *  whose key already encodes it, and especially on TOOL entries (keyed
+   *  `tool_<toolId>`, which does not encode it) so no consumer parses id
+   *  shapes. Absent on bookkeeping entries (system, session_state, …) that
+   *  belong to no message bubble. */
+  messageId?: string;
+
   /** Token usage for this entry, when the source event reported it. camelCase on the
    *  wire; read directly by the UI (`entry.usage`) — there is no per-entry hook. */
   usage?: EntryUsage;
