@@ -95,3 +95,31 @@ describe('messageId on live entries', () => {
     }
   });
 });
+
+describe('turn attachment for turn-less events', () => {
+  it('a turn-less event attaches to the CURRENT turn, matching the materializer', () => {
+    // ⚠️ One turn-less `system` event arrives ~100ms into every real turn. The old
+    // rule gave it a solo turn that sat AFTER the real turn forever, so everything
+    // keyed on "the last turn" — streaming indicator, live narration aside —
+    // pointed at bookkeeping instead of the turn actually running. log-store's
+    // buildTurns carries the current turn forward; the live path must agree.
+    const s = apply([
+      ev('user_message', { message_id: 'msg_u', result: { text: 'go' } }),
+      { id: '3', type: 'system', data: { event_id: 3, type: 'system', timestamp: '2026-08-25T00:00:03Z', system: { subtype: 'init' } } } as never,
+      ev('block', {
+        message_id: 'msg_a',
+        block: { block: { type: 'text', text_block: { text: 'working' } } },
+      }),
+    ]);
+    expect(s.model.turns).toHaveLength(1);
+    expect(s.model.turns[0]!.id).toBe('turn1');
+  });
+
+  it('a turn-less event with NO open turn still gets a solo turn', () => {
+    const s = apply([
+      { id: '9', type: 'system', data: { event_id: 9, type: 'system', timestamp: '2026-08-25T00:00:09Z', system: { subtype: 'init' } } } as never,
+    ]);
+    expect(s.model.turns).toHaveLength(1);
+    expect(s.model.turns[0]!.id).toMatch(/^solo_/);
+  });
+});

@@ -503,8 +503,17 @@ function groupKeyFor(ev: WireEvent, kind: EntryKind): string {
   return `evt_${eventIdOf(ev)}`;
 }
 
-function turnKeyFor(ev: WireEvent, entryId: string): string {
-  return ev.data.turn_id || `solo_${entryId}`;
+/** The turn an event belongs to. An event with NO turn_id attaches to the CURRENT
+ *  (last) turn when one exists — the same carry-forward rule log-store's
+ *  `buildTurns` applies — and only opens a synthetic solo turn when nothing is
+ *  open yet. The old rule (always solo) diverged from the materializer AND broke
+ *  the live view: one turn-less `system` event arrives ~100ms into every real
+ *  turn (measured, br_1787619223437999622), its solo turn sat AFTER the real
+ *  turn forever, and everything keyed on "the last turn" — the streaming
+ *  indicator, the live narration aside, the provisional-narration rule — pointed
+ *  at a one-row bookkeeping turn instead of the turn actually running. */
+function turnKeyFor(ev: WireEvent, entryId: string, currentTurnId: string | null): string {
+  return ev.data.turn_id || currentTurnId || `solo_${entryId}`;
 }
 
 // Fold an event's payload onto an entry (accumulating streamed text). Returns a
@@ -703,7 +712,7 @@ export function applyEvent(state: TailState, ev: WireEvent): TailState {
   } else {
     const fresh: Entry = {
       id: entryId,
-      turnId: turnKeyFor(ev, entryId),
+      turnId: turnKeyFor(ev, entryId, state.model.turns[state.model.turns.length - 1]?.id ?? null),
       role,
       kind,
       source: sourceOf(ev.data),
