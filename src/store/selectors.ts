@@ -574,19 +574,14 @@ export function visibleEntryIdsFor(
   if (!model) return [];
   const turn = model.turns.find((t) => t.id === turnId);
   if (!turn) return [];
-  // A dangling id (no entry in the map) sorts to the END, not the front:
-  // `?? 0` here used to put it before every real entry, which was harmless
-  // only because the renderers skip missing entries — a sort that quietly
-  // fronts unknowns is a bug waiting for its first reader that does not.
-  const ids = turn.entryIds
-    .slice()
-    .sort(
-      (a, b) =>
-        (model.entries[a]?.eventId ?? Number.MAX_SAFE_INTEGER) -
-        (model.entries[b]?.eventId ?? Number.MAX_SAFE_INTEGER),
-    );
-  if (view === 'raw') return ids;
-  return ids.filter((id) => !model.entries[id]?.duplicate);
+  // TRUST the turn's own entry order — never re-sort by eventId. The model's
+  // order is maintained by its producers (log-store materializes in event order,
+  // the live reducer appends in arrival order, the merge interleaves the two),
+  // and after a merge a turn holds entries from TWO id spaces (log-store page
+  // ids and stream frame ids), so a numeric sort across them puts the newest
+  // live entries first — the reported "narration arrives out of order".
+  if (view === 'raw') return turn.entryIds;
+  return turn.entryIds.filter((id) => !model.entries[id]?.duplicate);
 }
 
 /** All copies in an entry's dedup group (the sources badge). Recomputes the
@@ -919,9 +914,25 @@ const TASK_FINISH_BY_STATUS: Record<string, { icon: string; label: string; tone:
  *  of that link.
  */
 function toTimelineItems(model: TurnModel): TimelineItem[] {
-  const entries = Object.values(model.entries)
-    .slice()
-    .sort((a, b) => a.eventId - b.eventId);
+  // Model order (turns, then each turn's own entry order), NOT an eventId sort:
+  // after a merge the model mixes log-store page ids with stream frame ids, and
+  // sorting across the two spaces is meaningless. Entries outside any turn
+  // (defensive: should not exist) go last, in map order.
+  const inTurns: Entry[] = [];
+  const seen = new Set<string>();
+  for (const turn of model.turns) {
+    for (const id of turn.entryIds) {
+      const e = model.entries[id];
+      if (e && !seen.has(id)) {
+        inTurns.push(e);
+        seen.add(id);
+      }
+    }
+  }
+  for (const id of Object.keys(model.entries)) {
+    if (!seen.has(id)) inTurns.push(model.entries[id]!);
+  }
+  const entries = inTurns;
 
   // Which calls actually finished, by TOOL ID. The live reducer merges a result
   // onto its call, so `toolResult !== undefined` catches those — but the

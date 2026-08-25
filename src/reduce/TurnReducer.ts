@@ -18,9 +18,17 @@ export interface TailState {
   model: TurnModel;
   /** turnId → index into `model.turns`, so turn lookup is O(1). */
   turnIndex: Map<string, number>;
-  /** entry id → the log-store event ids that have been folded in, for dedup. */
+  /** entry id → the STREAM frame ids folded in (llm-bridge-server's own row ids
+   *  off the SSE `id:` line). ⚠️ This is NOT the id space the materialized page
+   *  uses: /messages carries LOG-STORE row ids, and the two number the same
+   *  events differently (discovered 2026-08-25 — session br_1787615605129568013
+   *  streamed ids ~1.77M while its page carried ~2.09M). Never compare a stream
+   *  id with a page eventId. A non-empty set is also the honest marker that an
+   *  entry was live-folded rather than materialized. */
   entryEventIds: Map<string, Set<number>>;
-  /** every event id applied, so a replayed event is a no-op (idempotent). */
+  /** every STREAM frame id applied, so a replayed frame is a no-op. Same space
+   *  warning as above: page eventIds must never be added here — a live frame
+   *  whose stream id equals a loaded page id would be silently swallowed. */
   seenEventIds: Set<number>;
 }
 
@@ -143,15 +151,18 @@ export function initTailState(sessionId: string, model?: TurnModel): TailState {
   };
   const turnIndex = new Map<string, number>();
   base.turns.forEach((t, i) => turnIndex.set(t.id, i));
-  const entryEventIds = new Map<string, Set<number>>();
-  const seenEventIds = new Set<number>();
-  for (const id of Object.keys(base.entries)) {
-    const e = base.entries[id];
-    if (!e) continue;
-    entryEventIds.set(id, new Set([e.eventId]));
-    seenEventIds.add(e.eventId);
-  }
-  return { sessionId, model: base, turnIndex, entryEventIds, seenEventIds };
+  // ⚠️ Deliberately EMPTY. These maps hold STREAM frame ids; the model's
+  // eventIds are log-store ids — a different numbering of the same events.
+  // Seeding seenEventIds from the page used to swallow any live frame whose
+  // stream id numerically equalled a loaded page id, which is one of the three
+  // faces of the two-id-space bug.
+  return {
+    sessionId,
+    model: base,
+    turnIndex,
+    entryEventIds: new Map<string, Set<number>>(),
+    seenEventIds: new Set<number>(),
+  };
 }
 
 /** Trim + collapse whitespace, the correlation form for optimistic-user matching.
@@ -189,42 +200,40 @@ function sameMaterializedEntry(held: Entry, incoming: Entry): boolean {
  * Fold a freshly materialized page into the session's tail state — MERGE, never
  * replace (dash docs/dashv2-turns-per-message.md §6). `setTurns` used to swap the
  * whole model and rebuild the tail from the incoming page alone, which is the
- * "everything resets" bug: live-only content vanished, fold history was forgotten,
- * and what the tail had already applied was left unprotected from re-application.
+ * "everything resets" bug.
  *
- * ⚠️ The join is the EVENT-ID SETS, not the entry ids. The two paths name the same
- * content differently — live entries `${msgId}_${kind}` / `tool_<toolId>`,
- * materialized entries `e_<rowid>` — so the id spaces never overlap and an id-keyed
- * merge would call every incoming entry new and every held entry unreported. The
- * tail already records which log-store event ids folded into each entry
- * (`entryEventIds`); that is the honest join:
+ * ⚠️ THE JOIN IS SHARED IDENTITY, NEVER NUMBERS. The stream and the page number
+ * the same events in two different id spaces (SSE `id:` = llm-bridge-server's own
+ * rows; page eventId = log-store rows), so any numeric comparison across the
+ * boundary is meaningless — an event-id join was tried first and kept every live
+ * entry beside its page copy, doubling the transcript. What the two paths truly
+ * share is the canonical identifiers ON the events: `turnId`, `messageId`,
+ * `tool_id`, `taskId`, the timestamp. Those are the join:
  *
- *  - a held entry whose folded event ids ALL appear in the page is superseded — the
- *    server now reports that content — and is dropped in favour of the page's
- *    version;
- *  - a held entry with ANY event id the page lacks is kept: the server has not
- *    materialized it (or it is off this window), and dropping it is the bug;
- *  - carve-out, folding in what `carryForwardReasoning` did as a separate pass: a
- *    held `thinking` entry WITH TEXT is kept even when fully reported, because the
- *    materialized copy is structurally unable to carry the text (Claude Code stores
- *    thinking blocks empty + signature). The page's empty copy arrives `duplicate`,
- *    so nothing renders twice;
- *  - an incoming entry equal to one already held keeps the HELD object, so identity
- *    survives and memos hit;
- *  - an entry with an EMPTY folded set (its events carried no id) cannot be proven
- *    reported and is kept.
+ *  - a live-folded entry (non-empty stream-id set) is superseded when the page
+ *    REPORTS its content unit: same messageId+role+kind for message content;
+ *    same tool_id (call, and result when the live entry holds one) for tools;
+ *    same subtype+correlator for task system events; same kind+subtype+second
+ *    for id-less bookkeeping. Unreported live entries are kept — dropping them
+ *    is the "everything resets" bug;
+ *  - carve-out: a live `thinking` entry WITH TEXT is kept even when reported —
+ *    the materialized copy is structurally unable to carry the text;
+ *  - an OPTIMISTIC user row is superseded when the page reports the real prompt
+ *    (client request id, else normalized text);
+ *  - a previously-materialized entry (empty stream-id set) not in this page is
+ *    off-window history and stays; one in the page takes the page's version,
+ *    reusing the held object when the content is unchanged so memos keep hitting.
  *
- * Turns merge by turn id — the page's version of a shared turn wins its entry list,
- * kept held entries re-seat into it by eventId — and the final order is by each
- * turn's minimum eventId, which is the same ordering rule the rows use (§4).
- * log-store is append-only, so a held turn off the page's window is history, not a
- * deletion, and stays.
+ * ORDER never crosses the id spaces either: prior materialized-only turns keep
+ * their place before the page's turns, the page's turns keep the page's order,
+ * live-only turns come last; within a shared turn the page's entries come first
+ * and kept live entries after, each side in its own order. Sorting the mix by
+ * eventId put newer live entries (small stream-flavoured ids) ABOVE older
+ * materialized ones — the original "narration arrives out of order" report.
  *
- * The returned tail is seeded from the MERGED model and keeps the fold history:
- * kept entries keep their full event-id sets, and `seenEventIds` is the union of
- * everything applied before with everything the page reports — so a Last-Event-ID
- * replay stays a no-op after a repair, which the old rebuild-from-page silently
- * broke.
+ * The tail keeps its stream-space bookkeeping: surviving live entries keep their
+ * folded frame-id sets, `seenEventIds` carries over UNCHANGED (page ids are the
+ * wrong space and must never enter it).
  */
 export function mergeMaterializedPage(
   prior: TailState | undefined,
@@ -237,26 +246,72 @@ export function mergeMaterializedPage(
     return initTailState(incoming.sessionId, incoming);
   }
 
-  const pageEventIds = new Set<number>();
-  for (const id of Object.keys(incoming.entries)) {
-    const evId = incoming.entries[id]?.eventId;
-    if (evId) pageEventIds.add(evId);
+  // --- Page indexes over the SHARED identifiers. ---
+  const pageMessageUnits = new Set<string>(); // `${messageId}|${role}|${kind}`
+  const pageToolCalls = new Set<string>();
+  const pageToolResults = new Set<string>();
+  const pageSystemUnits = new Set<string>(); // `${subtype}|${taskId or toolUseId}`
+  const pageBookkeeping = new Set<string>(); // `${kind}|${subtype}|${epoch-second}`
+  const epochSecondOf = (ts: string | undefined): number | null => {
+    if (!ts) return null;
+    const ms = Date.parse(ts);
+    return Number.isNaN(ms) ? null : Math.floor(ms / 1000);
+  };
+  for (const inc of Object.values(incoming.entries)) {
+    if (inc.messageId) pageMessageUnits.add(`${inc.messageId}|${inc.role}|${inc.kind}`);
+    const raw = inc.raw as
+      | { tool_call?: { tool_id?: string }; tool_result?: { tool_id?: string } }
+      | undefined;
+    if (inc.kind === 'tool_call' && raw?.tool_call?.tool_id) {
+      pageToolCalls.add(raw.tool_call.tool_id);
+    }
+    if (inc.kind === 'tool_result' && raw?.tool_result?.tool_id) {
+      pageToolResults.add(raw.tool_result.tool_id);
+    }
+    if (inc.kind === 'system' && inc.subtype && (inc.taskId || inc.toolUseId)) {
+      pageSystemUnits.add(`${inc.subtype}|${inc.taskId || inc.toolUseId}`);
+    }
+    const sec = epochSecondOf(inc.ts);
+    if (sec !== null) pageBookkeeping.add(`${inc.kind}|${inc.subtype ?? ''}|${sec}`);
   }
 
-  // Partition the held entries: kept (the page cannot answer for them) vs
-  // superseded (the page reports every event they hold).
+  /** Does the page report this live entry's content unit? */
+  const pageReports = (held: Entry): boolean => {
+    if (held.kind === 'tool_call' || held.kind === 'tool_result') {
+      const raw = held.raw as
+        | { tool_call?: { tool_id?: string }; tool_result?: { tool_id?: string } }
+        | undefined;
+      const toolId = raw?.tool_call?.tool_id || raw?.tool_result?.tool_id;
+      if (toolId) {
+        const callReported = pageToolCalls.has(toolId);
+        const resultReported = held.toolResult === undefined || pageToolResults.has(toolId);
+        return callReported && resultReported;
+      }
+      // An unpairable tool entry: fall through to messageId, then keep.
+    }
+    if (held.messageId) {
+      return pageMessageUnits.has(`${held.messageId}|${held.role}|${held.kind}`);
+    }
+    if (held.kind === 'system' && held.subtype && (held.taskId || held.toolUseId)) {
+      return pageSystemUnits.has(`${held.subtype}|${held.taskId || held.toolUseId}`);
+    }
+    // Id-less bookkeeping (session_state, api_call, meta): kind+subtype+second.
+    // The page truncates ts to seconds (RFC3339) while the live copy keeps
+    // sub-second precision, so equality is on the epoch second. Over-dropping a
+    // same-second twin costs a Raw-view row until reload; under-dropping doubles
+    // it forever — the cheaper error is chosen.
+    const sec = epochSecondOf(held.ts);
+    if (sec !== null) return pageBookkeeping.has(`${held.kind}|${held.subtype ?? ''}|${sec}`);
+    return false;
+  };
+
+  // --- Partition the held entries. ---
   const keptHeldIds: string[] = [];
+  const liveHeldIds = new Set<string>(); // survivors that were live-folded (or optimistic)
   for (const id of Object.keys(prior.model.entries)) {
     const held = prior.model.entries[id];
     if (!held) continue;
-    if (incoming.entries[id]) continue; // same id (materialized↔materialized): incoming wins below
-    // An OPTIMISTIC user row is superseded the moment the page reports the real
-    // prompt — by client request id when the page's raw carries it, else by
-    // normalized text. It has no folded event ids (it never came from an event),
-    // so the event-id rule below would keep it FOREVER; under the old replace
-    // semantics every setTurns wiped it, which hid the gap. Left in, it renders
-    // as a duplicate "You" row after the first repair (observed live 2026-08-24,
-    // session br_1787614088376534890).
+    if (incoming.entries[id]) continue; // same id: the page's version wins below
     const heldRaw = held.raw as { optimistic?: boolean; clientId?: string } | undefined;
     if (heldRaw?.optimistic) {
       const normHeld = normalizeText(held.text ?? '');
@@ -267,15 +322,24 @@ export function mergeMaterializedPage(
         return !!normHeld && normalizeText(inc.text) === normHeld;
       });
       if (reported) continue;
+      keptHeldIds.push(id);
+      liveHeldIds.add(id); // client-born: orders with the live tail, never as history
+      continue;
     }
-    const folded = prior.entryEventIds.get(id);
-    const allReported =
-      !!folded && folded.size > 0 && [...folded].every((n) => pageEventIds.has(n));
+    const liveFolded = (prior.entryEventIds.get(id)?.size ?? 0) > 0;
+    if (!liveFolded) {
+      // Previously-materialized, off this page's window: history, kept as-is.
+      keptHeldIds.push(id);
+      continue;
+    }
     const reasoningCarveOut = held.kind === 'thinking' && !!held.text;
-    if (!allReported || reasoningCarveOut) keptHeldIds.push(id);
+    if (reasoningCarveOut || !pageReports(held)) {
+      keptHeldIds.push(id);
+      liveHeldIds.add(id);
+    }
   }
 
-  // Entries: the page's, reusing held objects for unchanged content, plus the kept.
+  // --- Entries: the page's (identity-reusing), plus the kept. ---
   const entries: Record<string, Entry> = {};
   for (const id of Object.keys(incoming.entries)) {
     const inc = incoming.entries[id]!;
@@ -284,9 +348,7 @@ export function mergeMaterializedPage(
   }
   for (const id of keptHeldIds) entries[id] = prior.model.entries[id]!;
 
-  // Turns. The page's version of a shared turn wins its entry list; kept held
-  // entries re-seat into their turn by eventId; held-only turns keep only their
-  // kept entries and drop out entirely when nothing survives.
+  // --- Turns, ordered without ever comparing across id spaces. ---
   const keptByTurn = new Map<string, string[]>();
   for (const id of keptHeldIds) {
     const turnId = entries[id]!.turnId;
@@ -294,52 +356,41 @@ export function mergeMaterializedPage(
     if (list) list.push(id);
     else keptByTurn.set(turnId, [id]);
   }
-  const entryEventIdOf = (id: string): number => entries[id]?.eventId ?? Number.MAX_SAFE_INTEGER;
-
   const incomingTurnIds = new Set(incoming.turns.map((t) => t.id));
-  const turns: Turn[] = [];
-  for (const turn of incoming.turns) {
-    const extra = keptByTurn.get(turn.id);
-    const entryIds = extra
-      ? [...turn.entryIds, ...extra].sort((a, b) => entryEventIdOf(a) - entryEventIdOf(b))
-      : turn.entryIds;
-    turns.push(extra ? { ...turn, entryIds } : turn);
-  }
+
+  const historyTurns: Turn[] = [];
+  const liveTurns: Turn[] = [];
   for (const turn of prior.model.turns) {
     if (incomingTurnIds.has(turn.id)) continue;
     const surviving = turn.entryIds.filter((id) => entries[id]);
     if (surviving.length === 0) continue;
-    turns.push(surviving.length === turn.entryIds.length ? turn : { ...turn, entryIds: surviving });
+    const kept = surviving.length === turn.entryIds.length ? turn : { ...turn, entryIds: surviving };
+    if (surviving.some((id) => liveHeldIds.has(id))) liveTurns.push(kept);
+    else historyTurns.push(kept);
   }
-  const minEventIdOf = (turn: Turn): number =>
-    turn.entryIds.reduce(
-      (min, id) => Math.min(min, entryEventIdOf(id)),
-      Number.MAX_SAFE_INTEGER,
-    );
-  turns.sort((a, b) => minEventIdOf(a) - minEventIdOf(b));
+  const pageTurns: Turn[] = incoming.turns.map((turn) => {
+    const extra = keptByTurn.get(turn.id);
+    if (!extra) return turn;
+    // The page's entries first in the page's order, kept live entries after in
+    // their prior relative order — the live tail is by construction the newer.
+    const keptInPriorOrder = (prior.model.turns.find((t) => t.id === turn.id)?.entryIds ?? [])
+      .filter((id) => extra.includes(id));
+    const orderedExtra = keptInPriorOrder.length === extra.length ? keptInPriorOrder : extra;
+    return { ...turn, entryIds: [...turn.entryIds, ...orderedExtra] };
+  });
+  const turns: Turn[] = [...historyTurns, ...pageTurns, ...liveTurns];
 
-  const model: TurnModel = {
-    ...incoming,
-    turns,
-    entries,
-  };
+  const model: TurnModel = { ...incoming, turns, entries };
 
-  // Tail bookkeeping, from the merged model — kept entries keep their full folded
-  // sets, and everything ever applied stays protected from re-application.
+  // --- Stream-space bookkeeping carries over; page ids never enter it. ---
   const turnIndex = new Map<string, number>();
   turns.forEach((t, i) => turnIndex.set(t.id, i));
   const entryEventIds = new Map<string, Set<number>>();
   for (const id of Object.keys(entries)) {
     const priorSet = prior.entryEventIds.get(id);
-    if (priorSet && priorSet.size > 0) {
-      entryEventIds.set(id, new Set(priorSet));
-    } else {
-      const evId = entries[id]!.eventId;
-      entryEventIds.set(id, new Set(evId ? [evId] : []));
-    }
+    if (priorSet && priorSet.size > 0) entryEventIds.set(id, new Set(priorSet));
   }
   const seenEventIds = new Set(prior.seenEventIds);
-  for (const n of pageEventIds) seenEventIds.add(n);
 
   return { sessionId: incoming.sessionId, model, turnIndex, entryEventIds, seenEventIds };
 }
@@ -356,7 +407,7 @@ export function reseedTailKeepingFoldHistory(
   const tail = initTailState(sessionId, model);
   if (!prior) return tail;
   for (const [id, ids] of prior.entryEventIds) {
-    if (!tail.entryEventIds.has(id) || ids.size === 0) continue;
+    if (!(id in model.entries) || ids.size === 0) continue;
     tail.entryEventIds.set(id, new Set(ids));
   }
   for (const n of prior.seenEventIds) tail.seenEventIds.add(n);
@@ -562,6 +613,64 @@ function applyPayload(prev: Entry, ev: WireEvent): Entry {
  * repeated `event_id` is a no-op — so replaying from Last-Event-ID converges.
  * Re-runs the OTel annotator so the collapsed/raw views stay correct.
  */
+/** True when a stream frame re-delivers content the model already holds as a
+ *  MATERIALIZED entry — the cross-space replay the numeric seen-set cannot catch
+ *  (the frame's id is a bridge row, the page's eventIds are log-store rows).
+ *  Happens on every cold open: the page is fetched, then the SSE connects with
+ *  no cursor and the server replays the current turn — the same events the page
+ *  just reported. The match is the shared content identity, materialized-only
+ *  (a live entry with the same unit is reachable by its own key and never gets
+ *  here): same messageId+role+kind, with the text CONTAINED for blocks (a fresh
+ *  second block of the same message legitimately folds), same tool_id for tools.
+ *  Bookkeeping frames (no message id, no tool id) always fold — their
+ *  materialized twins are hidden, so nothing doubles on screen. */
+function materializedCopyExists(
+  state: TailState,
+  ev: WireEvent,
+  kind: EntryKind,
+  role: Role,
+): boolean {
+  const data = ev.data;
+  const isMaterialized = (e: Entry) => (state.entryEventIds.get(e.id)?.size ?? 0) === 0;
+
+  if (ev.type === 'tool_call' || ev.type === 'tool_result') {
+    const toolId = data.tool_call?.tool_id || data.tool_result?.tool_id;
+    if (!toolId) return false;
+    const wantKind = ev.type;
+    for (const e of Object.values(state.model.entries)) {
+      if (e.kind !== wantKind || !isMaterialized(e)) continue;
+      const raw = e.raw as
+        | { tool_call?: { tool_id?: string }; tool_result?: { tool_id?: string } }
+        | undefined;
+      if ((raw?.tool_call?.tool_id || raw?.tool_result?.tool_id) === toolId) return true;
+    }
+    return false;
+  }
+
+  const msgId = data.message_id;
+  if (!msgId) return false;
+  let text: string | undefined;
+  if (ev.type === 'user_message') text = data.result?.text ?? '';
+  else if (ev.type === 'result') text = undefined; // presence of the unit suffices
+  else if (ev.type === 'block') {
+    const b = data.block?.block;
+    text = b?.text_block?.text ?? b?.thinking_block?.text ?? '';
+  } else if (ev.type === 'thinking') text = data.thinking?.text ?? '';
+  else return false; // stream deltas and the rest always fold
+
+  for (const e of Object.values(state.model.entries)) {
+    if (e.messageId !== msgId || e.role !== role || e.kind !== kind) continue;
+    if (!isMaterialized(e)) continue;
+    if (text === undefined) return true;
+    if (ev.type === 'user_message') {
+      if (normalizeText(e.text ?? '') === normalizeText(text)) return true;
+      continue;
+    }
+    if (text === '' || (e.text ?? '').includes(text)) return true;
+  }
+  return false;
+}
+
 export function applyEvent(state: TailState, ev: WireEvent): TailState {
   const evId = eventIdOf(ev);
   if (evId && state.seenEventIds.has(evId)) {
@@ -580,6 +689,14 @@ export function applyEvent(state: TailState, ev: WireEvent): TailState {
   let turns = state.model.turns;
 
   const existing = entries[entryId];
+  if (!existing && materializedCopyExists(state, ev, kind, role)) {
+    // A cross-space replay: fold nothing, but record the frame id so the check
+    // is O(1) next time and a later literal replay short-circuits at the top.
+    if (!evId) return state;
+    const seenOnly = new Set(state.seenEventIds);
+    seenOnly.add(evId);
+    return { ...state, seenEventIds: seenOnly };
+  }
   let entry: Entry;
   if (existing) {
     entry = applyPayload(existing, ev);
@@ -621,11 +738,13 @@ export function applyEvent(state: TailState, ev: WireEvent): TailState {
   } else if (!existing) {
     const turn = turns[tIdx];
     if (turn && !turn.entryIds.includes(entryId)) {
+      // APPEND, never sort: the stream arrives in order, and after a merge the
+      // turn also holds materialized entries whose eventIds are log-store ids —
+      // a different numbering — so sorting the mix by eventId put this (newest)
+      // entry FIRST. That was the reported "narration arrives out of order".
       const nextTurn: Turn = {
         ...turn,
-        entryIds: [...turn.entryIds, entryId].sort(
-          (a, b) => (entries[a]?.eventId ?? 0) - (entries[b]?.eventId ?? 0),
-        ),
+        entryIds: [...turn.entryIds, entryId],
       };
       turns = turns.slice();
       turns[tIdx] = nextTurn;

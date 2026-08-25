@@ -89,19 +89,34 @@ describe('the per-session SSE resume point', () => {
     expect(lastEventIdArgument()).toBeUndefined();
   });
 
-  it('resumes from the highest cached event id when there IS one', async () => {
-    // The cry-wolf control for the case above: proves the argument is genuinely
-    // being read from the cache, not merely absent for every input.
+  it('reconnects from the LAST RECEIVED FRAME id — never from the validator', async () => {
+    // The cry-wolf control for the case above, rewritten 2026-08-25 when its
+    // original premise was found false: it pinned resuming from the cached
+    // validator's maxEventId, which is a LOG-STORE row id, while the server
+    // parses Last-Event-ID in its OWN (bridge.db) row-id space. Sending the
+    // log-store number — numerically ahead of every bridge id on this host —
+    // made the server replay nothing, so every reconnect and cold open missed
+    // the events in flight. The honest cursor is the id line of the last frame
+    // this stream actually delivered.
+    async function* oneFrame(): AsyncGenerator<unknown> {
+      yield { id: '1770950', type: 'system', data: { type: 'system', system: {} } };
+    }
+    connectSessionSSE.mockImplementationOnce(() => oneFrame());
     connectSessionSSE.mockImplementation(() => noEvents());
     connectListSSE.mockImplementation(() => noEvents());
     const { store, engine, sid } = engineFor({ maxEventId: 42, eventCount: 7, updatedAt: '' });
     running = engine;
 
-    engine.start();
-    store.getState().actions.setActive(sid);
-    await Promise.resolve();
-
-    expect(lastEventIdArgument()).toBe('42');
+    vi.useFakeTimers();
+    try {
+      engine.start();
+      store.getState().actions.setActive(sid);
+      await vi.advanceTimersByTimeAsync(1500); // first stream ends → backoff → reconnect
+      expect(connectSessionSSE.mock.calls.length).toBeGreaterThan(1);
+      expect(lastEventIdArgument()).toBe('1770950');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('a cached validator of 0 events is the same as nothing cached', async () => {

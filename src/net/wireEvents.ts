@@ -6,7 +6,13 @@
 
 /** SSE envelope: `event:`/`data:`/`id:` frame from a bridge event stream. */
 export interface WireEvent {
-  /** The SSE `id:` line — stringified log-store row id, used for Last-Event-ID resume. */
+  /** The SSE `id:` line — llm-bridge-server's OWN event row id (bridge.db),
+   *  used for Last-Event-ID resume against that same server. ⚠️ NOT the
+   *  log-store row id the materialized page's `eventId` carries: the two
+   *  stores number the same events independently, and no numeric comparison
+   *  across them is meaningful. (This comment previously claimed the id WAS
+   *  the log-store row id; the whole client was built on that false premise —
+   *  see dash docs/dashv2-turns-per-message.md.) */
   id?: string;
   /** The SSE `event:` line; mirrors `data.type` for live events. */
   type: string;

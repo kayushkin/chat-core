@@ -202,6 +202,9 @@ export class SyncEngine {
         for await (const ev of stream) {
           if (!this.running || this.activeStreamId !== sessionId) return;
           delay = 1000;
+          // The resume cursor is the STREAM's own id line (llm-bridge-server's
+          // row ids) — the only space the server's Last-Event-ID understands.
+          if (ev.id) this.streamCursors.set(sessionId, ev.id);
           this.store.getState().actions.applyTailEvent(sessionId, ev);
           const model = this.store.getState().turnsBySession.get(sessionId);
           if (model) void this.cache.putTurns(model);
@@ -215,10 +218,18 @@ export class SyncEngine {
     }
   }
 
+  /** Per-session SSE resume cursor: the last frame id RECEIVED on the stream. */
+  private streamCursors = new Map<string, string>();
+
   private lastEventIdFor(sessionId: string): string | undefined {
-    const model = this.store.getState().turnsBySession.get(sessionId);
-    const max = model?.validator.maxEventId ?? 0;
-    return max > 0 ? String(Math.floor(max)) : undefined;
+    // ⚠️ Never derived from the model's validator: that maxEventId is a
+    // LOG-STORE row id, and the server parses Last-Event-ID in its OWN row-id
+    // space. Sending the log-store number (numerically ahead) made the server
+    // replay nothing, so every reconnect and every session open silently missed
+    // the events between the page fetch and the stream connect — "nothing
+    // streams until the final message is done". With no cursor the server
+    // replays the current turn, which is exactly the wanted cold behaviour.
+    return this.streamCursors.get(sessionId);
   }
 
   // --- validator sweep + silent repair ---
