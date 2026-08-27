@@ -117,7 +117,39 @@ export interface Entry {
    *  did must leave those out — they are another session's rows, sitting here
    *  because there was nowhere better to put them. */
   harnessParentId?: string;
-  raw?: unknown; // original event payload, for the raw Timeline view / audit
+  /** The canonical tool id — `toolId` on the materialized wire, `tool_id` on the
+   *  live event. Pairs a call with its result.
+   *
+   *  ⚠️ Absent is a REAL answer and not a gap: the OTel exporter emits no tool id
+   *  at all (measured — 363 of 644 `tool_result` entries on one real session, every
+   *  one of them `source: 'otel'`, and their `raw` carries none either). That is the
+   *  unpairable case, and a consumer must render it as unknowable rather than as
+   *  still-running. */
+  toolId?: string;
+  /** Whether the tool failed — `ToolResultEvent.IsError`. */
+  toolError?: boolean;
+  /** The caller-minted per-turn id, used to correlate an optimistic user row with
+   *  the real `user_message`.
+   *
+   *  ⚠️ Empty on this box today, on every session measured: the bridge stamps it
+   *  only when a caller supplies one and nothing here does. So the correlation
+   *  falls through to its normalized-text fallback, which cannot tell two identical
+   *  prompts apart. Carried as a field so it starts working the day something does
+   *  send one, rather than being invented here. */
+  clientRequestId?: string;
+  /** The canonical `Event.Type`. Read by the terminal-state selector for the event
+   *  types that carry no `kind` of their own. */
+  eventType?: string;
+
+  /** The original event payload, for the Raw pane and audit.
+   *
+   *  ⚠️ Absent on the DEFAULT page and present only on `/messages/raw`. It was 78.9%
+   *  of a measured 9.91 MB page and the Turns view never rendered a byte of it, so
+   *  it is fetched only when Raw is open. Nothing outside the Raw pane may read it:
+   *  the four fields above exist precisely so nothing has to. On a LIVE-folded entry
+   *  it is still populated from the SSE frame, so its presence says nothing about
+   *  which page shape a consumer is holding. */
+  raw?: unknown;
 
   // Provenance / kind-specific fields (mapped from the canonical wire, never invented):
   /** true when this assistant text was recovered from the OTel copy after the live
@@ -467,13 +499,47 @@ export function isEmptySummaryFilter(filter: SessionSummaryFilterAxes | undefine
 /** recent-bundle: warms the N most-recent sessions in one round trip. */
 export type RecentBundleResponse = Record<
   string,
-  { summary: SessionSummary; model: TurnModel }
+  {
+    summary: SessionSummary;
+    model: TurnModel;
+    /** Where to resume this session's event stream — see `StreamResumePoint`. Optional
+     *  for the same reason it is on `MessagesResponse`: an older server does not send
+     *  one, and a client without one connects without a resume point. */
+    stream?: StreamResumePoint;
+  }
 >;
 
 export type ValidatorsResponse = Record<string, Validator>;
 
 export interface MessagesResponse {
   model: TurnModel;
+  /** Where to resume this session's event stream so the page and the stream meet
+   *  exactly. Absent from an older llm-bridge-server, which is why every reader treats
+   *  it as optional and falls back to connecting without one. */
+  stream?: StreamResumePoint;
+}
+
+/**
+ * The point in a session's event stream that the page it arrived with already covers.
+ *
+ * ⚠️ `head` is an llm-bridge-server event row id — the id space of the SSE `id:` line and
+ * of `Last-Event-ID`. It is NOT the log-store row id that `Entry.eventId` carries. The
+ * two stores number the same events independently and comparing across them is
+ * meaningless; that confusion has already cost this client a bug where every reconnect
+ * silently replayed nothing. It is a separate field with a separate name for that reason
+ * — never derive one from the other.
+ *
+ * Why it exists: the server replays the ENTIRE current turn to a client that connects
+ * without a resume point, because it cannot know what that client already has. Measured
+ * 2026-08-26 on three real sessions, that replay was 88, 177 and 360 frames — up to
+ * 1,154 KB — all of it content the page had just delivered. With a resume point the same
+ * connects replay nothing.
+ *
+ * `head: 0` is a real answer, not a missing one: the session has no stored events, and
+ * the stream should be opened without a resume point.
+ */
+export interface StreamResumePoint {
+  head: number;
 }
 
 /** `GET /folders` exactly as the gateway sends it (`msg.FolderList`). The field

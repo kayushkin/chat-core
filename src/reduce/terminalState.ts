@@ -61,8 +61,10 @@ export function terminalStateFromTail(
     } else if (e.kind === 'error' && e.code && TERMINAL_ERROR_CODES.has(e.code)) {
       state = 'error';
     } else {
-      const rawType = (e.raw as { type?: string } | undefined)?.type;
-      if (rawType && TERMINAL_EVENT_TYPES.has(rawType)) state = 'completed';
+      // `eventType` is the promoted field; `raw.type` is the fallback for a
+      // log-store that predates it. See toolPairing.ts for when that goes.
+      const eventType = e.eventType ?? (e.raw as { type?: string } | undefined)?.type;
+      if (eventType && TERMINAL_EVENT_TYPES.has(eventType)) state = 'completed';
     }
     if (state && (!best || e.eventId >= best.eventId)) {
       best = { eventId: e.eventId, state };

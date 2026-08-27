@@ -41,7 +41,9 @@ function setup(
     model: modelWith(sid, { maxEventId: 6, eventCount: 6, updatedAt: '' }),
   }));
   const api = { getValidators, getMessages } as unknown as ApiClient;
-  const cache = { isEnabled: false, putTurns: vi.fn(async () => {}) } as unknown as SessionCache;
+  const cache = { isEnabled: false, putTurns: vi.fn(async () => {}),
+    scheduleTurnsWrite: vi.fn(),
+    flushTurnsWrites: vi.fn(async () => {}) } as unknown as SessionCache;
   const engine = new SyncEngine({ store, api, cache });
   return { store, engine, sid, getValidators, getMessages };
 }
@@ -169,7 +171,9 @@ describe('the sweep always checks the session that is on screen', () => {
       model: modelWith(id, { maxEventId: 6, eventCount: 6, updatedAt: '' }),
     }));
     const api = { getValidators, getMessages } as unknown as ApiClient;
-    const cache = { isEnabled: false, putTurns: vi.fn(async () => {}) } as unknown as SessionCache;
+    const cache = { isEnabled: false, putTurns: vi.fn(async () => {}),
+    scheduleTurnsWrite: vi.fn(),
+    flushTurnsWrites: vi.fn(async () => {}) } as unknown as SessionCache;
     const engine = new SyncEngine({ store, api, cache, sweepLimit });
     return { engine, active, getValidators, getMessages };
   }
@@ -197,7 +201,9 @@ describe('the sweep always checks the session that is on screen', () => {
     store.getState().actions.setActive(sid);
     const getValidators = vi.fn(async () => ({ [sid]: { maxEventId: 5, eventCount: 5, updatedAt: '' } }));
     const api = { getValidators, getMessages: vi.fn() } as unknown as ApiClient;
-    const cache = { isEnabled: false, putTurns: vi.fn(async () => {}) } as unknown as SessionCache;
+    const cache = { isEnabled: false, putTurns: vi.fn(async () => {}),
+    scheduleTurnsWrite: vi.fn(),
+    flushTurnsWrites: vi.fn(async () => {}) } as unknown as SessionCache;
     const engine = new SyncEngine({ store, api, cache });
 
     await engine.sweepValidators();
@@ -226,7 +232,9 @@ describe('opening a session re-checks it, without waiting for the sweep', () => 
       },
       basePath: '',
     } as unknown as ApiClient;
-    const cache = { isEnabled: false, putTurns: vi.fn(async () => {}) } as unknown as SessionCache;
+    const cache = { isEnabled: false, putTurns: vi.fn(async () => {}),
+    scheduleTurnsWrite: vi.fn(),
+    flushTurnsWrites: vi.fn(async () => {}) } as unknown as SessionCache;
     const engine = new SyncEngine({ store, api, cache });
     return { store, engine, sid, getValidators, getMessages };
   }
@@ -260,7 +268,9 @@ describe('opening a session re-checks it, without waiting for the sweep', () => 
       },
       basePath: '',
     } as unknown as ApiClient;
-    const cache = { isEnabled: false, putTurns: vi.fn(async () => {}) } as unknown as SessionCache;
+    const cache = { isEnabled: false, putTurns: vi.fn(async () => {}),
+    scheduleTurnsWrite: vi.fn(),
+    flushTurnsWrites: vi.fn(async () => {}) } as unknown as SessionCache;
     const engine = new SyncEngine({ store, api, cache });
 
     engine.start();
@@ -283,7 +293,9 @@ describe('opening a session re-checks it, without waiting for the sweep', () => 
       },
       basePath: '',
     } as unknown as ApiClient;
-    const cache = { isEnabled: false, putTurns: vi.fn(async () => {}) } as unknown as SessionCache;
+    const cache = { isEnabled: false, putTurns: vi.fn(async () => {}),
+    scheduleTurnsWrite: vi.fn(),
+    flushTurnsWrites: vi.fn(async () => {}) } as unknown as SessionCache;
     const engine = new SyncEngine({ store, api, cache });
 
     engine.start();

@@ -1,6 +1,10 @@
 import type { Entry, EntryKind, Role, Turn, TurnModel, Validator } from '../net/types.js';
 import type { WireEvent, WireEventData } from '../net/wireEvents.js';
 import { annotateOTelDuplicates } from './otelDedup.js';
+// The ONE answer to "what tool id does this entry carry", shared with the pairing
+// helpers rather than re-derived here — two readers of the same fact that disagree
+// is how a call and its result stop finding each other.
+import { toolIdOf } from '../store/toolPairing.js';
 
 // LIVE-TAIL reducer. Settled history is materialized once, server-side; this
 // only folds the small stream of live SSE events onto an already-finished
@@ -259,15 +263,9 @@ export function mergeMaterializedPage(
   };
   for (const inc of Object.values(incoming.entries)) {
     if (inc.messageId) pageMessageUnits.add(`${inc.messageId}|${inc.role}|${inc.kind}`);
-    const raw = inc.raw as
-      | { tool_call?: { tool_id?: string }; tool_result?: { tool_id?: string } }
-      | undefined;
-    if (inc.kind === 'tool_call' && raw?.tool_call?.tool_id) {
-      pageToolCalls.add(raw.tool_call.tool_id);
-    }
-    if (inc.kind === 'tool_result' && raw?.tool_result?.tool_id) {
-      pageToolResults.add(raw.tool_result.tool_id);
-    }
+    const incToolId = toolIdOf(inc);
+    if (inc.kind === 'tool_call' && incToolId) pageToolCalls.add(incToolId);
+    if (inc.kind === 'tool_result' && incToolId) pageToolResults.add(incToolId);
     if (inc.kind === 'system' && inc.subtype && (inc.taskId || inc.toolUseId)) {
       pageSystemUnits.add(`${inc.subtype}|${inc.taskId || inc.toolUseId}`);
     }
@@ -278,10 +276,7 @@ export function mergeMaterializedPage(
   /** Does the page report this live entry's content unit? */
   const pageReports = (held: Entry): boolean => {
     if (held.kind === 'tool_call' || held.kind === 'tool_result') {
-      const raw = held.raw as
-        | { tool_call?: { tool_id?: string }; tool_result?: { tool_id?: string } }
-        | undefined;
-      const toolId = raw?.tool_call?.tool_id || raw?.tool_result?.tool_id;
+      const toolId = toolIdOf(held);
       if (toolId) {
         const callReported = pageToolCalls.has(toolId);
         const resultReported = held.toolResult === undefined || pageToolResults.has(toolId);
@@ -317,8 +312,16 @@ export function mergeMaterializedPage(
       const normHeld = normalizeText(held.text ?? '');
       const reported = Object.values(incoming.entries).some((inc) => {
         if (inc.role !== 'user' || !inc.text) return false;
-        const incRaw = inc.raw as { client_request_id?: string } | undefined;
-        if (heldRaw.clientId && incRaw?.client_request_id === heldRaw.clientId) return true;
+        // `clientRequestId` is the promoted field; the raw branch covers a log-store
+        // that predates it. ⚠️ Measured on this box, NOTHING populates either — the
+        // bridge stamps the id only when a caller supplies one and no caller here
+        // does — so this comparison is dead today and the normalized-text match
+        // below is what actually runs. That fallback cannot tell two identical
+        // prompts apart. Left as-is rather than "fixed": the honest repair is for
+        // the sender to mint an id, not for the reader to guess harder.
+        const incClientRequestId =
+          inc.clientRequestId ?? (inc.raw as { client_request_id?: string } | undefined)?.client_request_id;
+        if (heldRaw.clientId && incClientRequestId === heldRaw.clientId) return true;
         return !!normHeld && normalizeText(inc.text) === normHeld;
       });
       if (reported) continue;
@@ -545,10 +548,17 @@ function applyPayload(prev: Entry, ev: WireEvent): Entry {
     case 'tool_call':
       next.toolName = raw.tool_call?.name ?? prev.toolName;
       next.toolInput = raw.tool_call?.input ?? prev.toolInput;
+      // Promoted off `raw` so the two paths agree. log-store carries `toolId` on the
+      // materialized page; without the same field here a live-folded entry and the
+      // page copy of the SAME tool call would disagree about its id, and pairing
+      // would break on exactly the sessions being watched stream.
+      next.toolId = raw.tool_call?.tool_id ?? prev.toolId;
       break;
     case 'tool_result':
       next.toolName = raw.tool_result?.name ?? prev.toolName;
       next.toolResult = raw.tool_result?.output ?? prev.toolResult;
+      next.toolId = raw.tool_result?.tool_id ?? prev.toolId;
+      if (raw.tool_result?.is_error !== undefined) next.toolError = raw.tool_result.is_error;
       break;
     case 'result':
       next.text = raw.result?.text || prev.text;
@@ -612,6 +622,10 @@ function applyPayload(prev: Entry, ev: WireEvent): Entry {
   // events and no consumer looked at it, which is how another session's rows
   // ended up rendering as this one's.
   if (raw.harness_parent_id) next.harnessParentId = raw.harness_parent_id;
+  // Carried on every event type rather than in the switch, same as the two above,
+  // and for the same reason the page carries them: so nothing has to read `raw`.
+  if (raw.client_request_id) next.clientRequestId = raw.client_request_id;
+  if (raw.type) next.eventType = raw.type;
   next.raw = raw;
   return next;
 }
@@ -681,6 +695,48 @@ function materializedCopyExists(
 }
 
 export function applyEvent(state: TailState, ev: WireEvent): TailState {
+  return foldEvent(state, ev, true);
+}
+
+/**
+ * Re-annotate a tail's entries in one pass.
+ *
+ * Split out of the fold so a BATCH of frames can annotate once instead of once per
+ * frame. `annotateOTelDuplicates` rebuilds every entry (`entries.map(e => ({...e}))`)
+ * and runs over the WHOLE model, which on a cold-loaded session is a thousand entries —
+ * so per-frame it is O(frames x entries), and a session open replays hundreds of frames.
+ *
+ * Safe to defer because the fold never READS the annotations it writes: a new entry is
+ * created with the `duplicate: false, primary: true` default and nothing on the fold
+ * path consults those fields. An intermediate state therefore carries stale annotations
+ * that nothing can observe, and this pass recomputes all three from scratch.
+ */
+export function annotateTail(state: TailState): TailState {
+  return { ...state, model: { ...state.model, entries: annotatedRecord(state.model.entries) } };
+}
+
+function annotatedRecord(entries: Record<string, Entry>): Record<string, Entry> {
+  const annotated = annotateOTelDuplicates(Object.values(entries));
+  const out: Record<string, Entry> = {};
+  for (const e of annotated) out[e.id] = e;
+  return out;
+}
+
+/**
+ * Fold one event onto a tail WITHOUT re-annotating OTel duplicates.
+ *
+ * For a caller folding a batch: annotate once at the end with `annotateTail` instead of
+ * once per frame. The returned state carries stale `duplicate`/`primary`/`groupId`
+ * until that happens, which is safe only because the fold never reads them — see
+ * `annotateTail`. A caller that renders from the result before annotating gets the
+ * PREVIOUS pass's grouping, so this is not the function to reach for by default;
+ * `applyEvent` is.
+ */
+export function foldEventWithoutAnnotating(state: TailState, ev: WireEvent): TailState {
+  return foldEvent(state, ev, false);
+}
+
+function foldEvent(state: TailState, ev: WireEvent, annotate: boolean): TailState {
   const evId = eventIdOf(ev);
   if (evId && state.seenEventIds.has(evId)) {
     return state; // idempotent — already folded in.
@@ -760,11 +816,15 @@ export function applyEvent(state: TailState, ev: WireEvent): TailState {
     }
   }
 
-  // Re-annotate OTel duplicates across the (small) live tail. Non-destructive:
-  // it only tags duplicate/primary/groupId, so nothing is dropped.
-  const annotated = annotateOTelDuplicates(Object.values(entries));
-  const annotatedEntries: Record<string, Entry> = {};
-  for (const e of annotated) annotatedEntries[e.id] = e;
+  // Re-annotate OTel duplicates so the collapsed and raw views stay correct as a late
+  // OTel copy arrives. Non-destructive: it only tags duplicate/primary/groupId.
+  //
+  // ⚠️ NOT "across the small live tail", which is what this said for as long as the tail
+  // was live-only. Once `mergeMaterializedPage` folds a fetched page in, `entries` is
+  // the whole model — a thousand of them on a real session — and this rebuilds every one.
+  // Skipped for a batched fold, which annotates once at the end instead; see
+  // `annotateTail`.
+  const annotatedEntries = annotate ? annotatedRecord(entries) : entries;
 
   const maxEventId = Math.max(state.model.validator.maxEventId, evId);
   // Spread the prior model rather than re-listing its fields. This used to be an
@@ -800,9 +860,16 @@ export function applyEvent(state: TailState, ev: WireEvent): TailState {
   return { sessionId: state.sessionId, model, turnIndex, entryEventIds, seenEventIds };
 }
 
-/** Convenience: fold a batch of events (e.g. a history replay) in order. */
+/**
+ * Fold a batch of events in order, annotating ONCE at the end.
+ *
+ * Not a convenience wrapper — the single annotation is the point. Folding a replayed
+ * turn frame-by-frame ran `annotateOTelDuplicates` over the entire model per frame,
+ * which is O(frames x entries) for a result that only the last pass can be right about
+ * anyway. Every frame is still folded individually, in order, through the same reducer.
+ */
 export function applyEvents(state: TailState, events: WireEvent[]): TailState {
   let s = state;
-  for (const ev of events) s = applyEvent(s, ev);
-  return s;
+  for (const ev of events) s = foldEvent(s, ev, false);
+  return s === state ? state : annotateTail(s);
 }

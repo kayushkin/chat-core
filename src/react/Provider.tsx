@@ -27,6 +27,16 @@ export interface ChatProviderProps {
    *  0 disables deepening. Default 2000 — see `Prefetcher`. */
   backgroundSessionBudget?: number;
   cache?: boolean; // enable IndexedDB persistence, default true
+  /** Characters of transcript payload to keep warm in memory. Default
+   *  `DEFAULT_TURN_RETENTION_BYTES`. This is the L1 working set, NOT a cache — the
+   *  IndexedDB layer below holds more, and an evicted session repaints from there
+   *  rather than from the network. Measured in bytes rather than sessions because
+   *  transcript size varies by more than 10× between sessions; see the constant. */
+  turnRetentionBytes?: number;
+  /** Sessions kept warm regardless of the byte budget. Default
+   *  `DEFAULT_TURN_RETENTION_MIN_SESSIONS` — what guarantees that flipping between the
+   *  few sessions someone is working across stays instant even when each is enormous. */
+  turnRetentionMinSessions?: number;
   children: ReactNode;
 }
 
@@ -46,12 +56,14 @@ export function ChatProvider(props: ChatProviderProps): JSX.Element {
     sessionsPerPage,
     backgroundSessionBudget,
     cache = true,
+    turnRetentionBytes,
+    turnRetentionMinSessions,
     children,
   } = props;
 
   const ctxRef = useRef<ChatContextValue | null>(null);
   if (ctxRef.current === null) {
-    const store = createChatStore();
+    const store = createChatStore({ turnRetentionBytes, turnRetentionMinSessions });
     const api = new ApiClient({ fetch: fetchFn, basePath });
     const sessionCache = new SessionCache(cache);
     const prefetcher = new Prefetcher({

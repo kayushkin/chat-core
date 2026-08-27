@@ -52,7 +52,9 @@ function engineFor(cached: Validator | null) {
     getSummary: vi.fn(async () => ({ sessions: [], nextCursor: null })),
     getFolders: vi.fn(async () => []),
   } as unknown as ApiClient;
-  const cache = { isEnabled: false, putTurns: vi.fn(async () => {}) } as unknown as SessionCache;
+  const cache = { isEnabled: false, putTurns: vi.fn(async () => {}),
+    scheduleTurnsWrite: vi.fn(),
+    flushTurnsWrites: vi.fn(async () => {}) } as unknown as SessionCache;
   const engine = new SyncEngine({ store, api, cache });
   return { store, engine, sid };
 }

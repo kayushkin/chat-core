@@ -169,18 +169,49 @@ export function useActiveSession(): {
 
   const select = useCallback(
     (nextId: string) => {
-      // Synchronous: swap the active id and render from cache immediately.
-      actions.setActive(nextId);
-      actions.clearPending();
-      // Background: warm a cold session; the store update is what re-renders.
+      // ⚠️ ORDER: the page fetch is STARTED BEFORE `setActive`, and that is load-bearing.
+      //
+      // `setActive` is what the SyncEngine subscribes to, and it attaches the session's
+      // event stream synchronously off that change. The stream needs to know whether a
+      // page is on its way — if one is, it waits for the resume point that page carries
+      // and the server replays nothing; if not, it connects cold and the server replays
+      // the entire current turn. Setting the active id first meant the stream always
+      // looked before the fetch had announced itself, so every cold open replayed in
+      // full. Measured: only bundle-warmed sessions ever connected with a resume point.
+      //
+      // Starting the fetch first costs nothing — both happen in this one tick, and
+      // `setTurnsLoading` is what the stream reads.
       const state = store.getState();
-      if (!state.turnsBySession.has(nextId) && !state.turnsLoading.has(nextId)) {
+      const fetchTail = (): void => {
         actions.setTurnsLoading(nextId, true);
         void api
           .getMessages(nextId, { limit: 30 })
-          .then((resp) => actions.setTurns(nextId, resp.model))
+          .then((resp) => actions.setTurns(nextId, resp.model, { streamHead: resp.stream?.head }))
           .catch(() => actions.setTurnsLoading(nextId, false));
+      };
+      if (!state.turnsBySession.has(nextId) && !state.turnsLoading.has(nextId)) {
+        // JOIN a hover prefetch rather than racing it. Hovering a sidebar row and then
+        // clicking it is how a session is normally opened, and the two paths guarded on
+        // registers neither could see — so the same page was fetched TWICE,
+        // concurrently, measured 2-19ms apart on the live dashboard, each parsing up to
+        // a megabyte of JSON on the cold path this is all trying to make fast.
+        //
+        // The prefetch FAILING is handled rather than assumed away: skipping our own
+        // fetch on the strength of one that then errors would leave the pane empty with
+        // nothing left to retry it. `warm()` re-checks the store before writing, so a
+        // fetch here after a failed prefetch cannot double-apply.
+        const warming = prefetcher.warming(nextId);
+        if (warming) {
+          void warming.catch(() => {
+            if (store.getState().activeId === nextId) fetchTail();
+          });
+        } else {
+          fetchTail();
+        }
       }
+      // Now the active id, with the store already saying whether a page is coming.
+      actions.setActive(nextId);
+      actions.clearPending();
       // And warm the SUMMARY, on exactly the same principle. Selecting a session
       // whose summary the store has never seen used to set `activeId` and stop:
       // the turns arrived, `summary` stayed null, and a host rendering its header
@@ -207,7 +238,6 @@ export function useActiveSession(): {
             console.warn(`[chat-core] could not load session ${nextId}`, err);
           });
       }
-      void prefetcher; // hover prefetch may already have warmed it.
     },
     [actions, api, store, prefetcher],
   );
@@ -251,17 +281,40 @@ export function useTurns(
 
   // Cold session: trigger a background tail fetch. Never throws on the render
   // path; the store update paints the result.
+  //
+  // WHICH page depends on the view, and the two are not interchangeable. The default
+  // `/messages` is PROJECTED by log-store — no `raw` payloads, no duplicate entries —
+  // because the Turns view renders about a tenth of what used to be sent (9.91 MB
+  // against 0.95 MB, measured on one real session). The Raw view renders `entry.raw`
+  // directly and the Timeline is the audit surface over every stored event, so both
+  // need the unprojected page and ask for it by name.
+  //
+  // A session already loaded from the PROJECTED page still needs the raw fetch when
+  // the view switches, which is why the guard is `rawTurnsLoaded` and not just
+  // "is there a model". Going the other way needs no fetch at all: the raw page is a
+  // superset, so a Turns view reading a raw-loaded model is already correct.
   useEffect(() => {
     if (!sessionId) return;
     const state = store.getState();
-    if (state.turnsBySession.has(sessionId)) return;
     if (state.turnsLoading.has(sessionId)) return;
+    const wantRaw = view === 'raw';
+    const haveEnough = wantRaw
+      ? state.rawTurnsLoaded.has(sessionId)
+      : state.turnsBySession.has(sessionId);
+    if (haveEnough) return;
     actions.setTurnsLoading(sessionId, true);
-    void api
-      .getMessages(sessionId, { limit: 30 })
-      .then((resp) => actions.setTurns(sessionId, resp.model))
+    const page = wantRaw
+      ? api.getMessagesRaw(sessionId, { limit: 30 })
+      : api.getMessages(sessionId, { limit: 30 });
+    void page
+      .then((resp) =>
+        actions.setTurns(sessionId, resp.model, {
+          raw: wantRaw,
+          streamHead: resp.stream?.head,
+        }),
+      )
       .catch(() => actions.setTurnsLoading(sessionId, false));
-  }, [sessionId, store, api, actions]);
+  }, [sessionId, store, api, actions, view]);
 
   const turns = model?.turns ?? EMPTY_TURNS;
   const entries = model?.entries ?? EMPTY_ENTRIES;

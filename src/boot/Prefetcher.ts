@@ -100,7 +100,15 @@ export class Prefetcher {
   private readonly cacheLimit: number;
   private readonly sessionsPerPage: number;
   private readonly backgroundSessionBudget: number;
-  private readonly inFlight = new Set<string>();
+  /** Hover prefetches in flight, by session id — the PROMISE, not just the id.
+   *
+   *  A bare Set could say "someone is fetching this" but not "join that fetch", and
+   *  the click path needs the second: hovering a sidebar row and then clicking it is
+   *  how every session is opened, and the two used to fetch the same page twice,
+   *  concurrently, because each guarded on a register the other could not see.
+   *  Measured on the live dashboard — two `GET /messages` for one open, 2-19ms
+   *  apart, each parsing a page up to a megabyte. */
+  private readonly inFlight = new Map<string, Promise<void>>();
 
   /** The filter the boot page was fetched with, and the one the filtered stream
    *  keeps paging.
@@ -154,7 +162,12 @@ export class Prefetcher {
       // budget of its own rather than an evictor to catch it.
       const painted = hydrated.list.slice(0, this.sessionsPerPage);
       if (painted.length > 0) actions.setSessions(painted);
-      for (const [id, model] of hydrated.turns) actions.setTurns(id, model);
+      for (const [id, model] of hydrated.turns) {
+        // The cached resume point rides with the cached model, so a session painted from
+        // disk still opens its stream with one. Without it the server replays that
+        // session's whole current turn — which on a cold boot is most of the sidebar.
+        actions.setTurns(id, model, { streamHead: hydrated.streamResume.get(id) });
+      }
     } catch {
       // Cold cache / disabled — the network paint below covers it.
     }
@@ -200,9 +213,9 @@ export class Prefetcher {
           const entry = bundle[id];
           if (!entry) continue;
           actions.upsertSession(entry.summary);
-          actions.setTurns(id, entry.model);
+          actions.setTurns(id, entry.model, { streamHead: entry.stream?.head });
           void this.cache.putSummary(entry.summary);
-          void this.cache.putTurns(entry.model);
+          void this.cache.putTurns(entry.model, entry.stream?.head);
         }
         return bundle;
       })
@@ -384,10 +397,38 @@ export class Prefetcher {
    *  No-op if already warm or a fetch is already in flight. */
   prefetch(sessionId: string): void {
     if (!sessionId) return;
-    if (this.store.getState().turnsBySession.has(sessionId)) return;
+    const state = this.store.getState();
+    if (state.turnsBySession.has(sessionId)) return;
+    if (state.turnsLoading.has(sessionId)) return;
     if (this.inFlight.has(sessionId)) return;
-    this.inFlight.add(sessionId);
-    void this.warm(sessionId);
+    // Announce the fetch in the SHARED store, not just in `inFlight`. Two other parts of
+    // the system need to know a page is coming and neither can see a private field:
+    // `select()` joins this fetch instead of starting a second one, and the SyncEngine
+    // waits for the resume point it will carry instead of connecting the stream cold and
+    // having the whole current turn replayed at it. Reading `turnsLoading` without ever
+    // setting it — which is what this did — left both of them blind on exactly the path
+    // a session is normally opened by: hover, then click.
+    state.actions.setTurnsLoading(sessionId, true);
+    const warming = this.warm(sessionId);
+    this.inFlight.set(sessionId, warming);
+    // A hover that fails is not an error: nothing is on screen waiting for it and the
+    // click path fetches on demand. The handler is attached HERE, on the hover's own
+    // reference, because `warming()` hands the same promise to `select()` and a
+    // rejection nobody ever claimed — the user hovered and moved on — would otherwise
+    // surface as an unhandled rejection in the console.
+    void warming.catch(() => {});
+  }
+
+  /**
+   * The hover prefetch in flight for this session, or undefined.
+   *
+   * `select()` joins it instead of starting its own fetch — see `inFlight`. It is
+   * exposed as the PROMISE so the caller can also handle the prefetch FAILING: a
+   * click that merely skipped its own fetch on the strength of a prefetch that then
+   * errored would leave the pane empty with nothing left to retry it.
+   */
+  warming(sessionId: string): Promise<void> | undefined {
+    return this.inFlight.get(sessionId);
   }
 
   private async warm(sessionId: string): Promise<void> {
@@ -395,13 +436,18 @@ export class Prefetcher {
       const resp = await this.api.getMessages(sessionId, { limit: this.turnsPerBundle });
       // Re-check: a live select() may have already warmed it.
       if (!this.store.getState().turnsBySession.has(sessionId)) {
-        this.store.getState().actions.setTurns(sessionId, resp.model);
+        this.store
+          .getState()
+          .actions.setTurns(sessionId, resp.model, { streamHead: resp.stream?.head });
       }
-      void this.cache.putTurns(resp.model);
-    } catch {
-      // Non-fatal — the click path will fetch on demand.
+      // Coalesced: this is a cache fill, and nothing is waiting on it reaching disk.
+      this.cache.scheduleTurnsWrite(resp.model, resp.stream?.head);
     } finally {
       this.inFlight.delete(sessionId);
+      // `setTurns` already cleared this on the success path; clearing it again is a
+      // no-op. On the failure path it is the only thing that does, and leaving it set
+      // would tell `select()` a page is still coming when nothing is fetching.
+      this.store.getState().actions.setTurnsLoading(sessionId, false);
     }
   }
 }

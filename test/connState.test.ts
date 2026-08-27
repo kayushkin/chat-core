@@ -51,6 +51,8 @@ function setup() {
     isEnabled: false,
     putSummary: vi.fn(async () => {}),
     deleteSession: vi.fn(async () => {}),
+    scheduleTurnsWrite: vi.fn(),
+    flushTurnsWrites: vi.fn(async () => {}),
   } as unknown as SessionCache;
   const engine = new SyncEngine({ store, api, cache, sweepIntervalMs: 1_000_000 });
   return { store, engine, stream };

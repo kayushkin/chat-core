@@ -3,6 +3,7 @@ import type { SessionCache } from '../cache/SessionCache.js';
 import { DEFAULT_LIST_CACHE_LIMIT, enforceCacheBound } from '../cache/evict.js';
 import type { ChatStoreApi } from '../store/ChatStore.js';
 import type { Validator } from '../net/types.js';
+import type { WireEvent } from '../net/wireEvents.js';
 import { connectListSSE, connectSessionSSE } from './sse.js';
 import { clearOpenSignalsCache } from '../react/signals.js';
 import { announceSignalsChanged } from '../store/signalResolve.js';
@@ -100,6 +101,9 @@ export class SyncEngine {
     this.listAbort = null;
     this.activeAbort = null;
     this.activeStreamId = null;
+    this.flushTailEvents();
+    // Anything still queued belongs in the cache: the next boot paints from it.
+    void this.cache.flushTurnsWrites();
     if (this.sweepTimer) clearInterval(this.sweepTimer);
     this.sweepTimer = null;
     this.unsubStore?.();
@@ -189,6 +193,7 @@ export class SyncEngine {
     let delay = 1000;
     const abort = new AbortController();
     this.activeAbort = abort;
+
     while (this.running && this.activeStreamId === sessionId && !abort.signal.aborted) {
       try {
         const lastEventId = this.lastEventIdFor(sessionId);
@@ -205,10 +210,12 @@ export class SyncEngine {
           // The resume cursor is the STREAM's own id line (llm-bridge-server's
           // row ids) — the only space the server's Last-Event-ID understands.
           if (ev.id) this.streamCursors.set(sessionId, ev.id);
-          this.store.getState().actions.applyTailEvent(sessionId, ev);
-          const model = this.store.getState().turnsBySession.get(sessionId);
-          if (model) void this.cache.putTurns(model);
+          this.queueTailEvent(sessionId, ev);
         }
+        this.flushTailEvents();
+        // The stream ended — the turn is over, so stop waiting out a coalescing timer
+        // and put the final state of it in the cache now.
+        void this.cache.flushTurnsWrites();
       } catch {
         if (abort.signal.aborted || this.activeStreamId !== sessionId) return;
       }
@@ -218,19 +225,116 @@ export class SyncEngine {
     }
   }
 
-  /** Per-session SSE resume cursor: the last frame id RECEIVED on the stream. */
+  /** Per-session SSE resume cursor: the last frame id RECEIVED on the stream.
+   *
+   *  ⛔ RESUMING FROM THE PAGE INSTEAD WAS TRIED AND WITHDRAWN on 2026-08-27, the day it
+   *  shipped. The store still carries `streamResumeBySession` and the server still sends
+   *  `StreamResumePoint` — both are correct and are what a second attempt needs — but
+   *  nothing reads them here, deliberately. Read this before wiring them up again.
+   *
+   *  It worked, by its own measure: 8 of 8 cold opens connected with a resume point and
+   *  the current-turn replay went from 5,569 KB to 0 across eight opens. It also DOUBLED
+   *  NARRATION in the UI, and the cause is structural rather than a slip.
+   *
+   *  The server reads the stream head BEFORE flushing pending log-store writes, which is
+   *  what guarantees no event is lost — and it also means the page may contain events
+   *  ABOVE that head, written while the flush ran. Those are re-delivered on the stream.
+   *  Page entries are keyed `e_<log-store row id>` and live ones `${messageId}_${kind}`
+   *  or `evt_<bridge row id>`, so the two never collide by id: overlap is reconciled by
+   *  CONTENT, in `mergeMaterializedPage`, which only runs when a page lands OVER a live
+   *  tail. Resuming from a page inverts that order and nothing reconciles the other way.
+   *  On an actively streaming session the window is wide.
+   *
+   *  No ordering avoids both failures. Reading the head after the flush closes the
+   *  duplication window and opens a LOSS window in its place — an event written in
+   *  between sits at or below the head while never reaching log-store, so it appears on
+   *  neither the page nor the resumed stream and nothing reports it missing. Duplication
+   *  is the safer half, which is why it was chosen; it still has to be handled.
+   *
+   *  WHAT WOULD MAKE IT SHIPPABLE: the reducer reconciling live-over-page as well as
+   *  page-over-live. The keys already exist in `pageReports`. The trap is naive skipping
+   *  by `messageId` — a `stream` or `block` frame above the head is genuinely NEW text
+   *  for a message the page already holds, and dropping it loses streamed content. The
+   *  atomic kinds (`system`, `tool_call`, `tool_result`, `result`, `user_message`) can be
+   *  skipped on a content match; the appending kinds cannot. */
   private streamCursors = new Map<string, string>();
 
+  // --- batched tail application ---
+  //
+  // Frames arrive one at a time off `for await`, and every iteration of that loop is a
+  // separate task. React cannot batch state updates across an await boundary, so
+  // applying each frame as it arrived meant ONE RE-RENDER PER FRAME.
+  //
+  // That is what made opening a session slow, and it took three experiments to find
+  // because the obvious suspects were innocent. Opening a session replays its current
+  // turn — hundreds of frames — and measured 2026-08-26 across eight cold opens on the
+  // real dashboard, blocking the main thread for 12.7s. Cutting the per-session SSE off
+  // entirely took the same eight opens to 261ms: 98% of the cost was here. Shrinking
+  // the page did nothing for it — clipping tool payloads (6.17MB -> 4.02MB) moved the
+  // total by 3%, and removing every tool ENTRY (6.17MB -> 0.54MB, 1043 entries -> 118)
+  // moved it by nothing at all.
+  //
+  // Buffering the frames and applying them in ONE task lets React coalesce the renders,
+  // without changing what the reducer does to any individual frame.
+
+  private queuedTailEvents: WireEvent[] = [];
+  private queuedTailSessionId: string | null = null;
+  private tailFlushHandle: ReturnType<typeof setTimeout> | null = null;
+
+  private queueTailEvent(sessionId: string, ev: WireEvent): void {
+    // A switch mid-batch abandons what was queued for the session being left: those
+    // frames belong to a tail nobody is looking at, and the stream for it has already
+    // been aborted.
+    if (this.queuedTailSessionId !== sessionId) {
+      this.queuedTailEvents = [];
+      this.queuedTailSessionId = sessionId;
+    }
+    this.queuedTailEvents.push(ev);
+    if (this.tailFlushHandle !== null) return;
+    // A frame, not a microtask. A microtask flush would run before the browser could
+    // paint and would therefore still be one render per frame during a replay, which is
+    // the whole thing being fixed.
+    this.tailFlushHandle = setTimeout(() => this.flushTailEvents(), 0);
+  }
+
+  /** Apply every queued frame in one task, so the renders coalesce. Also called when a
+   *  stream ends, so the last frames of a turn are not left sitting in the buffer. */
+  private flushTailEvents(): void {
+    if (this.tailFlushHandle !== null) {
+      clearTimeout(this.tailFlushHandle);
+      this.tailFlushHandle = null;
+    }
+    const sessionId = this.queuedTailSessionId;
+    const batch = this.queuedTailEvents;
+    this.queuedTailEvents = [];
+    if (!sessionId || batch.length === 0) return;
+    if (!this.running || this.activeStreamId !== sessionId) return;
+
+    // ONE action for the batch, so subscribers are notified once. Looping
+    // `applyTailEvent` here would still leave every selector in the app running once
+    // per frame — React's auto-batching coalesces the RENDERS and nothing else.
+    this.store.getState().actions.applyTailEvents(sessionId, batch);
+
+    // ONE cache write for the batch rather than one per frame — and coalesced on top of
+    // that, because IndexedDB structured-clones its argument on the main thread. See
+    // SessionCache.scheduleTurnsWrite.
+    const model = this.store.getState().turnsBySession.get(sessionId);
+    // The resume point during a live stream is simply the last frame received — the
+    // same id the server would hand back on `Last-Event-ID`. Cached with the model so a
+    // reload resumes where the stream got to rather than replaying the turn from its
+    // start.
+    if (model) {
+      const cursor = Number(this.streamCursors.get(sessionId));
+      this.cache.scheduleTurnsWrite(model, Number.isFinite(cursor) ? cursor : undefined);
+    }
+  }
+
   private lastEventIdFor(sessionId: string): string | undefined {
-    // ⚠️ Never derived from the model's validator: that maxEventId is a
-    // LOG-STORE row id, and the server parses Last-Event-ID in its OWN row-id
-    // space. Sending the log-store number (numerically ahead) made the server
-    // replay nothing, so every reconnect and every session open silently missed
-    // the events between the page fetch and the stream connect — "nothing
-    // streams until the final message is done". With no cursor the server
-    // replays the current turn, which is exactly the wanted cold behaviour.
     return this.streamCursors.get(sessionId);
   }
+
+
+
 
   // --- validator sweep + silent repair ---
 
@@ -352,9 +456,9 @@ export class SyncEngine {
       return;
     }
     const model = resp.model;
-    void this.cache.putTurns(model);
+    void this.cache.putTurns(model, resp.stream?.head);
     if (this.store.getState().activeId === sessionId) {
-      this.store.getState().actions.setTurns(sessionId, model);
+      this.store.getState().actions.setTurns(sessionId, model, { streamHead: resp.stream?.head });
     }
   }
 }

@@ -128,6 +128,7 @@ export type {
   RecentBundleResponse,
   ValidatorsResponse,
   MessagesResponse,
+  StreamResumePoint,
   SearchHit,
   SearchHitWire,
   SearchResponse,
@@ -152,6 +153,8 @@ export type {
 // ---- Store + selectors ----
 export {
   createChatStore,
+  DEFAULT_TURN_RETENTION_BYTES,
+  DEFAULT_TURN_RETENTION_MIN_SESSIONS,
   EMPTY_FILTER,
   type ChatState,
   type ChatActions,

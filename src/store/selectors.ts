@@ -704,6 +704,8 @@ function safeJson(v: unknown): string {
 }
 
 function toolIsError(e: Entry): boolean {
+  if (e.toolError !== undefined) return e.toolError;
+  // Fallback for a log-store that predates the promotion — see toolPairing.ts.
   const tr = (e.raw as { tool_result?: { is_error?: boolean } } | undefined)?.tool_result;
   return tr?.is_error === true;
 }

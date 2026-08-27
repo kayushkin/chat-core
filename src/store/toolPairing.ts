@@ -16,6 +16,12 @@ import type { Entry } from '../net/types.js';
  *  LAST event folded in, so both sides of the payload are checked. Undefined when
  *  the event carried none (the unpairable case). */
 export function toolIdOf(entry: Entry): string | undefined {
+  if (entry.toolId) return entry.toolId;
+  // FALLBACK, and a temporary one. `toolId` is carried by log-store on the page and
+  // by the live reducer on the stream, so this only fires against a log-store that
+  // predates the promotion — which is what lets the two deploy independently. Delete
+  // it once the projected page ships, because by then `raw` is gone from the default
+  // page and this branch can only ever return undefined.
   const raw = entry.raw as
     | { tool_call?: { tool_id?: unknown }; tool_result?: { tool_id?: unknown } }
     | undefined;

@@ -14,8 +14,9 @@ import type {
 } from '../net/types.js';
 import type { WireEvent } from '../net/wireEvents.js';
 import {
-  applyEvent,
+  annotateTail,
   carryForwardAggregates,
+  foldEventWithoutAnnotating,
   initTailState,
   mergeMaterializedPage,
   normalizeText,
@@ -157,6 +158,23 @@ export interface ChatState {
   sessionDetailLoading: Set<string>;
   /** Internal live-tail reducer state per session (not for direct UI reads). */
   tails: Map<string, TailState>;
+  /** Where each session's event stream can be resumed from, as reported by the page
+   *  that was fetched for it (`MessagesResponse.stream`).
+   *
+   *  This is what stops the server replaying a whole turn the client already has. It is
+   *  an llm-bridge-server row id and belongs to the SSE `id:` space — never the
+   *  log-store `Entry.eventId` space; see `StreamResumePoint`. */
+  streamResumeBySession: Map<string, number>;
+  /** Sessions whose UNPROJECTED page (`/messages/raw`) has been loaded.
+   *
+   *  `turnsBySession.has(id)` cannot answer this. The default page is projected —
+   *  duplicates dropped and `raw` stripped — so a session loaded for the Turns view
+   *  has a model that the Raw view and the Timeline would render incompletely, with
+   *  nothing in the model itself saying so. This is that missing fact.
+   *
+   *  One-directional by design: the raw page is a SUPERSET, so a Turns view reading a
+   *  raw-loaded model is already correct and never refetches. */
+  rawTurnsLoaded: Set<string>;
   /** Hooks parked on a human decision, `sessionId -> requestId -> PendingHook`. A
    *  session with an entry here has a tool call frozen mid-turn; nothing else in the
    *  model shows it, so this map is the ONLY thing standing between a permission ask
@@ -281,8 +299,19 @@ export interface ChatActions {
    *  page returned and omits it entirely when that page held none, so a page without
    *  spend events on it must not be allowed to report "$0.00" for a session that has
    *  spent money. See `carryForwardAggregates`. */
-  setTurns(sessionId: string, model: TurnModel): void;
+  setTurns(
+    sessionId: string,
+    model: TurnModel,
+    opts?: {
+      raw?: boolean;
+      /** The stream resume point the page reported — see `streamResumeBySession`. */
+      streamHead?: number;
+    },
+  ): void;
   applyTailEvent(sessionId: string, event: WireEvent): void;
+  /** Fold a batch of live frames and notify subscribers ONCE — see the implementation
+   *  for why the batch is load-bearing rather than a convenience. */
+  applyTailEvents(sessionId: string, events: WireEvent[]): void;
   setTurnsLoading(sessionId: string, loading: boolean): void;
   /** Merge an OLDER page in front of the loaded model (backwards pagination). Same
    *  `aggregates` rule as `setTurns`, in the other direction: the older page can fill a
@@ -403,8 +432,54 @@ function getOrInitTail(state: ChatState, sessionId: string): TailState {
   return initTailState(sessionId, state.turnsBySession.get(sessionId));
 }
 
-/** Options for `createChatStore`. */
+/**
+ * How much transcript the in-memory store keeps warm, measured in characters of
+ * payload rather than in sessions.
+ *
+ * BYTES, NOT A SESSION COUNT, and that is the whole point. Transcript size varies by
+ * more than 10× between sessions on this box — measured 2026-08-25 across the 40 most
+ * recent, one `messages?limit=30` page is 1.06 MB of JSON at the median and 10.1 MB at
+ * the worst, and a single session's last TEN turns can be 4.2 MB. A bound counted in
+ * sessions is therefore the same mistake one layer up that caused the original bug:
+ * `ApiClient.DEFAULT_MESSAGE_TURNS` bounds the request to 30 MESSAGES, and 30 messages
+ * carrying big tool results is 10 MB. Counting the wrong unit is how the heap reached
+ * the hundreds of megabytes that crashed the tab.
+ *
+ * A byte budget adapts instead of guessing. Someone working across a dozen ordinary
+ * sessions keeps all twelve warm and instant; someone opening three enormous ones keeps
+ * three. Either way the ceiling is the same and the tab cannot be grown out of memory.
+ *
+ * This is the L1 working set, NOT a cache — the IndexedDB layer below holds
+ * `DEFAULT_CACHE_LIMIT` (50) sessions, so an evicted session repaints from there rather
+ * than from the network.
+ *
+ * 32M characters is roughly 32 MB of text, which holds ~30 median sessions or ~3 of the
+ * worst — comfortably more than anyone flips between, and a fraction of the heap the
+ * unbounded store reached.
+ */
+export const DEFAULT_TURN_RETENTION_BYTES = 32_000_000;
+
+/**
+ * Sessions kept warm no matter what the byte budget says.
+ *
+ * Without a floor the budget alone has a bad failure mode: three 10 MB sessions
+ * overshoot 32M characters, so switching between the two the user is actually working
+ * across would evict and refetch on every switch — the slowest possible behaviour
+ * arriving exactly when the transcripts are biggest and refetching hurts most.
+ *
+ * Four covers "the thing I am doing", "the thing I was doing", and the two either side.
+ * The worst case it admits is bounded and known: four times the biggest transcript.
+ */
+export const DEFAULT_TURN_RETENTION_MIN_SESSIONS = 4;
+
 export interface CreateChatStoreOptions {
+  /** Characters of transcript payload to keep warm in memory — see
+   *  `DEFAULT_TURN_RETENTION_BYTES`. */
+  turnRetentionBytes?: number;
+  /** Sessions kept warm regardless of the byte budget — see
+   *  `DEFAULT_TURN_RETENTION_MIN_SESSIONS`. The active session is always kept, so even
+   *  a floor of 0 retains one. */
+  turnRetentionMinSessions?: number;
   /** Where composer drafts are persisted. Defaults to the browser's `localStorage`
    *  (and to no persistence anywhere it does not exist — node, SSR, a test). Pass
    *  `null` to turn persistence off explicitly, or a `DraftStorageLike` to point it
@@ -432,8 +507,162 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
   // has already started reading it. `search` and `folder` are never restored — see
   // filterStorage.ts.
   const persistedFilterAxes = filterStore.load();
+  const turnRetentionBytes = options.turnRetentionBytes ?? DEFAULT_TURN_RETENTION_BYTES;
+  const turnRetentionMinSessions =
+    options.turnRetentionMinSessions ?? DEFAULT_TURN_RETENTION_MIN_SESSIONS;
 
   return createStore<ChatState>((set, get) => {
+    // Session ids most-recently-used first — the eviction order for the two heavy
+    // maps. Kept in the closure rather than in `ChatState` because it is bookkeeping
+    // that no component reads; putting it in state would wake every subscriber on
+    // every switch to publish a fact none of them use.
+    //
+    // Recency of USE, not of insertion. `turnsBySession` is a Map and its own key
+    // order is insertion order — the sessions opened longest ago — so an evictor
+    // reading the Map's keys drops exactly the sessions the user is flipping between
+    // and keeps the ones they have finished with.
+    let recency: string[] = [];
+
+    /** Move `sessionId` to the front of the eviction order. */
+    function touch(sessionId: string): void {
+      if (recency[0] === sessionId) return;
+      recency = [sessionId, ...recency.filter((id) => id !== sessionId)];
+    }
+
+    /**
+     * Roughly how much memory a model's payload occupies, in characters.
+     *
+     * An estimate on purpose. `JSON.stringify` would be exact and costs a full
+     * serialization of a multi-megabyte object on every page that lands — paying the
+     * parse twice to measure what we only need to compare against a budget. This walks
+     * the entries once and adds up the fields that actually carry the weight: rendered
+     * text and string tool results. Everything else is a per-entry constant.
+     *
+     * `toolResult` is only counted when it is a string, which is what a shell or file
+     * tool returns and where the megabytes live. A structured result is charged the flat
+     * overhead rather than serialized to find out.
+     */
+    function estimateSize(model: TurnModel): number {
+      let size = 0;
+      for (const entry of Object.values(model.entries)) {
+        size += entry.text?.length ?? 0;
+        if (typeof entry.toolResult === 'string') size += entry.toolResult.length;
+        // Ids, timestamps, roles, kinds — small, but there is one set per entry and a
+        // transcript can hold thousands, so they are not nothing.
+        size += 200;
+      }
+      return size;
+    }
+
+    /** Estimated size per retained session, so the budget is not recomputed over the
+     *  whole working set every time one session changes. */
+    const sizeBySession = new Map<string, number>();
+
+    /**
+     * Evict least-recently-used transcripts until the working set fits the byte budget,
+     * and return the trimmed maps.
+     *
+     * Three things are never evicted, in order of precedence:
+     *
+     *  1. The ACTIVE session. It is the one on screen; dropping it blanks the transcript
+     *     being read and costs a refetch to put it back.
+     *  2. The `turnRetentionMinSessions` most recently used. This is what makes flipping
+     *     between the handful of sessions someone is working across instant even when
+     *     those sessions are individually enormous — see the constant for why a budget
+     *     alone gets that case exactly backwards.
+     *  3. Anything that still fits inside the budget.
+     *
+     * ONLY the transcript goes. The summary stays (the sidebar needs every row it has
+     * loaded, and a row is a few hundred bytes against a megabyte of transcript), the
+     * draft stays (unsent user text — losing it is data loss), and so do the parked hooks
+     * and the budget halt. This is a memory bound, not a delete.
+     *
+     * The model and its tail always go together. `TailState` holds the model plus
+     * `turnIndex`, `entryEventIds` and `seenEventIds`, so dropping `turnsBySession` alone
+     * frees nothing — the tail still points at the same object graph.
+     */
+    function evictBeyondBudget(
+      turnsBySession: Map<string, TurnModel>,
+      tails: Map<string, TailState>,
+    ): {
+      turnsBySession: Map<string, TurnModel>;
+      tails: Map<string, TailState>;
+      rawTurnsLoaded: Set<string>;
+    } {
+      const activeId = get().activeId;
+      // Most-recently-used first. Anything `recency` never saw goes on the end as a
+      // victim candidate: a missed `touch` must not quietly reintroduce unbounded growth.
+      const order = [
+        ...recency.filter((id) => turnsBySession.has(id)),
+        ...[...turnsBySession.keys()].filter((id) => !recency.includes(id)),
+      ];
+
+      const victims: string[] = [];
+      let spent = 0;
+      let kept = 0;
+      for (const id of order) {
+        const size = sizeBySession.get(id) ?? estimateSize(turnsBySession.get(id) as TurnModel);
+        sizeBySession.set(id, size);
+        const pinned = id === activeId || kept < turnRetentionMinSessions;
+        if (pinned || spent + size <= turnRetentionBytes) {
+          spent += size;
+          kept++;
+          continue;
+        }
+        victims.push(id);
+      }
+      if (victims.length === 0) {
+        return { turnsBySession, tails, rawTurnsLoaded: get().rawTurnsLoaded };
+      }
+      // `rawTurnsLoaded` goes with the model. It is a claim about what is IN MEMORY,
+      // not about what was once fetched — leave it behind and the guard in `useTurns`
+      // reads "already have the raw page" for a session whose model has been evicted,
+      // so no fetch fires and the pane renders empty.
+      //
+      // RETURNED rather than `set()` here, and that is not style. Every caller finishes
+      // with one `set({ ...evictBeyondBudget(...), … })`, so a write from inside would
+      // be silently overwritten by whatever the caller had read before eviction ran —
+      // which is exactly how the first version of this failed its own test.
+      let rawTurnsLoaded = get().rawTurnsLoaded;
+      let clearedAnyRaw = false;
+      // The resume point describes a page that is about to be evicted, so it goes with
+      // it: reopening the session refetches, and that fetch brings a fresh one.
+      const streamResumeBySession = new Map(get().streamResumeBySession);
+      for (const id of victims) {
+        turnsBySession.delete(id);
+        tails.delete(id);
+        sizeBySession.delete(id);
+        streamResumeBySession.delete(id);
+        if (rawTurnsLoaded.has(id)) {
+          if (!clearedAnyRaw) {
+            rawTurnsLoaded = new Set(rawTurnsLoaded);
+            clearedAnyRaw = true;
+          }
+          rawTurnsLoaded.delete(id);
+        }
+      }
+      recency = recency.filter((id) => turnsBySession.has(id));
+      set({ streamResumeBySession });
+      return { turnsBySession, tails, rawTurnsLoaded };
+    }
+
+    /** Record a session's fresh size and re-apply the budget. Called from every door a
+     *  transcript can enter by, so no single path can grow the working set unchecked. */
+    function retain(
+      sessionId: string,
+      turnsBySession: Map<string, TurnModel>,
+      tails: Map<string, TailState>,
+    ): {
+      turnsBySession: Map<string, TurnModel>;
+      tails: Map<string, TailState>;
+      rawTurnsLoaded: Set<string>;
+    } {
+      touch(sessionId);
+      const model = turnsBySession.get(sessionId);
+      if (model) sizeBySession.set(sessionId, estimateSize(model));
+      return evictBeyondBudget(turnsBySession, tails);
+    }
+
     const actions: ChatActions = {
       setConn(connState) {
         set({ connState });
@@ -488,6 +717,8 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
         turnsBySession.delete(sessionId);
         const tails = new Map(get().tails);
         tails.delete(sessionId);
+        const rawTurnsLoaded = new Set(get().rawTurnsLoaded);
+        rawTurnsLoaded.delete(sessionId);
         const sessionInfo = new Map(get().sessionInfo);
         sessionInfo.delete(sessionId);
         const sessionInfoLoading = new Set(get().sessionInfoLoading);
@@ -510,6 +741,7 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
           sessions,
           turnsBySession,
           tails,
+          rawTurnsLoaded,
           pendingHooks,
           activity,
           sessionInfo,
@@ -534,10 +766,16 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
         // `· Bash` for a tool that finished an hour ago. An empty map reads as idle
         // and the first event of the new stream fills it in.
         const activity = get().activity.size ? new Map<string, ActivityKind>() : get().activity;
+        // Selecting a session is the strongest statement of use there is, and it is the
+        // only one that arrives for a session already warm in memory — switching back to
+        // a loaded session fetches nothing, so without this its recency would still read
+        // as whenever it was last fetched and it would be evicted out from under a user
+        // flipping between two sessions.
+        if (activeId) touch(activeId);
         set({ activeId, activity });
       },
 
-      setTurns(sessionId, incoming) {
+      setTurns(sessionId, incoming, opts) {
         // MERGE, never replace (dash docs/dashv2-turns-per-message.md §6). This used
         // to swap the whole model for the incoming page and rebuild the tail from the
         // page alone — the "everything resets" bug: live-only content vanished and the
@@ -563,35 +801,84 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
         moreBySession.set(sessionId, model.more);
         const turnsLoading = new Set(get().turnsLoading);
         turnsLoading.delete(sessionId);
-        set({ turnsBySession, tails, moreBySession, turnsLoading });
+        const retained = retain(sessionId, turnsBySession, tails);
+        // Marked AFTER eviction, off the set eviction returned — marking first and
+        // spreading second would put the mark back for a session eviction had just
+        // dropped. A projected page never CLEARS the flag: the raw page is a superset,
+        // so once a session has been read in full, a later Turns-view fetch merging
+        // over it leaves it still complete.
+        let rawTurnsLoaded = retained.rawTurnsLoaded;
+        if (opts?.raw && !rawTurnsLoaded.has(sessionId)) {
+          rawTurnsLoaded = new Set(rawTurnsLoaded);
+          rawTurnsLoaded.add(sessionId);
+        }
+        // Recorded only when the page reported one. An older server sends no resume
+        // point, and inventing a 0 there would tell the stream to resume from the start
+        // of the session — which is not "replay the current turn", it is replay
+        // everything, the opposite of what this is for.
+        let streamResumeBySession = get().streamResumeBySession;
+        if (opts?.streamHead !== undefined) {
+          streamResumeBySession = new Map(streamResumeBySession);
+          streamResumeBySession.set(sessionId, opts.streamHead);
+        }
+        set({ ...retained, moreBySession, turnsLoading, rawTurnsLoaded, streamResumeBySession });
       },
 
       applyTailEvent(sessionId, event) {
+        actions.applyTailEvents(sessionId, [event]);
+      },
+
+      /**
+       * Fold a BATCH of live frames and notify subscribers ONCE.
+       *
+       * The batch is the point, not a convenience. Zustand notifies every subscriber
+       * synchronously on every `set`, so each selector in the app re-ran once per
+       * frame — and a session open replays its whole current turn, which is hundreds
+       * of frames. Measured 2026-08-26 across eight cold opens on the real dashboard:
+       * 12,751ms of main-thread blocking, of which 98% disappeared when the per-session
+       * SSE was cut off entirely (261ms). Neither the page size nor the entry count was
+       * implicated — clipping tool payloads (6.17MB -> 4.02MB) moved the total 3%, and
+       * removing every tool entry (6.17MB -> 0.54MB) moved it not at all.
+       *
+       * Relying on React's auto-batching alone was not enough: it coalesces the
+       * RENDERS, and leaves every selector still running once per frame underneath.
+       *
+       * The per-frame semantics are unchanged — each frame is folded in order, through
+       * the same reducer, with the same optimistic-row strip and the same idempotent
+       * no-op check. Only the notification is shared.
+       */
+      applyTailEvents(sessionId, events) {
+        if (events.length === 0) return;
         const state = get();
         // Parked hooks are folded FIRST and independently of the turn reducer. A hook
         // event moves no turn, so the reducer returns the same tail and the early
         // return below would drop it — and with it the only signal that a tool call is
         // frozen waiting on a human.
-        const priorHooks = state.pendingHooks.get(sessionId) ?? EMPTY_HOOKS;
-        const nextHooks = foldHookEvent(priorHooks, event);
-        if (nextHooks !== priorHooks) {
+        let hooks = state.pendingHooks.get(sessionId) ?? EMPTY_HOOKS;
+        for (const event of events) hooks = foldHookEvent(hooks, event);
+        if (hooks !== (state.pendingHooks.get(sessionId) ?? EMPTY_HOOKS)) {
           const pendingHooks = new Map(state.pendingHooks);
-          pendingHooks.set(sessionId, nextHooks as Map<string, PendingHook>);
+          pendingHooks.set(sessionId, hooks as Map<string, PendingHook>);
           set({ pendingHooks });
         }
         // A spend halt is folded FIRST for the same reason: the gate interrupts the
         // turn and emits an error event, and an error event that the turn reducer
         // treats as a no-op would hit the early return below and be lost — leaving a
         // session that stopped mid-answer with no visible cause.
-        const halt = budgetHaltFromEvent(sessionId, event);
-        if (halt) actions.setBudgetHalt(halt);
+        for (const event of events) {
+          const halt = budgetHaltFromEvent(sessionId, event);
+          if (halt) actions.setBudgetHalt(halt);
+        }
         // Activity is folded FIRST for a third version of the same reason, and this
         // one is the sharpest: a `stream` delta that repeats an eventId the reducer
         // has already folded is an exact no-op for the transcript and still the best
         // evidence there is that the model is generating RIGHT NOW. Behind the early
         // return it would be dropped, and the label would freeze on whatever came
         // before. `sameActivity` keeps the per-token churn from reaching subscribers.
-        const nextActivity = activityFromEvent(event);
+        // LAST frame wins: activity is a "right now" label, and the intermediate
+        // values of a batch are already history by the time it is applied.
+        let nextActivity = null as ReturnType<typeof activityFromEvent>;
+        for (const event of events) nextActivity = activityFromEvent(event) ?? nextActivity;
         if (nextActivity) {
           const prior = state.activity.get(sessionId);
           if (!prior || !sameActivity(prior, nextActivity)) {
@@ -600,29 +887,55 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
             set({ activity });
           }
         }
+        // Whether this session had no transcript at all before this frame. That is the
+        // only case where a live frame grows the RETAINED SET rather than one member of
+        // it, and so the only case that has to re-run the budget.
+        const wasCold = !state.turnsBySession.has(sessionId);
         const before = getOrInitTail(state, sessionId);
-        let tail = before;
-        // Strip a matching optimistic user row when the real user_message lands,
-        // so the two don't double-show (both are harness-sourced, so the OTel
-        // annotator won't collapse them). Correlation prefers the client request id,
-        // then falls back to a normalized-text match (bug-1 hardening) so a server
-        // prompt that came back trimmed/normalized still reconciles.
-        if (event.type === 'user_message') {
-          tail = stripOptimisticUser(tail, event);
+        let next = before;
+        // Folded WITHOUT annotating, once per frame, then annotated once below.
+        // `annotateOTelDuplicates` rebuilds every entry in the model, so doing it per
+        // frame is O(frames x entries) — and a session open replays hundreds of frames
+        // onto a model holding a thousand entries.
+        for (const event of events) {
+          let tail = next;
+          // Strip a matching optimistic user row when the real user_message lands,
+          // so the two don't double-show (both are harness-sourced, so the OTel
+          // annotator won't collapse them). Correlation prefers the client request id,
+          // then falls back to a normalized-text match (bug-1 hardening) so a server
+          // prompt that came back trimmed/normalized still reconciles.
+          if (event.type === 'user_message') {
+            tail = stripOptimisticUser(tail, event);
+          }
+          const folded = foldEventWithoutAnnotating(tail, event);
+          // ⚠️ Compare against the tail BEFORE the strip, not after. When this event's
+          // id is already in seenEventIds (a repair page landed first — the normal case
+          // now that the merge accumulates seen ids), applyEvent no-ops and returns the
+          // stripped tail unchanged. Comparing against the stripped one then silently
+          // DISCARDED the strip, leaving the optimistic row alive as a duplicate "You"
+          // row (observed live 2026-08-24).
+          if (folded !== next) next = folded;
         }
-        const next = applyEvent(tail, event);
-        // ⚠️ Compare against the ORIGINAL tail, not the stripped one. When this
-        // event's id is already in seenEventIds (a repair page landed first — the
-        // normal case now that the merge accumulates seen ids), applyEvent no-ops
-        // and returns the stripped tail unchanged. Comparing against `tail` then
-        // silently DISCARDED the strip, leaving the optimistic row alive as a
-        // duplicate "You" row (observed live 2026-08-24).
-        if (next === before) return; // idempotent no-op — nothing changed at all
+        if (next === before) return; // every frame was an idempotent no-op
+        next = annotateTail(next);
         const tails = new Map(state.tails);
         tails.set(sessionId, next);
         const turnsBySession = new Map(state.turnsBySession);
         turnsBySession.set(sessionId, next.model);
-        set({ tails, turnsBySession });
+        // A live frame is the hot path — one per streamed token — so it does NOT
+        // re-measure the transcript or re-run the budget. It cannot need to: the only
+        // session that streams is the ACTIVE one, which is pinned, and the set of
+        // retained sessions is unchanged unless this frame is the first thing that
+        // session ever held. The size estimate is dropped rather than updated, so the
+        // next eviction pass recomputes it from the grown model instead of trusting a
+        // stale number.
+        touch(sessionId);
+        if (wasCold) {
+          set(retain(sessionId, turnsBySession, tails));
+        } else {
+          sizeBySession.delete(sessionId);
+          set({ tails, turnsBySession });
+        }
       },
 
       setTurnsLoading(sessionId, loading) {
@@ -704,7 +1017,7 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
         tails.set(sessionId, reseedTailKeepingFoldHistory(sessionId, merged, get().tails.get(sessionId)));
         const moreBySession = new Map(get().moreBySession);
         moreBySession.set(sessionId, older.more);
-        set({ turnsBySession, tails, moreBySession });
+        set({ ...retain(sessionId, turnsBySession, tails), moreBySession });
       },
 
       setPendingHooks(sessionId, hooks) {
@@ -944,6 +1257,8 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
       sessionDetail: new Map(),
       sessionDetailLoading: new Set(),
       tails: new Map(),
+      streamResumeBySession: new Map(),
+      rawTurnsLoaded: new Set(),
       pendingHooks: new Map(),
       budgetHalts: new Map(),
       activity: new Map(),

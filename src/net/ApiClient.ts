@@ -459,10 +459,26 @@ export class ApiClient {
    * no error anywhere. There is no case where this client wants that shape.
    */
   getMessages(id: string, opts?: { limit?: number; before?: string | number }): Promise<MessagesResponse> {
-    const params = new URLSearchParams();
-    params.set('limit', String(opts?.limit ?? ApiClient.DEFAULT_MESSAGE_TURNS));
-    if (opts?.before != null) params.set('before', String(opts.before));
-    return this.getJSON<MessagesResponse>(`/sessions/${id}/messages?${params.toString()}`);
+    return this.getJSON<MessagesResponse>(`/sessions/${id}/messages?${messagePageQuery(opts)}`);
+  }
+
+  /**
+   * The UNPROJECTED page: every entry the window holds, duplicates included, each
+   * carrying its full `raw` source event.
+   *
+   * `getMessages` is projected by log-store — no `raw`, no duplicate entries — because
+   * the Turns view renders about a tenth of what used to be sent. Measured 2026-08-25
+   * on one real session: 9.91 MB against 0.95 MB, with `raw` alone 78.9% of it.
+   *
+   * ⚠️ Roughly TEN TIMES the bytes. Only two surfaces need it — the Raw pane, which
+   * renders `entry.raw` directly, and the Timeline, which is the audit view over every
+   * stored event. Nothing on the default path may call this.
+   */
+  getMessagesRaw(
+    id: string,
+    opts?: { limit?: number; before?: string | number },
+  ): Promise<MessagesResponse> {
+    return this.getJSON<MessagesResponse>(`/sessions/${id}/messages/raw?${messagePageQuery(opts)}`);
   }
 
   /** Full-text content search across session transcripts. Returns the matching
@@ -854,4 +870,14 @@ export class ApiClient {
     if (!signalId) return Promise.reject(new Error('a signal cannot be answered without its id'));
     return this.postJSON(`/signals/${encodeURIComponent(signalId)}/answer`, { answers });
   }
+}
+
+/** The bound both message pages carry. Never omitted: a request with no `limit`
+ *  reaches the legacy unbounded shape, measured at 306 MB and 52s for one real
+ *  session — see test/messagesAlwaysBounded.test.ts. */
+function messagePageQuery(opts?: { limit?: number; before?: string | number }): string {
+  const params = new URLSearchParams();
+  params.set('limit', String(opts?.limit ?? ApiClient.DEFAULT_MESSAGE_TURNS));
+  if (opts?.before != null) params.set('before', String(opts.before));
+  return params.toString();
 }
