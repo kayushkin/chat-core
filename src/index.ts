@@ -208,6 +208,7 @@ export {
 } from './store/pendingHooks.js';
 export {
   activityFromEvent,
+  activityFromModel,
   sameActivity,
   IDLE_ACTIVITY,
   type ActivityKind,
@@ -246,6 +247,7 @@ export {
   activeSummary,
   activeSummaryEffective,
   effectiveState,
+  effectiveStateOf,
   selectActivity,
   activeActivity,
   turnsFor,

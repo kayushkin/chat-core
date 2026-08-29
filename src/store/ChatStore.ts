@@ -24,7 +24,14 @@ import {
   type TailState,
 } from '../reduce/TurnReducer.js';
 import { foldHookEvent } from './pendingHooks.js';
-import { activityFromEvent, sameActivity, type ActivityKind } from './activity.js';
+import { effectiveStateOf } from './selectors.js';
+import { isRunningState } from './sessionStates.js';
+import {
+  activityFromEvent,
+  activityFromModel,
+  sameActivity,
+  type ActivityKind,
+} from './activity.js';
 import { budgetHaltFromEvent, type BudgetHalt } from './budgetHalt.js';
 import { DraftStore, defaultDraftStorage, type DraftStorageLike } from './draftStorage.js';
 import { FilterStore, PERSISTED_FILTER_AXES } from './filterStorage.js';
@@ -192,11 +199,19 @@ export interface ChatState {
    *  `applyTailEvent`; see `store/activity.ts` for why this is not the same fact as
    *  `SessionSummary.state`.
    *
-   *  ⚠️ Holds at most the ACTIVE session, and `setActive` clears it. Only the active
-   *  session has a live stream (`sync/SyncEngine.ts`), so an entry left behind for a
-   *  session the user has navigated away from cannot be refreshed and would sit there
-   *  naming a tool that finished minutes ago. A sub-label on non-active SIDEBAR rows
-   *  is not reachable from this map by design — it needs a field on the summary wire. */
+   *  ⚠️ Holds at most the ACTIVE session. Only the active session has a live stream
+   *  (`sync/SyncEngine.ts`), so an entry left behind for a session the user has
+   *  navigated away from cannot be refreshed and would sit there naming a tool that
+   *  finished minutes ago — which is why `setActive` drops every entry it finds,
+   *  including the incoming session's own.
+   *
+   *  It does not leave a blank in its place: `setActive` re-derives the incoming
+   *  session's entry from that session's transcript (`activityFromModel`), so a
+   *  switch fills the label in rather than waiting on the next frame. Read
+   *  `seedActivityFromTranscript` before changing either side.
+   *
+   *  A sub-label on non-active SIDEBAR rows is still not reachable from this map by
+   *  design — it needs a field on the summary wire. */
   activity: Map<string, ActivityKind>;
   activeId: string | null;
   filter: FilterState;
@@ -425,6 +440,48 @@ export type ChatStoreApi = StoreApi<ChatState>;
  *  `usePendingPermissions`'s selector stable, so a session that never parks a hook never
  *  re-renders the banner. */
 export const EMPTY_HOOKS: ReadonlyMap<string, PendingHook> = new Map();
+
+/** The activity map `setActive` installs: at most one entry, for the session being
+ *  selected, derived from the transcript already in memory.
+ *
+ *  Returns the CURRENT map unchanged when the answer is "no entries either way", so
+ *  selecting one settled session after another never replaces the map and never
+ *  re-renders a subscriber to tell it nothing changed.
+ *
+ *  `activityFromTranscript` decides what the transcript is allowed to say; `setActive`
+ *  says why the outgoing session's entry is never kept. */
+function seedActivityFromTranscript(
+  state: ChatState,
+  activeId: string | null,
+): Map<string, ActivityKind> {
+  const seeded = activeId
+    ? activityFromTranscript(state.sessions.get(activeId)?.state, state.turnsBySession.get(activeId))
+    : null;
+  if (!seeded) return state.activity.size ? new Map<string, ActivityKind>() : state.activity;
+  const prior = state.activity.get(activeId!);
+  if (prior && state.activity.size === 1 && sameActivity(prior, seeded)) return state.activity;
+  return new Map<string, ActivityKind>([[activeId!, seeded]]);
+}
+
+/** The label a session's own transcript supports, or null when it supports none.
+ *
+ *  Gated on the session being RUNNING per `effectiveStateOf` — the server's word,
+ *  already reconciled against a terminal tail. That gate is not belt-and-braces: it
+ *  covers the one fact a materialized entry cannot carry. A `session_state` event
+ *  announcing the end of a turn keeps its state only on `raw`, which the default page
+ *  omits, so the transcript alone can read a finished turn as still composing.
+ *
+ *  `idle` is folded to null because an absent entry already means idle, and recording
+ *  it would be a second spelling of the same fact — one that costs a map replacement
+ *  to say. */
+function activityFromTranscript(
+  summaryState: string | undefined,
+  model: TurnModel | undefined,
+): ActivityKind | null {
+  if (!isRunningState(effectiveStateOf(summaryState, model))) return null;
+  const derived = activityFromModel(model);
+  return derived && derived.kind !== 'idle' ? derived : null;
+}
 
 function getOrInitTail(state: ChatState, sessionId: string): TailState {
   const existing = state.tails.get(sessionId);
@@ -758,14 +815,25 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
       },
 
       setActive(activeId) {
-        // Dropping the whole activity map on every switch, rather than the outgoing
-        // session's entry: the incoming session's entry is just as stale. Only the
-        // active session has a live stream, so an entry for any other session was
-        // last written the previous time it WAS active and has had no way to move
-        // since — coming back to a session it had left mid-tool, the label would say
-        // `· Bash` for a tool that finished an hour ago. An empty map reads as idle
-        // and the first event of the new stream fills it in.
-        const activity = get().activity.size ? new Map<string, ActivityKind>() : get().activity;
+        // Every existing entry goes, including the incoming session's own: only the
+        // active session has a live stream, so an entry left from the last time this
+        // session WAS active has had no way to move since, and coming back to a
+        // session left mid-tool it would say `· Bash` for a tool that finished an
+        // hour ago. Keeping it is the one thing this must not do.
+        //
+        // What replaces it is not a blank. The incoming session's label is REBUILT
+        // from its own transcript (`activityFromModel`), so the status line above the
+        // composer is filled in the same commit as the switch instead of waiting for
+        // the next frame — on a session running a long tool call that wait is minutes
+        // of a chat that looks idle while it works. A derived label cannot go stale
+        // the way a kept one does: it is read from entries that are on screen right
+        // now, and the first live frame overwrites it either way.
+        //
+        // A settled session derives nothing and reads idle, which is the truth about
+        // it — see `activityFromTranscript` for what the derivation will and will not
+        // claim, and `setTurns` for the half of this that fires when the transcript
+        // arrives after the switch rather than before it.
+        const activity = seedActivityFromTranscript(get(), activeId);
         // Selecting a session is the strongest statement of use there is, and it is the
         // only one that arrives for a session already warm in memory — switching back to
         // a loaded session fetches nothing, so without this its recency would still read
@@ -821,7 +889,35 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
           streamResumeBySession = new Map(streamResumeBySession);
           streamResumeBySession.set(sessionId, opts.streamHead);
         }
-        set({ ...retained, moreBySession, turnsLoading, rawTurnsLoaded, streamResumeBySession });
+        // The other half of `setActive`'s re-derivation, for the session that was COLD
+        // when it was selected: the switch had no transcript to read, and this is the
+        // commit that first has one. Without it the feature would only ever work for a
+        // session already warm in memory — every session is cold after a reload, which
+        // is precisely when a user is most likely to be looking for what is running.
+        //
+        // Reconciled against `model`, the page merged just above, rather than through
+        // the store: the store still holds the model this one replaces, and a page that
+        // carries the turn's ending would be read against a tail that does not.
+        //
+        // Only for the ACTIVE session (a prefetch must not label a session nobody is
+        // looking at) and only when no entry exists (the live fold outranks this — it
+        // is reading frames this page is already behind).
+        let activity = get().activity;
+        if (sessionId === get().activeId && !activity.has(sessionId)) {
+          const seeded = activityFromTranscript(get().sessions.get(sessionId)?.state, model);
+          if (seeded) {
+            activity = new Map(activity);
+            activity.set(sessionId, seeded);
+          }
+        }
+        set({
+          ...retained,
+          moreBySession,
+          turnsLoading,
+          rawTurnsLoaded,
+          streamResumeBySession,
+          activity,
+        });
       },
 
       applyTailEvent(sessionId, event) {

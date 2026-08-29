@@ -387,12 +387,26 @@ export function activeSummary(state: ChatState): SessionSummary | null {
  */
 export function effectiveState(state: ChatState, sessionId: string | null): string {
   if (!sessionId) return '';
-  const summary = state.sessions.get(sessionId);
-  const raw = summary?.state ?? '';
+  return effectiveStateOf(state.sessions.get(sessionId)?.state, state.turnsBySession.get(sessionId));
+}
+
+/**
+ * `effectiveState` over a summary state and a model handed in directly, for callers
+ * holding a model the store has not been given yet. `setTurns` is why it exists: it
+ * reconciles the page it is about to install, and reading the store there would
+ * reconcile against the model that page is replacing.
+ *
+ * The rule itself lives here and nowhere else — a second copy of "a running state
+ * loses to a terminal tail" is a second place for the two to disagree about whether
+ * a session is working.
+ */
+export function effectiveStateOf(
+  summaryState: string | undefined,
+  model: TurnModel | undefined,
+): string {
+  const raw = summaryState ?? '';
   if (!isRunningState(raw)) return raw;
-  const terminal = terminalStateFromTail(state.turnsBySession.get(sessionId));
-  if (!terminal) return raw;
-  return terminal;
+  return terminalStateFromTail(model) ?? raw;
 }
 
 /**
@@ -409,6 +423,12 @@ export function effectiveState(state: ChatState, sessionId: string | null): stri
  * `running` would put a label on screen that no event supports. A session with no
  * live stream is reported idle, and the caller decides whether to show the state
  * instead.
+ *
+ * The active session's entry survives a switch away and back, but never as the value
+ * it held: `setActive` re-derives it from that session's own transcript. So a label
+ * read here is always sourced from an event that arrived — off the live stream while
+ * the stream is attached, off the materialized entries at the moment of selection —
+ * and never from the state alone.
  */
 export function selectActivity(state: ChatState, sessionId: string | null): ActivityKind {
   if (!sessionId) return IDLE_ACTIVITY;
