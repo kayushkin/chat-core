@@ -20,6 +20,19 @@ Projected sidebar list, newest first, paginated. Omits `info` / `harness_config`
 Also sets `ETag: <revision>`; honors `If-None-Match` → `304`.
 `revision` = max(updatedAt) across the table (or a monotonic change counter).
 
+### `POST /sessions/summary`
+The same query as the GET, re-encoded as a JSON body, and the REQUIRED encoding for the
+two id lookups (`session_ids`, `manager_session_ids`). Their lists are unbounded — one id
+per loaded session — and the query-string encoding reached 93 KB on a real sidebar, which
+nginx answers not with a refusal but by destroying the whole HTTP/2 connection (GOAWAY at
+~11.5 KB of URL, measured), killing every other stream in flight. `ApiClient.getSummary`
+switches encodings on the presence of either lookup; a caller never chooses.
+Body: `{ limit?, before?, harnesses?, statuses?, types?, purposes?, modes?, machines?,
+session_ids?, manager_session_ids? }` — list fields plural (the GET spells them as one
+repeated singular parameter). Same `SummaryResponse`, same server-side response cache;
+present-but-empty id lists are a 400 exactly as on the GET, and unknown fields are a 400
+(strict decoder). No conditional-GET ride on this encoding — the one thing given up.
+
 ### `GET /sessions/recent-bundle?n=20&turns=30`
 The N most-recent sessions, each with summary + last `turns` turns materialized, in ONE
 response. → `RecentBundleResponse` `{ [sessionId]: { summary, model } }`.

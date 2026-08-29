@@ -321,8 +321,8 @@ export class ApiClient {
      *  Paging cannot answer that question. The signals inbox lists open signals
      *  across every session, and the row it needs a name from may be thousands
      *  deep in a listing ordered by updated_at, so no page size the sidebar
-     *  would ever ask for reaches it. Sent as repeated parameters for the same
-     *  reason the axes are. */
+     *  would ever ask for reaches it. Naming either lookup switches the request
+     *  to the POST-body encoding — see the note in the method body. */
     sessionIds?: readonly string[];
     /** Look up the CHILDREN of these sessions — "what did these spawn?". Also a
      *  lookup rather than an axis, and unanswerable by paging for a sharper
@@ -335,6 +335,27 @@ export class ApiClient {
      *  children — no count exists anywhere, and none was added. */
     managerSessionIds?: readonly string[];
   }): Promise<SummaryResponse> {
+    // The id lookups go as a POST body, never on the URL. Their lists are
+    // unbounded — one id per session the sidebar has loaded — and on this host
+    // the query-string encoding reached 93 KB, which nginx answers not with a
+    // refusal but by destroying the whole HTTP/2 connection (GOAWAY at
+    // ~11.5 KB of URL, measured), killing every other request in flight with
+    // it. The listing/paging path stays on GET, where the request is small and
+    // conditional GET rides the browser cache.
+    if (opts?.sessionIds?.length || opts?.managerSessionIds?.length) {
+      return this.postJSON<SummaryResponse>('/sessions/summary', {
+        ...(opts.limit != null ? { limit: opts.limit } : {}),
+        ...(opts.before ? { before: opts.before } : {}),
+        ...(opts.filter?.harness?.length ? { harnesses: opts.filter.harness } : {}),
+        ...(opts.filter?.status?.length ? { statuses: opts.filter.status } : {}),
+        ...(opts.filter?.type?.length ? { types: opts.filter.type } : {}),
+        ...(opts.filter?.purpose?.length ? { purposes: opts.filter.purpose } : {}),
+        ...(opts.filter?.mode?.length ? { modes: opts.filter.mode } : {}),
+        ...(opts.filter?.machine?.length ? { machines: opts.filter.machine } : {}),
+        ...(opts.sessionIds?.length ? { session_ids: opts.sessionIds } : {}),
+        ...(opts.managerSessionIds?.length ? { manager_session_ids: opts.managerSessionIds } : {}),
+      });
+    }
     const params = new URLSearchParams();
     if (opts?.limit != null) params.set('limit', String(opts.limit));
     if (opts?.before) params.set('before', opts.before);
@@ -343,8 +364,6 @@ export class ApiClient {
         for (const value of opts.filter[axis] ?? []) params.append(axis, value);
       }
     }
-    for (const id of opts?.sessionIds ?? []) params.append('session_id', id);
-    for (const id of opts?.managerSessionIds ?? []) params.append('manager_session_id', id);
     const qs = params.toString();
     return this.getJSON<SummaryResponse>(`/sessions/summary${qs ? `?${qs}` : ''}`);
   }

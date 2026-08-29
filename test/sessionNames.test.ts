@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import { ApiClient } from '../src/net/ApiClient.js';
 
-// The id lookup on `GET /sessions/summary`, and why it is not a filter chip.
+// The id lookup on `/sessions/summary`, and why it is not a filter chip.
 //
 // Every other surface in this package already holds a `SessionSummary` — a sidebar row
 // renders one, a header renders one — so none of them ever needed to turn an id into a
@@ -17,12 +17,13 @@ const BASE = '/api/bridge';
 
 interface Call {
   url: string;
+  init?: RequestInit;
 }
 
 function client(): { api: ApiClient; calls: Call[] } {
   const calls: Call[] = [];
-  const fetchFn = async (url: string): Promise<Response> => {
-    calls.push({ url: String(url) });
+  const fetchFn = async (url: string, init?: RequestInit): Promise<Response> => {
+    calls.push({ url: String(url), init });
     return {
       ok: true,
       status: 200,
@@ -40,21 +41,19 @@ describe('looking sessions up by id', () => {
     ctx = client();
   });
 
-  it('sends one repeated parameter per id, in one request', async () => {
+  it('sends every id in one POST body, in one request', async () => {
+    // A body, never the URL: this list is unbounded — the inbox may name every session
+    // holding a signal — and the query-string encoding of the sibling lookup reached
+    // 93 KB on the real sidebar, which nginx answers by destroying the whole HTTP/2
+    // connection. See subagents.test.ts for the full regression pin.
     await ctx.api.getSummary({ sessionIds: ['br_a', 'br_b', 'br_c'] });
 
     expect(ctx.calls).toHaveLength(1);
-    const params = new URL(ctx.calls[0]!.url, 'http://x').searchParams;
-    expect(params.getAll('session_id')).toEqual(['br_a', 'br_b', 'br_c']);
-  });
-
-  it('never comma-joins them', async () => {
-    // Repeated, not joined, for the same reason the filter axes are: the server splits
-    // on commas too, but a joined list is one value that has to survive a round trip
-    // intact, and the axes beside it are free-form strings from the sessions table.
-    // One shape for both keeps the endpoint from having two parsers.
-    await ctx.api.getSummary({ sessionIds: ['br_a', 'br_b'] });
-    expect(ctx.calls[0]!.url).not.toContain('br_a,br_b');
+    expect(ctx.calls[0]!.init?.method).toBe('POST');
+    expect(ctx.calls[0]!.url).toBe(`${BASE}/sessions/summary`);
+    expect(JSON.parse(String(ctx.calls[0]!.init?.body))).toEqual({
+      session_ids: ['br_a', 'br_b', 'br_c'],
+    });
   });
 
   it('is not a filter axis — it composes with them and with paging', async () => {
@@ -63,20 +62,25 @@ describe('looking sessions up by id', () => {
       filter: { harness: ['claude_code'] },
       limit: 1,
     });
-    const params = new URL(ctx.calls[0]!.url, 'http://x').searchParams;
-    expect(params.getAll('session_id')).toEqual(['br_a']);
-    expect(params.getAll('harness')).toEqual(['claude_code']);
-    expect(params.get('limit')).toBe('1');
+    expect(JSON.parse(String(ctx.calls[0]!.init?.body))).toEqual({
+      session_ids: ['br_a'],
+      harnesses: ['claude_code'],
+      limit: 1,
+    });
   });
 
-  it('sends nothing at all when no ids are asked for', async () => {
-    // An empty `session_id` would narrow to nothing on a server that treats
+  it('sends nothing at all when no ids are asked for, and stays a GET', async () => {
+    // An empty id list would narrow to nothing on a server that treats
     // present-but-empty as a constraint, turning an ordinary sidebar page into a blank
-    // one. Absent has to stay absent.
+    // one. Absent has to stay absent — and with no lookup there is nothing that
+    // outgrows a URL, so the request keeps the GET encoding and its conditional-GET
+    // caching.
     await ctx.api.getSummary({ limit: 20 });
+    expect(ctx.calls[0]!.init?.method ?? 'GET').toBe('GET');
     expect(ctx.calls[0]!.url).not.toContain('session_id');
 
     await ctx.api.getSummary({ sessionIds: [], limit: 20 });
+    expect(ctx.calls[1]!.init?.method ?? 'GET').toBe('GET');
     expect(ctx.calls[1]!.url).not.toContain('session_id');
   });
 });

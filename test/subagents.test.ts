@@ -16,10 +16,12 @@ import type { SessionSummary } from '../src/net/types.js';
 
 const BASE = '/api/bridge';
 
-function client(): { api: ApiClient; urls: string[] } {
+function client(): { api: ApiClient; urls: string[]; requests: { url: string; init?: RequestInit }[] } {
   const urls: string[] = [];
-  const fetchFn = async (url: string): Promise<Response> => {
+  const requests: { url: string; init?: RequestInit }[] = [];
+  const fetchFn = async (url: string, init?: RequestInit): Promise<Response> => {
     urls.push(String(url));
+    requests.push({ url: String(url), init });
     return {
       ok: true,
       status: 200,
@@ -28,7 +30,15 @@ function client(): { api: ApiClient; urls: string[] } {
       text: async () => '{}',
     } as unknown as Response;
   };
-  return { api: new ApiClient({ fetch: fetchFn as unknown as typeof fetch, basePath: BASE }), urls };
+  return {
+    api: new ApiClient({ fetch: fetchFn as unknown as typeof fetch, basePath: BASE }),
+    urls,
+    requests,
+  };
+}
+
+function bodyOf(request: { init?: RequestInit }): Record<string, unknown> {
+  return JSON.parse(String(request.init?.body)) as Record<string, unknown>;
 }
 
 function summary(over: Partial<SessionSummary> & Pick<SessionSummary, 'sessionId'>): SessionSummary {
@@ -51,21 +61,29 @@ function summary(over: Partial<SessionSummary> & Pick<SessionSummary, 'sessionId
 }
 
 describe('asking what a session spawned', () => {
-  it('sends one repeated manager_session_id per parent, in one request', async () => {
+  it('sends every parent in one POST body, in one request', async () => {
     // One request for a whole page of rows. That is also what lets the caller learn
     // WHICH rows have children — no count column exists, and none was added.
     const ctx = client();
     await ctx.api.getSummary({ managerSessionIds: ['br_a', 'br_b', 'br_c'] });
 
-    expect(ctx.urls).toHaveLength(1);
-    const params = new URL(ctx.urls[0]!, 'http://x').searchParams;
-    expect(params.getAll('manager_session_id')).toEqual(['br_a', 'br_b', 'br_c']);
+    expect(ctx.requests).toHaveLength(1);
+    expect(ctx.requests[0]!.init?.method).toBe('POST');
+    expect(bodyOf(ctx.requests[0]!)).toEqual({ manager_session_ids: ['br_a', 'br_b', 'br_c'] });
   });
 
-  it('never comma-joins them', async () => {
+  it('keeps the ids OFF the URL, however many there are', async () => {
+    // ⚠️ Regression pin for a bug that broke every new chat. This lookup used to go as
+    // repeated query parameters, one per loaded session — 93 KB of URL on the real
+    // sidebar — and nginx answers a long-enough URL by destroying the whole HTTP/2
+    // connection, killing the new session's /send, its /events stream and the /signals
+    // read whose failure was the visible banner. The body encoding has no such cliff.
     const ctx = client();
-    await ctx.api.getSummary({ managerSessionIds: ['br_a', 'br_b'] });
-    expect(ctx.urls[0]!).not.toContain('br_a,br_b');
+    const parents = Array.from({ length: 2000 }, (_, i) => `br_${i}`);
+    await ctx.api.getSummary({ managerSessionIds: parents });
+
+    expect(ctx.urls[0]!).toBe(`${BASE}/sessions/summary`);
+    expect(bodyOf(ctx.requests[0]!)).toEqual({ manager_session_ids: parents });
   });
 
   it('composes with the id lookup and the axes rather than replacing them', async () => {
@@ -78,20 +96,24 @@ describe('asking what a session spawned', () => {
       filter: { harness: ['claude_code'] },
       limit: 5,
     });
-    const params = new URL(ctx.urls[0]!, 'http://x').searchParams;
-    expect(params.getAll('manager_session_id')).toEqual(['br_parent']);
-    expect(params.getAll('session_id')).toEqual(['br_a']);
-    expect(params.getAll('harness')).toEqual(['claude_code']);
-    expect(params.get('limit')).toBe('5');
+    expect(bodyOf(ctx.requests[0]!)).toEqual({
+      manager_session_ids: ['br_parent'],
+      session_ids: ['br_a'],
+      harnesses: ['claude_code'],
+      limit: 5,
+    });
   });
 
-  it('sends nothing at all when no parent is named', async () => {
-    // ⚠️ The server answers a PRESENT-but-empty `manager_session_id` with a 400, on
-    // purpose: it means a caller assembled an empty list and would otherwise be handed
-    // the newest hundred sessions on the box as "what this spawned". The client must
-    // therefore omit the parameter rather than send it blank.
+  it('sends nothing at all when no parent is named, and stays a GET', async () => {
+    // ⚠️ The server answers a PRESENT-but-empty id list with a 400, on purpose: it
+    // means a caller assembled an empty list and would otherwise be handed the newest
+    // hundred sessions on the box as "what this spawned". The client must therefore
+    // omit the field rather than send it blank — and with no lookup in the request
+    // there is nothing that outgrows a URL, so it keeps the GET encoding and the
+    // conditional-GET caching that rides it.
     const ctx = client();
     await ctx.api.getSummary({ managerSessionIds: [] });
+    expect(ctx.requests[0]!.init?.method ?? 'GET').toBe('GET');
     expect(ctx.urls[0]!).not.toContain('manager_session_id');
   });
 });
