@@ -454,11 +454,17 @@ export class ApiClient {
     return this.putJSON(`/sessions/${sessionId}/folder`, { folder });
   }
 
-  /** The cheap staleness check for a set of session ids. */
+  /** The cheap staleness check for a set of session ids.
+   *
+   *  POST body, not a query string: the list is one id per cached session, so
+   *  it grows with the cache toward the URL length at which nginx destroys the
+   *  whole HTTP/2 connection (~11.5 KB, measured — the cliff that broke
+   *  getSummary's id lookups first). This endpoint emits no ETag, so unlike
+   *  getSummary there is no conditional-GET ride to preserve and no reason to
+   *  keep a GET path beside it. */
   getValidators(ids: string[]): Promise<ValidatorsResponse> {
     if (ids.length === 0) return Promise.resolve({});
-    const qs = new URLSearchParams({ ids: ids.join(',') }).toString();
-    return this.getJSON<ValidatorsResponse>(`/sessions/validators?${qs}`);
+    return this.postJSON<ValidatorsResponse>('/sessions/validators', { ids });
   }
 
   /** The server's own default turn count for the bounded shape, mirrored here

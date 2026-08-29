@@ -39,9 +39,14 @@ response. → `RecentBundleResponse` `{ [sessionId]: { summary, model } }`.
 Server-assembled and response-cached (keyed by the max updatedAt across the N), invalidated
 by the store mutation Notifier.
 
-### `GET /sessions/validators?ids=a,b,c`
+### `POST /sessions/validators` — body `{ ids: string[] }`
 → `ValidatorsResponse` `{ [sessionId]: { maxEventId, eventCount, updatedAt } }`.
 The cheap staleness check: a cached model is fresh iff its validator matches.
+POST body for the same reason as `POST /sessions/summary`: the id list is one entry per
+cached session, and a query string that grows with the cache walks toward nginx's
+HTTP/2 connection-kill cliff (~11.5 KB of URL). `GET /sessions/validators?ids=a,b,c`
+still exists and answers identically; the client no longer sends it. Absent/empty ids
+→ `{}` on both encodings (never a 400 — an empty check has an obviously right answer).
 
 ### `GET /sessions/{id}/messages?limit=30&before=<eventId>`
 Materialized tail (or a page older than `before`). → `MessagesResponse { model }`.

@@ -44,6 +44,41 @@ describe('ApiClient.interrupt — fails loud', () => {
   });
 });
 
+describe('ApiClient.getValidators — the id set rides a POST body, never the URL', () => {
+  // ⚠️ Same regression family as getSummary's id lookups: one id per cached
+  // session, and a query string that grows with the cache walks toward the URL
+  // length (~11.5 KB, measured) at which nginx destroys the whole HTTP/2
+  // connection — killing every other request in flight, not just this one.
+  it('POSTs { ids } to /sessions/validators, keeping the URL fixed-length', async () => {
+    const calls: { url: string; init?: RequestInit }[] = [];
+    const api = new ApiClient({
+      fetch: fakeFetch({ ok: true, status: 200, statusText: 'OK', jsonBody: {} }, (url, init) =>
+        calls.push({ url, init }),
+      ),
+      basePath: '/api/bridge',
+    });
+    const ids = Array.from({ length: 3000 }, (_, i) => `br_${i}`);
+    await api.getValidators(ids);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe('/api/bridge/sessions/validators');
+    expect(calls[0]!.init?.method).toBe('POST');
+    expect(JSON.parse(String(calls[0]!.init?.body))).toEqual({ ids });
+  });
+
+  it('asks the server nothing at all for an empty id set', async () => {
+    const calls: string[] = [];
+    const api = new ApiClient({
+      fetch: fakeFetch({ ok: true, status: 200, statusText: 'OK', jsonBody: {} }, (url) =>
+        calls.push(url),
+      ),
+      basePath: '/api/bridge',
+    });
+    expect(await api.getValidators([])).toEqual({});
+    expect(calls).toHaveLength(0);
+  });
+});
+
 describe('ApiClient.search', () => {
   it('GETs /sessions/search?q= and returns the hit ids', async () => {
     const seen: string[] = [];
