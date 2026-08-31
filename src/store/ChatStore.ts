@@ -213,6 +213,26 @@ export interface ChatState {
    *  A sub-label on non-active SIDEBAR rows is still not reachable from this map by
    *  design — it needs a field on the summary wire. */
   activity: Map<string, ActivityKind>;
+  /** What the sidebar ORDERS by, `sessionId -> RFC3339 stamp`. NOT `updatedAt`:
+   *  the server bumps that on every event, so with several sessions running at
+   *  once the rows leapfrogged each other continuously and the list could not be
+   *  read while it was working. This stamp moves on exactly two facts:
+   *
+   *   - a session is seen for the FIRST time (seeded from its `updatedAt`, so a
+   *     new session enters at its recency position — the top);
+   *   - a session's TURN ENDS — its summary state leaves the running set
+   *     (`upsertSession`), or a terminal event arrives on its live tail
+   *     (`applyTailEvents`) — meaning the response's final text has landed in
+   *     the chat.
+   *
+   *  Everything else — stream deltas, tool calls, renames, the user's own send —
+   *  leaves the stamp where it was, and the row where it was.
+   *
+   *  Monotonic per session (advances by max), because the same ending can arrive
+   *  on both wires and on a replayed stream, in any order. `updatedAt` itself is
+   *  untouched: it is the server's fact, shown in the header and used for cache
+   *  eviction, and this map exists precisely so ordering can differ from it. */
+  listOrderStampBySession: Map<string, string>;
   activeId: string | null;
   filter: FilterState;
   /** Content-search hits for the current `filter.search`, or null when none have
@@ -440,6 +460,14 @@ export type ChatStoreApi = StoreApi<ChatState>;
  *  `usePendingPermissions`'s selector stable, so a session that never parks a hook never
  *  re-renders the banner. */
 export const EMPTY_HOOKS: ReadonlyMap<string, PendingHook> = new Map();
+
+/** Whether this upsert says a running turn has just ended — the moment the
+ *  response's final text is in the chat, and the one summary transition that moves
+ *  a session's sidebar order stamp. A first-seen session has no `prev` and is
+ *  seeded by the caller instead. */
+function turnEndedBetween(prev: SessionSummary | undefined, next: SessionSummary): boolean {
+  return prev !== undefined && isRunningState(prev.state) && !isRunningState(next.state);
+}
 
 /** The activity map `setActive` installs: at most one entry, for the session being
  *  selected, derived from the transcript already in memory.
@@ -730,9 +758,18 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
 
       setSessions(list, olderSessionsCursor = null) {
         const sessions = new Map<string, SessionSummary>();
-        for (const s of list) sessions.set(s.sessionId, s);
+        // The stamps are rebuilt with the list — a session no longer in it keeps no
+        // stamp — but a stamp already held wins over re-seeding from `updatedAt`,
+        // or every list refresh would snap the frozen order back to raw recency.
+        const prior = get().listOrderStampBySession;
+        const listOrderStampBySession = new Map<string, string>();
+        for (const s of list) {
+          sessions.set(s.sessionId, s);
+          listOrderStampBySession.set(s.sessionId, prior.get(s.sessionId) ?? s.updatedAt);
+        }
         set({
           sessions,
+          listOrderStampBySession,
           listLoading: false,
           olderSessionsCursor,
           olderSessionsLoading: false,
@@ -743,14 +780,19 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
         // One Map copy and one folder scan for the whole page — a per-row
         // `upsertSession` loop would do both 100 times over.
         const sessions = new Map(get().sessions);
+        const listOrderStampBySession = new Map(get().listOrderStampBySession);
         for (const s of list) {
           const prev = sessions.get(s.sessionId);
           // A row that arrived live over SSE while the page was in flight is newer
           // than the page; keep the live fields on top.
           sessions.set(s.sessionId, prev ? { ...s, ...prev } : s);
+          if (!listOrderStampBySession.has(s.sessionId)) {
+            listOrderStampBySession.set(s.sessionId, s.updatedAt);
+          }
         }
         set({
           sessions,
+          listOrderStampBySession,
           olderSessionsCursor,
           olderSessionsLoading: false,
         });
@@ -764,7 +806,22 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
         const sessions = new Map(get().sessions);
         const prev = sessions.get(summary.sessionId);
         sessions.set(summary.sessionId, prev ? { ...prev, ...summary } : summary);
-        set({ sessions });
+        // The order stamp moves on exactly two upserts: a session seen for the first
+        // time (it enters at its recency position), and a running turn ending (the
+        // response's final text is in the chat). Every other upsert — and the server
+        // sends one per event while a session works — changes the row, not the order.
+        const priorStamps = get().listOrderStampBySession;
+        const current = priorStamps.get(summary.sessionId);
+        let stamp = current ?? summary.updatedAt;
+        if (turnEndedBetween(prev, summary) && summary.updatedAt > stamp) {
+          stamp = summary.updatedAt;
+        }
+        let listOrderStampBySession = priorStamps;
+        if (stamp !== current) {
+          listOrderStampBySession = new Map(priorStamps);
+          listOrderStampBySession.set(summary.sessionId, stamp);
+        }
+        set({ sessions, listOrderStampBySession });
       },
 
       removeSession(sessionId) {
@@ -788,6 +845,8 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
         pendingHooks.delete(sessionId);
         const activity = new Map(get().activity);
         activity.delete(sessionId);
+        const listOrderStampBySession = new Map(get().listOrderStampBySession);
+        listOrderStampBySession.delete(sessionId);
         // The one authoritative "this session is gone" signal there is, so it is the
         // one place a draft can be dropped for a reason rather than for age. Persist
         // the removal too, or the draft comes straight back on the next reload.
@@ -801,6 +860,7 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
           rawTurnsLoaded,
           pendingHooks,
           activity,
+          listOrderStampBySession,
           sessionInfo,
           sessionInfoLoading,
           sessionDetail,
@@ -974,13 +1034,42 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
         // LAST frame wins: activity is a "right now" label, and the intermediate
         // values of a batch are already history by the time it is applied.
         let nextActivity = null as ReturnType<typeof activityFromEvent>;
-        for (const event of events) nextActivity = activityFromEvent(event) ?? nextActivity;
+        // The newest turn ending in the batch, for the sidebar order stamp below.
+        // Read off the same fold: an activity of `idle` is only ever produced by a
+        // terminal signal (result / turn_complete / close, a terminal error code, a
+        // settled session_state), so "this frame says idle" and "the turn ended
+        // here" are one fact.
+        let turnEndedAt: string | undefined;
+        for (const event of events) {
+          const implied = activityFromEvent(event);
+          if (!implied) continue;
+          nextActivity = implied;
+          if (implied.kind === 'idle') turnEndedAt = event.data.timestamp ?? turnEndedAt;
+        }
         if (nextActivity) {
           const prior = state.activity.get(sessionId);
           if (!prior || !sameActivity(prior, nextActivity)) {
             const activity = new Map(state.activity);
             activity.set(sessionId, nextActivity);
             set({ activity });
+          }
+        }
+        // The tail half of the sidebar order stamp: the summary transition
+        // (`upsertSession`) normally carries a turn's ending, but a stranded state —
+        // the F1 defect `effectiveState` exists for — never transitions, and this is
+        // then the only wire the ending arrives on. Advances by max, because the
+        // stream replays the whole current turn on every session open and a replayed
+        // ending must not move a stamp the summary has since carried past it. A
+        // terminal frame with no timestamp advances nothing: there is no honest
+        // value to advance TO, and inventing one here would reorder the list on a
+        // clock no event supports.
+        if (turnEndedAt) {
+          const priorStamps = get().listOrderStampBySession;
+          const current = priorStamps.get(sessionId);
+          if (current === undefined || turnEndedAt > current) {
+            const listOrderStampBySession = new Map(priorStamps);
+            listOrderStampBySession.set(sessionId, turnEndedAt);
+            set({ listOrderStampBySession });
           }
         }
         // Whether this session had no transcript at all before this frame. That is the
@@ -1358,6 +1447,7 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
       pendingHooks: new Map(),
       budgetHalts: new Map(),
       activity: new Map(),
+      listOrderStampBySession: new Map(),
       activeId: null,
       filter: { ...EMPTY_FILTER, ...persistedFilterAxes },
       contentHits: null,

@@ -117,15 +117,19 @@ function searchRankOf(s: SessionSummary, query: string): number {
 function bySearchRank(
   query: string,
   contentHits: ContentHits | null,
+  stamps: ReadonlyMap<string, string>,
 ): (a: SessionSummary, b: SessionSummary) => number {
   const counts =
     contentHits && contentHits.query === query ? contentHits.matchCountBySessionId : null;
+  const byStamp = byOrderStampDesc(stamps);
   return (a, b) => {
     const rank = searchRankOf(a, query) - searchRankOf(b, query);
     if (rank !== 0) return rank;
     const byMatches = (counts?.get(b.sessionId) ?? 0) - (counts?.get(a.sessionId) ?? 0);
     if (byMatches !== 0) return byMatches;
-    return byUpdatedDesc(a, b);
+    // The same order-stamp tie-break the unsearched list uses, so equally-ranked
+    // rows hold still while their sessions run.
+    return byStamp(a, b);
   };
 }
 
@@ -133,6 +137,31 @@ function byUpdatedDesc(a: SessionSummary, b: SessionSummary): number {
   if (a.updatedAt < b.updatedAt) return 1;
   if (a.updatedAt > b.updatedAt) return -1;
   return 0;
+}
+
+/** The stamp a session is ORDERED by: its sidebar order stamp, falling back to
+ *  `updatedAt` only for a row no store action has seeded yet (every entry path
+ *  seeds, so the fallback exists for safety, not as a second ordering). See
+ *  `ChatState.listOrderStampBySession` for what moves the stamp and what
+ *  deliberately does not. */
+function orderStampOf(s: SessionSummary, stamps: ReadonlyMap<string, string>): string {
+  return stamps.get(s.sessionId) ?? s.updatedAt;
+}
+
+/** Newest order stamp first; ties broken by `updatedAt`, then by id so the order
+ *  is total and two sessions can never swap on a re-sort alone. */
+function byOrderStampDesc(
+  stamps: ReadonlyMap<string, string>,
+): (a: SessionSummary, b: SessionSummary) => number {
+  return (a, b) => {
+    const as = orderStampOf(a, stamps);
+    const bs = orderStampOf(b, stamps);
+    if (as < bs) return 1;
+    if (as > bs) return -1;
+    const byUpdated = byUpdatedDesc(a, b);
+    if (byUpdated !== 0) return byUpdated;
+    return a.sessionId < b.sessionId ? -1 : a.sessionId > b.sessionId ? 1 : 0;
+  };
 }
 
 // Simple identity-keyed memo: recompute only when (sessions, filter, contentHits,
@@ -144,6 +173,7 @@ let visibleCache: {
   filter: FilterState;
   contentHits: ContentHits | null;
   folders: string[];
+  stamps: Map<string, string>;
   result: FolderGroup[];
 } | null = null;
 
@@ -171,18 +201,25 @@ let visibleCache: {
  *  With no folder list loaded — before the first response, or after a failed one —
  *  rule 3 covers everything and the result is exactly the old recency ordering.
  *
- *  Sessions within a group are newest-first, EXCEPT while a search query is active:
- *  then they are ordered by `bySearchRank` — id match, then name match, then how
- *  many transcript events matched, then recency. Memoized on identity of the
- *  sessions Map + filter object + content-hit set + folder list. */
+ *  Sessions within a group are ordered by their ORDER STAMP, newest first — the
+ *  stamp of a session's last completed response, not its raw `updatedAt`. The
+ *  server bumps `updatedAt` on every event, so ordering by it made concurrently
+ *  running sessions leapfrog each other continuously; the stamp holds a row still
+ *  until its turn ends (see `ChatState.listOrderStampBySession`). While a search
+ *  query is active they are ordered by `bySearchRank` instead — id match, then
+ *  name match, then how many transcript events matched, then the same stamp.
+ *  Memoized on identity of the sessions Map + filter object + content-hit set +
+ *  folder list + stamp map. */
 export function visibleSessions(state: ChatState): FolderGroup[] {
   const { sessions, filter, contentHits, folders } = state;
+  const stamps = state.listOrderStampBySession;
   if (
     visibleCache &&
     visibleCache.sessions === sessions &&
     visibleCache.filter === filter &&
     visibleCache.contentHits === contentHits &&
-    visibleCache.folders === folders
+    visibleCache.folders === folders &&
+    visibleCache.stamps === stamps
   ) {
     return visibleCache.result;
   }
@@ -201,7 +238,7 @@ export function visibleSessions(state: ChatState): FolderGroup[] {
   // answers it (see `bySearchRank`). Both comparators are total and fall back to
   // recency, so the ordering never depends on the Map's insertion order.
   const query = filter.search.trim();
-  const order = query ? bySearchRank(query, contentHits) : byUpdatedDesc;
+  const order = query ? bySearchRank(query, contentHits, stamps) : byOrderStampDesc(stamps);
   for (const arr of byFolder.values()) arr.sort(order);
 
   const groups: FolderGroup[] = [];
@@ -221,12 +258,18 @@ export function visibleSessions(state: ChatState): FolderGroup[] {
     if (folder === '' || known.has(folder)) continue;
     unknown.push({ folder, sessions: arr });
   }
-  // Newest session in the group, computed rather than read off `sessions[0]`:
+  // Newest ORDER STAMP in the group, computed rather than read off `sessions[0]`:
   // that shortcut was only true while every group was sorted newest-first, and a
-  // search-ranked group puts the best hit at index 0 instead.
+  // search-ranked group puts the best hit at index 0 instead. The stamp rather
+  // than `updatedAt` for the groups' own ordering too — a folder holding a
+  // running session would otherwise leapfrog its neighbours on every event, the
+  // same churn the row ordering just gave up.
   const newestIn = (g: FolderGroup): string => {
     let newest = '';
-    for (const s of g.sessions) if (s.updatedAt > newest) newest = s.updatedAt;
+    for (const s of g.sessions) {
+      const stamp = orderStampOf(s, stamps);
+      if (stamp > newest) newest = stamp;
+    }
     return newest;
   };
   unknown.sort((a, b) => {
@@ -236,7 +279,7 @@ export function visibleSessions(state: ChatState): FolderGroup[] {
   });
   groups.push(...unknown);
 
-  visibleCache = { sessions, filter, contentHits, folders, result: groups };
+  visibleCache = { sessions, filter, contentHits, folders, stamps, result: groups };
   return groups;
 }
 
