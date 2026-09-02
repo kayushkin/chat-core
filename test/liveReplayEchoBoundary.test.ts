@@ -69,6 +69,32 @@ describe('replay: the prompt pair split by a page window', () => {
     const distinct = [...new Set(failures.map((f) => f.replace(/^k=\d+: /, '')))];
     expect(failures.length, `${failures.length}/${events.length + 1} interleavings failed; shapes: ${distinct.slice(0, 4).join(' | ')}`).toBe(0);
   });
+
+  it('the browser order: page first, then the whole stream as ONE batch, then a repair', () => {
+    // SyncEngine folds a flush of frames through applyTailEvents (annotate once at the
+    // end), not frame by frame; a cold select fetches the page before the stream opens.
+    const store = createChatStore();
+    const a = store.getState().actions;
+    a.setTurns(SID, page);
+    a.applyTailEvents(SID, events);
+    a.setTurns(SID, page);
+    expect(report(store)).toMatchObject({ users: 1, answers: 1, userAfterAnswer: false });
+  });
+  it('the browser order, stream in two batches around a repair', () => {
+    const failures: string[] = [];
+    for (let k = 0; k <= events.length; k += 7) {
+      const store = createChatStore();
+      const a = store.getState().actions;
+      a.setTurns(SID, page);
+      a.applyTailEvents(SID, events.slice(0, k));
+      a.setTurns(SID, page);
+      a.applyTailEvents(SID, events.slice(k));
+      a.setTurns(SID, page);
+      const r = report(store);
+      if (r.users !== 1 || r.answers !== 1 || r.userAfterAnswer) failures.push(`k=${k}: ${JSON.stringify(r)}`);
+    }
+    expect(failures, failures.slice(0, 3).join(' | ')).toEqual([]);
+  });
   it('the stream alone (no repair) is clean', () => {
     const store = createChatStore();
     const a = store.getState().actions;
