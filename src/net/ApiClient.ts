@@ -200,7 +200,7 @@ export interface SendResult {
 }
 
 /**
- * Typed wrapper over the additive dashv2 endpoints (§5 of the architecture doc)
+ * Typed wrapper over the additive chat-page endpoints (§5 of the architecture doc)
  * plus the existing bridge mutation endpoints. Every method is a thin, honest
  * pass-through — no formatting or fallback: it returns exactly what the backend
  * sends, and throws loudly on a non-2xx so callers can revert optimistic state.
@@ -296,7 +296,7 @@ export class ApiClient {
     }
   }
 
-  // --- dashv2 read endpoints ---
+  // --- chat-page read endpoints ---
 
   /** Projected sidebar list, newest first, paginated, and optionally narrowed to
    *  the given axes server-side.

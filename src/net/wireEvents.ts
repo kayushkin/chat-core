@@ -12,7 +12,7 @@ export interface WireEvent {
    *  stores number the same events independently, and no numeric comparison
    *  across them is meaningful. (This comment previously claimed the id WAS
    *  the log-store row id; the whole client was built on that false premise —
-   *  see dash docs/dashv2-turns-per-message.md.) */
+   *  see dash docs/chat-turns-per-message.md.) */
   id?: string;
   /** The SSE `event:` line; mirrors `data.type` for live events. */
   type: string;

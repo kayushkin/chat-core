@@ -58,7 +58,7 @@ export interface RefChipProps {
  *
  * Theming still stays at the edge. Every element carries a stable, unhashed
  * class name (`ref-chip-*`) and `data-*` attributes, and this file ships no CSS
- * — the host styles it, as dash does in `DashV2.module.css` via `:global()`.
+ * — the host styles it, as dash does in `Chat.module.css` via `:global()`.
  */
 export function RefChip(props: RefChipProps): JSX.Element {
   const kind = String(props.kind ?? 'session');

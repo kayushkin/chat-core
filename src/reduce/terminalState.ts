@@ -3,7 +3,7 @@ import type { TurnModel } from '../net/types.js';
 // Client-side terminal-state reconcile (the F1 fix). A session's SessionSummary.state
 // can stay pinned to a holding value (tool_running) forever when the server's state
 // derivation misses the settling transition or the harness process hung — that is a
-// live server defect (see dash/docs/dashv2-architecture.md F1). The materialized tail
+// live server defect (see dash/docs/chat-architecture.md F1). The materialized tail
 // is authoritative: if it already contains a terminal signal, the displayed state is
 // stale and must be corrected from the tail rather than trusting the summary row.
 //

@@ -1,6 +1,6 @@
 # chat-core public API
 
-The surface the dashv2 page consumes. The client implementation (`src/react/*`, `src/store/*`)
+The surface dash's chat page consumes. The client implementation (`src/react/*`, `src/store/*`)
 must export exactly these; the dash page imports only these. Kept stable so the page and the
 library can be built in parallel.
 
@@ -170,7 +170,7 @@ export function useComposer(sessionId: string | null): {
 // one (store/filterStorage.ts) and read back synchronously inside createChatStore, so a
 // reload paints the list already filtered rather than filtering it one frame later. The
 // shape stored is chat-core's own INCLUSION arrays under `chat-core:filters` — NOT
-// bridge-ui's exclusion keys, which mean the opposite and share an origin with dashv2.
+// bridge-ui's exclusion keys, which mean the opposite and shared an origin with the chat page while dash served both.
 // `search` and `folder` are deliberately never persisted: a restored query re-runs a
 // transcript search on every load, and a restored folder can point at a deleted one.
 // Pass `createChatStore({filterStorage})` to redirect or disable it (null); it is off
@@ -218,7 +218,7 @@ export function useSessionActions(): {
 // be pinned without a browser.
 export function pendingSessionConfig(opts: NewSessionOpts | null | undefined): SessionConfig | null;
 
-// ---- Settings / controls bar (dashv2 `bc-controls-bar`) ----
+// ---- Settings / controls bar (the chat page's `bc-controls-bar`) ----
 
 // Live-session controls for the settings bar: compact / fork / switch-mode / model+effort.
 // All are LOUD — the underlying ApiClient methods throw on any non-2xx; each control surfaces
@@ -312,7 +312,7 @@ export interface SessionInfo {
 export interface ToolInfo { name: string; description?: string; }
 export interface McpServerInfo { name: string; status?: string; }
 
-// ---- Managed-session detail + permission mode (dashv2 follow-up) ----
+// ---- Managed-session detail + permission mode (chat-page follow-up) ----
 
 // Full per-session detail (summary + info + harnessConfig) PLUS a permission-mode
 // mutator — what the interactive SessionPermissionMode selector consumes. LAZY: fetches

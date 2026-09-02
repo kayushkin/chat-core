@@ -1,6 +1,6 @@
 # @kayushkin/chat-core
 
-Framework-light data layer for the **dashv2** chat surface. The client renders from memory;
+Framework-light data layer for **dash's chat** surface. The client renders from memory;
 the network only reconciles in the background. Powers sub-10ms session switching, a warm
 cache of the most-recent sessions, optimistic mutations, and **non-destructive** OTel/rollout
 dedup (every source is kept and auditable — dedup only annotates the collapsed view).
@@ -13,7 +13,7 @@ The backends this client talks to are their own repos:
 [llm-bridge](https://github.com/kayushkin/llm-bridge) (canonical message types),
 [log-store](https://github.com/kayushkin/log-store) (event history and search) and
 [noteboard](https://github.com/kayushkin/noteboard) (the items behind ref chips).
-The dashv2 architecture and performance-baseline documents live in the `dash` repo,
+The chat architecture and performance-baseline documents live in the `dash` repo,
 which is not public.
 
 ## Layers

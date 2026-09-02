@@ -231,7 +231,7 @@ export function useActiveSession(): {
       // landed — measured on dash 2026-09-01, the header held the name until the
       // (deliberately delayed) refresh answered at 9.3s, then blanked. The detail
       // cache survives every refresh, `activeSummary` falls back to it
-      // (`sessionSummaryFor`), and `useManagedSession` — which every dashv2
+      // (`sessionSummaryFor`), and `useManagedSession` — which every chat-page
       // header mounts anyway — reads the same cache, so this also collapses what
       // used to be duplicate `GET /sessions/{id}` fetches into one. The loading
       // flag is set for the same reason: it is the two callers' shared dedupe.

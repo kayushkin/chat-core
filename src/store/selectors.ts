@@ -109,10 +109,10 @@ function searchRankOf(s: SessionSummary, query: string): number {
  *  A session with no content hit scores 0 here, which only ever compares against
  *  other rank-1 rows — a rank-2 row is a content hit by definition.
  *
- *  ⚠️ This orders sessions WITHIN a folder group. dashv2 keeps its folder grouping
+ *  ⚠️ This orders sessions WITHIN a folder group. the chat page keeps its folder grouping
  *  while a query is active (bridge-ui flattens instead, in `SessionList.tsx`'s
  *  `searchActive` branch),
- *  so the best hit still sits under whatever folder sorts first. Whether dashv2
+ *  so the best hit still sits under whatever folder sorts first. Whether the chat page
  *  should flatten on query is a product choice, tracked as its own todo. */
 function bySearchRank(
   query: string,

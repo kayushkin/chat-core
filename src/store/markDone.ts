@@ -7,7 +7,7 @@ import type { ChatStoreApi } from './ChatStore.js';
  * Mirrors `store.ArchiveFolder` in llm-bridge-server (`internal/store/store.go`) and
  * `ARCHIVE_FOLDER` in bridge-ui's `useBridgeFolders`. The casing matters: chat-core
  * used to write lowercase `'archive'`, which never matched anything the server wrote,
- * so dashv2's session row had to test both spellings to decide whether a session was
+ * so the chat's session row had to test both spellings to decide whether a session was
  * archived. One spelling, from one constant.
  */
 export const ARCHIVE_FOLDER = 'Archive';

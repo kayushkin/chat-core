@@ -121,7 +121,7 @@ this as a LOUD call (throws on any non-2xx) so `useManagedSession`'s optimistic 
 can revert. (The server also accepts optional `disable_network` and `permission_mode_custom`
 fields on this PUT; the client currently sends only `mode` per the required signature.)
 
-## Settings / controls bar (dashv2 `bc-controls-bar`)
+## Settings / controls bar (the chat page's `bc-controls-bar`)
 
 These back the settings-bar controls. Every mutation is a LOUD `ApiClient` call (throws on
 any non-2xx). Endpoints + bodies are the exact canonical ones bridge-ui uses — verified

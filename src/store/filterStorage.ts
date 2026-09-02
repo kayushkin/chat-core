@@ -20,9 +20,9 @@
 // as an empty inclusion array, which happens to agree, and a one-element exclusion
 // set ("hide claude-code") would arrive as "show ONLY claude-code", which is the
 // exact opposite. So this store writes chat-core's own inclusion arrays under its own
-// key and the two surfaces diverge on purpose. They also share an origin — dash
-// serves bridge-ui's chat at `/` and dashv2 at `/dashv2` — so a shared key would not
-// merely be ambiguous, it would have the two pages overwriting each other.
+// key and the two surfaces diverge on purpose. They also shared an origin while dash
+// served bridge-ui's chat beside its own — so a shared key would not merely have
+// been ambiguous, it would have had the two pages overwriting each other.
 //
 // Like `draftStorage.ts`, this is read back SYNCHRONOUSLY inside `createChatStore()`
 // so the restored filter is in the very first painted state. An async rehydrate would

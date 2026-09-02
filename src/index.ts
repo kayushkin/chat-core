@@ -1,4 +1,4 @@
-// @kayushkin/chat-core — framework-light data layer for the dashv2 chat surface.
+// @kayushkin/chat-core — framework-light data layer for dash's chat surface.
 // The client renders from memory; the network only reconciles.
 
 // ---- Public React surface (docs/PUBLIC-API.md) ----

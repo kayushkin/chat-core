@@ -202,7 +202,7 @@ function sameMaterializedEntry(held: Entry, incoming: Entry): boolean {
 
 /**
  * Fold a freshly materialized page into the session's tail state — MERGE, never
- * replace (dash docs/dashv2-turns-per-message.md §6). `setTurns` used to swap the
+ * replace (dash docs/chat-turns-per-message.md §6). `setTurns` used to swap the
  * whole model and rebuild the tail from the incoming page alone, which is the
  * "everything resets" bug.
  *
@@ -830,7 +830,7 @@ function foldEvent(state: TailState, ev: WireEvent, annotate: boolean): TailStat
   // Spread the prior model rather than re-listing its fields. This used to be an
   // explicit five-field literal, and the sixth field TurnModel grew — `aggregates`, the
   // server's cost/context roll-up — was therefore ERASED by every event folded onto the
-  // tail. That is the dashv2 header flicker: `GET /turns` delivered the roll-up, the
+  // tail. That is the chat header flicker: `GET /turns` delivered the roll-up, the
   // cost chip and context strip painted, and the very next streamed token dropped it
   // again, taking 14px of header height with it on every blink.
   //

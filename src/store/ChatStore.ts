@@ -910,7 +910,7 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
       },
 
       setTurns(sessionId, incoming, opts) {
-        // MERGE, never replace (dash docs/dashv2-turns-per-message.md §6). This used
+        // MERGE, never replace (dash docs/chat-turns-per-message.md §6). This used
         // to swap the whole model for the incoming page and rebuild the tail from the
         // page alone — the "everything resets" bug: live-only content vanished and the
         // fold history was forgotten. `mergeMaterializedPage` joins on the tail's

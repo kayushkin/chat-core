@@ -7,7 +7,7 @@ import type { ChatStoreApi } from './ChatStore.js';
  *
  * Every function here is optimistic-then-reconciled in the shape `setSessionDone`
  * established — patch the store, call the route, and on a refusal put back exactly
- * what was there and rethrow. A revert without a rethrow is what made dashv2's
+ * what was there and rethrow. A revert without a rethrow is what made the chat's
  * archive button look like it worked for a year, so nothing here swallows.
  *
  * ## Why these mirror SQL rather than re-reading `/folders`

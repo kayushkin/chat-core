@@ -6,7 +6,7 @@ import type { Entry } from '../net/types.js';
 //   - the user_message dual-emit dedup inside rowsToTurns (~:153-195)
 //
 // CRITICAL DIFFERENCE FROM THE SOURCE: bridge-ui *drops* the redundant OTel copy
-// (it `filter`s / `continue`s past it). Per dashv2 decision D2b/D9, chat-core is
+// (it `filter`s / `continue`s past it). Per the chat architecture's decision D2b/D9 (dash/docs/chat-architecture.md), chat-core is
 // NON-DESTRUCTIVE — this is an ANNOTATOR. It tags each Entry with
 // `duplicate` / `primary` / `groupId` and drops NOTHING. The collapsed "Turns"
 // view is a selector over `!duplicate`; the raw "Timeline" view shows every

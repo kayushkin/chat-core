@@ -84,7 +84,7 @@ export interface Entry {
   /** Canonical bridge-assigned id of the chat message this entry belongs to
    *  (`message_id` on every event; `messageId` on the materialized wire). The
    *  per-message Turns view groups and keys rows by it — see dash
-   *  docs/dashv2-turns-per-message.md. Carried as a field even on entries
+   *  docs/chat-turns-per-message.md. Carried as a field even on entries
    *  whose key already encodes it, and especially on TOOL entries (keyed
    *  `tool_<toolId>`, which does not encode it) so no consumer parses id
    *  shapes. Absent on bookkeeping entries (system, session_state, …) that
