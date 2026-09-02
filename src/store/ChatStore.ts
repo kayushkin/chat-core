@@ -1194,6 +1194,10 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
         // model already on screen rather than silently vanishing. `older` can still fill
         // a roll-up `cur` never had, but never overwrite one: an older page's figures are
         // by construction the staler answer. See `carryForwardAggregates`.
+        const sourceGroups =
+          older.sourceGroups || cur.sourceGroups
+            ? { ...(older.sourceGroups ?? {}), ...(cur.sourceGroups ?? {}) }
+            : undefined;
         const merged: TurnModel = carryForwardAggregates(older, {
           ...cur,
           sessionId,
@@ -1201,6 +1205,7 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
           entries,
           validator: cur.validator,
           more: older.more,
+          ...(sourceGroups ? { sourceGroups } : {}),
         });
         const turnsBySession = new Map(get().turnsBySession);
         turnsBySession.set(sessionId, merged);

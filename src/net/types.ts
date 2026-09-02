@@ -226,6 +226,14 @@ export interface TurnAggregates {
  *  collapsed Turns view is a pure selector over `entries` (filter !duplicate), the raw
  *  Timeline view renders all of `entries`. */
 export interface TurnModel {
+  /** Which sources each dedup group was built from, keyed by groupId — computed by
+   *  log-store over EVERY stored entry before the duplicates were dropped from the
+   *  projected page. It is the only record of a pairing whose other half the page
+   *  does not carry: a prompt's OTel echo is deleted on the wire, so the sources
+   *  badge cannot be derived from the entries alone (it was, and on a projected page
+   *  it read "1 source" on exactly the messages it exists for). Optional because a
+   *  log-store that predates it sends none. */
+  sourceGroups?: Record<string, string[]>;
   sessionId: string;
   turns: Turn[];
   entries: Record<string, Entry>; // id -> Entry (all sources, all copies)

@@ -285,6 +285,8 @@ export function useTurns(
 ): {
   turns: Turn[];
   entries: Record<string, Entry>;
+  /** log-store's per-group source list; see TurnModel.sourceGroups. */
+  sourceGroups: Record<string, string[]> | undefined;
   visibleEntryIds: (turnId: string) => string[];
   sourcesFor: (entryId: string) => Entry[];
   loading: boolean;
@@ -336,6 +338,7 @@ export function useTurns(
 
   const turns = model?.turns ?? EMPTY_TURNS;
   const entries = model?.entries ?? EMPTY_ENTRIES;
+  const sourceGroups = model?.sourceGroups;
 
   const visibleEntryIds = useCallback(
     (turnId: string) => visibleEntryIdsFor(model, turnId, view),
@@ -357,7 +360,7 @@ export function useTurns(
       .catch(() => {});
   }, [sessionId, model, api, actions]);
 
-  return { turns, entries, visibleEntryIds, sourcesFor, loading, more, loadOlder };
+  return { turns, entries, sourceGroups, visibleEntryIds, sourcesFor, loading, more, loadOlder };
 }
 
 /** The server-reported session states in which POST /sessions/{id}/resume actually

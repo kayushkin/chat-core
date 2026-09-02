@@ -397,7 +397,14 @@ export function mergeMaterializedPage(
   });
   const turns: Turn[] = [...historyTurns, ...pageTurns, ...liveTurns];
 
-  const model: TurnModel = { ...incoming, turns, entries };
+  // Source groups accumulate: the page reports groups for ITS window only, and the
+  // history turns kept above still reference theirs. Dropping the prior map would
+  // strip the sources badge from every row that scrolled out of the page window.
+  const sourceGroups =
+    prior.model.sourceGroups || incoming.sourceGroups
+      ? { ...(prior.model.sourceGroups ?? {}), ...(incoming.sourceGroups ?? {}) }
+      : undefined;
+  const model: TurnModel = { ...incoming, turns, entries, ...(sourceGroups ? { sourceGroups } : {}) };
 
   // --- Stream-space bookkeeping carries over; page ids never enter it. ---
   const turnIndex = new Map<string, number>();
