@@ -26,11 +26,14 @@ export interface RefChipProps {
   /**
    * Navigate to the referenced thing — for a session, open its chat.
    *
-   * Only kinds that HAVE a target invoke this: sessions do, noteboard items do
-   * not (nothing on this fleet deep-links to one item), so a note or todo chip
-   * opens its detail panel instead. That asymmetry is deliberate. The previous
-   * arrangement called this for every kind and dash answered only `session`,
-   * which left todo chips announcing themselves as buttons and doing nothing.
+   * The chip BODY never calls this: for every kind it opens the detail panel,
+   * which is the common "what is this?" glance. Navigation is the deliberate
+   * act, so it lives on the ↗ button beside a session chip and on the panel's
+   * "Open session" button — both rendered only when this handler exists, so an
+   * affordance never points nowhere. Noteboard kinds never invoke it at all
+   * (nothing on this fleet deep-links to one item); the previous arrangement
+   * called it for every kind and dash answered only `session`, which left todo
+   * chips announcing themselves as buttons and doing nothing.
    */
   onActivate?: (kind: string, refId: string) => void;
   [key: string]: unknown;
@@ -299,33 +302,42 @@ function SessionRefChip({
   const summary = data?.summary;
   const emoji = summary ? sessionEmoji(summary.type, summary.purpose, refId) : '💬';
   const label = summary?.displayName ? truncate(summary.displayName) : idTail(refId);
-  // No handler means no navigation target, so the chip body falls back to the
-  // panel rather than being an inert button.
-  const activate = onActivate ? () => onActivate('session', refId) : toggle;
 
+  // The chip BODY opens the detail panel; navigation lives on the ↗ button beside
+  // it. It used to be the other way around — body navigated, a separate ▾ caret
+  // opened the panel — and the user asked for the inversion: a glance at what a
+  // reference names is the common case, leaving the thread is the deliberate one.
+  // The body therefore matches the noteboard chip's shape (one button, inline
+  // caret), and the ↗ renders only when a navigation handler exists — same rule
+  // as before, an affordance never points nowhere.
   return (
     <span className="ref-chip-wrap" ref={wrapRef} data-ref-kind="session" data-ref-id={refId}>
       <button
         type="button"
-        className={className ?? 'ref-chip ref-chip-session'}
-        onClick={activate}
-        title={onActivate ? `Open chat — ${summary?.displayName || refId}` : refId}
+        className={`${className ?? 'ref-chip ref-chip-session'} ref-chip-item${open ? ' ref-chip-open' : ''}`}
+        onClick={toggle}
+        aria-expanded={open}
+        title={summary?.displayName || refId}
       >
         <span className="ref-chip-glyph" aria-hidden>
           {emoji}
         </span>
         <span className="ref-chip-label">{label}</span>
+        <span className="ref-chip-caret-inline" aria-hidden>
+          ▾
+        </span>
       </button>
-      <button
-        type="button"
-        className={`ref-chip-caret${open ? ' ref-chip-open' : ''}`}
-        onClick={toggle}
-        aria-expanded={open}
-        aria-label="Session details"
-        title="Details"
-      >
-        ▾
-      </button>
+      {onActivate && (
+        <button
+          type="button"
+          className="ref-chip-open-session"
+          onClick={() => onActivate('session', refId)}
+          aria-label={`Open chat — ${summary?.displayName || refId}`}
+          title={`Open chat — ${summary?.displayName || refId}`}
+        >
+          ↗
+        </button>
+      )}
       {open && (
         <AnchoredPanel
           panelRef={panelRef}
