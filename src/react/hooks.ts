@@ -224,17 +224,35 @@ export function useActiveSession(): {
       // `[session:…]` reference chip, and the cross-session signals inbox, whose
       // whole purpose is the sessions that have sunk out of that page.
       //
+      // ⚠️ The warm lands in `sessionDetail`, NOT in the `sessions` list Map. It
+      // used to go through `upsertSession`, and that fix un-fixed itself on a
+      // timer: `setSessions` rebuilds the list Map from whatever page the next
+      // refresh returns, so the warmed summary was evicted the moment the refresh
+      // landed — measured on dash 2026-09-01, the header held the name until the
+      // (deliberately delayed) refresh answered at 9.3s, then blanked. The detail
+      // cache survives every refresh, `activeSummary` falls back to it
+      // (`sessionSummaryFor`), and `useManagedSession` — which every dashv2
+      // header mounts anyway — reads the same cache, so this also collapses what
+      // used to be duplicate `GET /sessions/{id}` fetches into one. The loading
+      // flag is set for the same reason: it is the two callers' shared dedupe.
+      //
       // A failure does not throw, because the host already handles a null summary
       // — that is the honest state while the read is in flight — and throwing out
       // of a click handler would take the navigation with it. It is not SILENT
       // either: the pane the user just opened stays blank, and without a line in
       // the console there is nothing anywhere to say why. The one case that
       // reaches it is an id that resolves to nothing, i.e. a session that is gone.
-      if (!state.sessions.has(nextId)) {
+      if (
+        !state.sessions.has(nextId) &&
+        !state.sessionDetail.has(nextId) &&
+        !state.sessionDetailLoading.has(nextId)
+      ) {
+        actions.setSessionDetailLoading(nextId, true);
         void api
           .getSessionDetail(nextId)
-          .then((detail) => actions.upsertSession(detail.summary))
+          .then((detail) => actions.setSessionDetail(nextId, detail))
           .catch((err: unknown) => {
+            actions.setSessionDetailLoading(nextId, false);
             console.warn(`[chat-core] could not load session ${nextId}`, err);
           });
       }

@@ -402,10 +402,30 @@ export function selectFacets(state: ChatState): Facets {
   return result;
 }
 
-/** The active session's summary, or null. */
+/** A session's summary from the loaded list, or — when the list does not hold it —
+ *  from the cached per-session detail (`sessionDetail`).
+ *
+ *  The fallback is what keeps a session opened BY ID usable. `setSessions` rebuilds
+ *  the `sessions` Map from whatever page the refresh returns, so a session outside
+ *  that page — every session reached through a `[session:…]` reference chip or a
+ *  `?session=` deeplink older than the loaded window — is evicted from it on the
+ *  next refresh. Measured on dash 2026-09-01: the header showed the deeplinked
+ *  session's name until the refresh landed, then went blank (`—`) with the right
+ *  transcript still underneath, because `activeSummary` read only the list Map.
+ *  `sessionDetail` is warmed on open and never rebuilt by a list refresh, so it is
+ *  the durable answer for exactly these sessions.
+ *
+ *  Order matters: the list row wins while it exists, because live SSE upserts land
+ *  there and the cached detail is a point-in-time read. */
+export function sessionSummaryFor(state: ChatState, sessionId: string): SessionSummary | null {
+  return state.sessions.get(sessionId) ?? state.sessionDetail.get(sessionId)?.summary ?? null;
+}
+
+/** The active session's summary, or null. Falls back to the cached detail for a
+ *  session the loaded list does not hold — see `sessionSummaryFor`. */
 export function activeSummary(state: ChatState): SessionSummary | null {
   if (!state.activeId) return null;
-  return state.sessions.get(state.activeId) ?? null;
+  return sessionSummaryFor(state, state.activeId);
 }
 
 // The states that mean "still working" — the ones a terminal tail may override — now
@@ -430,7 +450,10 @@ export function activeSummary(state: ChatState): SessionSummary | null {
  */
 export function effectiveState(state: ChatState, sessionId: string | null): string {
   if (!sessionId) return '';
-  return effectiveStateOf(state.sessions.get(sessionId)?.state, state.turnsBySession.get(sessionId));
+  return effectiveStateOf(
+    sessionSummaryFor(state, sessionId)?.state,
+    state.turnsBySession.get(sessionId),
+  );
 }
 
 /**

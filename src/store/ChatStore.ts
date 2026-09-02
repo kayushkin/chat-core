@@ -826,7 +826,13 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
 
       removeSession(sessionId) {
         const sessions = new Map(get().sessions);
-        if (!sessions.delete(sessionId)) return;
+        const wasInList = sessions.delete(sessionId);
+        // A session opened by id (reference chip, old deeplink) has no list row but
+        // IS tracked — its summary lives in `sessionDetail`, and `activeSummary`
+        // falls back to it (`sessionSummaryFor`). Early-returning on the list Map
+        // alone would leave that fallback serving a deleted session. Only an id
+        // neither map knows is a true no-op.
+        if (!wasInList && !get().sessionDetail.has(sessionId)) return;
         const turnsBySession = new Map(get().turnsBySession);
         turnsBySession.delete(sessionId);
         const tails = new Map(get().tails);

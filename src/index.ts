@@ -246,6 +246,7 @@ export {
   visibleCount,
   activeSummary,
   activeSummaryEffective,
+  sessionSummaryFor,
   effectiveState,
   effectiveStateOf,
   selectActivity,
