@@ -256,6 +256,14 @@ export function mergeMaterializedPage(
   const pageToolResults = new Set<string>();
   const pageSystemUnits = new Set<string>(); // `${subtype}|${taskId or toolUseId}`
   const pageBookkeeping = new Set<string>(); // `${kind}|${subtype}|${epoch-second}`
+  // `${turnId}|${normalizedText}` for user prompts. A prompt is on the wire twice
+  // (bridge copy + OTel echo, different messageIds) and the page may carry EITHER
+  // as its primary copy — a window floor that landed on the echo leaves the bridge's
+  // copy outside the page. Joining user text on messageId alone then keeps the live
+  // bridge copy as "unreported" and orders it after the page's entries, i.e. after
+  // the answer (observed live 2026-09-02, br_1788370653337509270). The prompt is one
+  // content unit however many ids it travels under, so it joins on text, per turn.
+  const pageUserPrompts = new Set<string>();
   const epochSecondOf = (ts: string | undefined): number | null => {
     if (!ts) return null;
     const ms = Date.parse(ts);
@@ -263,6 +271,9 @@ export function mergeMaterializedPage(
   };
   for (const inc of Object.values(incoming.entries)) {
     if (inc.messageId) pageMessageUnits.add(`${inc.messageId}|${inc.role}|${inc.kind}`);
+    if (inc.role === 'user' && inc.kind === 'text' && inc.text) {
+      pageUserPrompts.add(`${inc.turnId ?? ''}|${normalizeText(inc.text)}`);
+    }
     const incToolId = toolIdOf(inc);
     if (inc.kind === 'tool_call' && incToolId) pageToolCalls.add(incToolId);
     if (inc.kind === 'tool_result' && incToolId) pageToolResults.add(incToolId);
@@ -275,6 +286,9 @@ export function mergeMaterializedPage(
 
   /** Does the page report this live entry's content unit? */
   const pageReports = (held: Entry): boolean => {
+    if (held.role === 'user' && held.kind === 'text' && held.text) {
+      if (pageUserPrompts.has(`${held.turnId ?? ''}|${normalizeText(held.text)}`)) return true;
+    }
     if (held.kind === 'tool_call' || held.kind === 'tool_result') {
       const toolId = toolIdOf(held);
       if (toolId) {
@@ -712,13 +726,47 @@ export function applyEvent(state: TailState, ev: WireEvent): TailState {
  * that nothing can observe, and this pass recomputes all three from scratch.
  */
 export function annotateTail(state: TailState): TailState {
-  return { ...state, model: { ...state.model, entries: annotatedRecord(state.model.entries) } };
+  return {
+    ...state,
+    model: { ...state.model, entries: annotatedRecord(state.model.entries, state.entryEventIds) },
+  };
 }
 
-function annotatedRecord(entries: Record<string, Entry>): Record<string, Entry> {
+function annotatedRecord(
+  entries: Record<string, Entry>,
+  entryEventIds: ReadonlyMap<string, ReadonlySet<number>>,
+): Record<string, Entry> {
+  // A materialized entry is one no live frame ever folded into — the page's own.
+  const isMaterialized = (e: Entry) => (entryEventIds.get(e.id)?.size ?? 0) === 0;
   const annotated = annotateOTelDuplicates(Object.values(entries));
   const out: Record<string, Entry> = {};
-  for (const e of annotated) out[e.id] = e;
+  for (const a of annotated) {
+    const held = entries[a.id];
+    if (!held) {
+      out[a.id] = a;
+      continue;
+    }
+    // Two rules on top of the annotator's fresh verdict:
+    //  - a MATERIALIZED entry's server-side `duplicate` stands. log-store decides
+    //    which streamed blocks a result superseded, and that verdict is not
+    //    something the client can re-derive from text pairing. This pass only
+    //    ever ADDS pairs; it never clears a mark the server made. (Before this,
+    //    a re-annotation after a merge un-hid every superseded block the page
+    //    carried, which is what the carve-out test in setTurnsMerge caught.)
+    //  - an entry whose three annotation fields come out unchanged keeps its
+    //    OBJECT. `setTurns` promises row memos that unchanged content keeps its
+    //    identity, and the annotator's `{...e}` rebuild broke that promise for
+    //    every entry on every repair.
+    const serverDuplicate = isMaterialized(held) && held.duplicate === true;
+    const duplicate = a.duplicate || serverDuplicate;
+    const primary = duplicate ? false : a.primary;
+    const groupId = a.groupId ?? (isMaterialized(held) ? held.groupId : undefined);
+    if (held.duplicate === duplicate && held.primary === primary && held.groupId === groupId) {
+      out[a.id] = held;
+      continue;
+    }
+    out[a.id] = { ...a, duplicate, primary, groupId };
+  }
   return out;
 }
 
@@ -824,7 +872,7 @@ function foldEvent(state: TailState, ev: WireEvent, annotate: boolean): TailStat
   // the whole model — a thousand of them on a real session — and this rebuilds every one.
   // Skipped for a batched fold, which annotates once at the end instead; see
   // `annotateTail`.
-  const annotatedEntries = annotate ? annotatedRecord(entries) : entries;
+  const annotatedEntries = annotate ? annotatedRecord(entries, entryEventIds) : entries;
 
   const maxEventId = Math.max(state.model.validator.maxEventId, evId);
   // Spread the prior model rather than re-listing its fields. This used to be an

@@ -922,9 +922,12 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
         // `carryForwardAggregates` still runs first: a page carrying no cost/context
         // roll-up does not get to erase the one already known for this session.
         const prior = get().turnsBySession.get(sessionId);
-        const tail = mergeMaterializedPage(
-          get().tails.get(sessionId),
-          carryForwardAggregates(prior, incoming),
+        // Re-annotated AFTER the merge: the page's dedup flags were computed over the
+        // page alone and the kept live entries' over the stream alone, so a copy on
+        // each side of the join (a page-side OTel prompt echo and a live-side bridge
+        // copy, say) has never been paired. One pass over the merged model pairs them.
+        const tail = annotateTail(
+          mergeMaterializedPage(get().tails.get(sessionId), carryForwardAggregates(prior, incoming)),
         );
         const model = tail.model;
         const turnsBySession = new Map(get().turnsBySession);
