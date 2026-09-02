@@ -4,7 +4,7 @@ import { createChatStore } from '../src/store/ChatStore.js';
 // `usePendingSession` is a bare `useStore(store, s => s.pending)` selector, so what is
 // worth testing is the store state it reads. The point of exposing it at all is that
 // `openPending` sets `activeId` to null: through `useActiveSession` alone, "a new chat is
-// open and unsent" and "nothing is selected" are the same value, and dashv2 drew both as
+// open and unsent" and "nothing is selected" are the same value, and the chat page drew both as
 // an empty pane. These tests pin the four facts a consumer of the hook depends on.
 
 const store = () => createChatStore();

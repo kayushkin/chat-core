@@ -6,7 +6,7 @@ import type { WireEvent } from '../src/net/wireEvents.js';
 
 // llm-bridge-server halts a session that has spent its ceiling and then refuses every
 // send, resume and mode switch with a 402 (`writeRefusalIfOverBudget`,
-// internal/server/sessions.go). dashv2 showed none of it: `useComposer.send` had a
+// internal/server/sessions.go). the chat page showed none of it: `useComposer.send` had a
 // `.catch(() => {})`, so the one refusal that tells the user exactly what to do about
 // it was discarded before anything could read it.
 //

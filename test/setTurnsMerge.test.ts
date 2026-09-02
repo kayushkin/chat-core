@@ -1,5 +1,5 @@
 // setTurns MERGES the materialized page into the live tail — never replaces it
-// (dash docs/dashv2-turns-per-message.md §6). The join is the tail's per-entry
+// (dash docs/chat-turns-per-message.md §6). The join is the tail's per-entry
 // EVENT-ID SETS: the two paths name the same content differently (live
 // `${msgId}_${kind}` / materialized `e_<rowid>`), so an id-keyed merge would call
 // everything new. These pin the rules one by one.

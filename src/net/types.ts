@@ -467,7 +467,7 @@ export interface SummaryResponse {
  *
  *  Semantics match the chips: an absent or empty axis constrains nothing, values
  *  within one axis are OR'd, and axes are AND'd. The server implements the same
- *  rule (`internal/store/dashv2.go`), so the two cannot drift into meaning
+ *  rule (log-store `internal/store/event_page.go`), so the two cannot drift into meaning
  *  different things by one filter. */
 export interface SessionSummaryFilterAxes {
   harness?: string[];

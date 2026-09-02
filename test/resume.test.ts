@@ -2,11 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { ApiClient } from '../src/net/ApiClient.js';
 
 // `useComposer().resume` is the first caller `ApiClient.resume` has ever had — the
-// method shipped with the client and nothing invoked it, so dashv2 rendered a passive
+// method shipped with the client and nothing invoked it, so the chat page rendered a passive
 // "⏸ paused" label and a stopped session was a dead end.
 //
 // These tests cover the wire half (the hook half is driven end-to-end by
-// dash/e2e/dashv2-resume.spec.ts, which renders the real hook in a browser). What
+// dash/e2e/chat-resume.spec.ts, which renders the real hook in a browser). What
 // matters here is that resume is LOUD: the server refuses it with a 409 whenever the
 // session turns out to have a live process — `TestResumeSession_AlreadyRunning` in
 // llm-bridge-server pins that — and a swallowed 409 would leave the user looking at a

@@ -104,7 +104,7 @@ describe('the boot page is filtered server-side', () => {
   });
 
   it('repeats a parameter per value rather than joining on commas', async () => {
-    // A purpose on this box reads "dashv2 browser verification + A/B perf"; nothing
+    // A purpose on this box reads "browser verification + A/B perf"; nothing
     // stops one holding a comma, and a joined list would be cut in half by the split.
     const { store, prefetcher, seen } = wire([{ sessions: [], next: null, revision: 'r' }]);
     store.getState().actions.setFilter({ purpose: ['a,b', 'c'] });

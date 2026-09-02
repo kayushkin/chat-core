@@ -296,7 +296,7 @@ describe('the whole request resolves at once', () => {
 
 describe('a question that allows more than one answer', () => {
   // This is the whole of what the permission banner could do and the card could
-  // not. dashv2 drew two forms for one parked AskUserQuestion — a banner built
+  // not. the chat page drew two forms for one parked AskUserQuestion — a banner built
   // from the live tool input, and a signal card built from the record — and
   // multiSelect existed only in the first. Folding the banner away is only
   // honest if the card can render this, so these cases are the fold's floor.
@@ -429,7 +429,7 @@ describe('SignalCard reads no context', () => {
   it('keeps the freeform box when compact and the question has no options', () => {
     // Both server producers mint exactly this: signal_classifier.go sets
     // AllowFreeform with options empty unless the assistant enumerated choices,
-    // and signals.go copies a possibly-empty question.Options. dashv2's only
+    // and signals.go copies a possibly-empty question.Options. the chat page's only
     // signals surface renders compact, so suppressing the box here left such a
     // question with no radios, no textarea, and a Submit that
     // `everyQuestionAnswered` disables forever — unanswerable anywhere.

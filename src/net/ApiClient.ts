@@ -308,7 +308,7 @@ export class ApiClient {
    *
    *  Each axis is sent as REPEATED parameters (`?type=a&type=b`), never joined
    *  with commas: these values are free-form strings from the sessions table — a
-   *  purpose on this box reads "dashv2 browser verification + A/B perf" — and one
+   *  purpose on this box reads "browser verification + A/B perf" — and one
    *  containing a comma would be silently cut in half by a join. */
   getSummary(opts?: {
     limit?: number;

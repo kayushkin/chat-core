@@ -4,7 +4,7 @@ import { contextUsage, sessionCost } from '../src/store/selectors.js';
 import type { TurnAggregates, TurnModel } from '../src/net/types.js';
 import type { WireEvent } from '../src/net/wireEvents.js';
 
-// Regression suite for the dashv2 header flicker: the context strip and the cost chip
+// Regression suite for the chat header flicker: the context strip and the cost chip
 // blinking in and out on a LIVE session, taking 14px of header height with them on every
 // blink. Two independent defects produced it, and both are covered here.
 //

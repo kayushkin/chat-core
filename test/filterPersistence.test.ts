@@ -147,7 +147,7 @@ describe('the sidebar filter survives a reload', () => {
   });
 
   it('writes under chat-core’s own key, not one of bridge-ui’s', () => {
-    // dash serves bridge-ui's chat at `/` and dashv2 at `/dashv2` — one origin, so a
+    // dash served bridge-ui's chat beside its own — one origin, so a
     // shared key would have the two pages overwriting each other, and bridge-ui's
     // values mean the opposite of these (exclusion, not inclusion).
     const storage = fakeStorage();

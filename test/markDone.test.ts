@@ -61,7 +61,7 @@ function row(over: Partial<SessionSummary> = {}): SessionSummary {
  *     POST /sessions/{id}/mark-done   -> 204
  *
  * The 404s are route-level, not session-level: mark-done answered 204 for the very
- * same id. Because the caller swallowed the rejection, dashv2's archive button
+ * same id. Because the caller swallowed the rejection, the chat page's archive button
  * optimistically flipped the row, 404'd, and silently reverted.
  */
 describe('ApiClient.markSessionDone — the route that actually exists', () => {
@@ -110,7 +110,7 @@ describe('setSessionDone — the optimistic row must match what the server does'
     await setSessionDone({ store, api: fakeApi({ ok: true, status: 204 }) }, 'br_1', true);
 
     // store.ArchiveFolder is "Archive" (llm-bridge-server/internal/store/store.go).
-    // chat-core used to write lowercase 'archive', which is why dashv2's row had to test
+    // chat-core used to write lowercase 'archive', which is why the chat page's row had to test
     // both spellings to decide whether a session was archived.
     expect(store.getState().sessions.get('br_1')?.folderName).toBe('Archive');
     expect(ARCHIVE_FOLDER).toBe('Archive');

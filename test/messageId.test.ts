@@ -1,5 +1,5 @@
 // messageId on the live path — the wire half of the per-message Turns design
-// (dash docs/dashv2-turns-per-message.md §2). Every entry that belongs to a
+// (dash docs/chat-turns-per-message.md §2). Every entry that belongs to a
 // chat message carries its canonical message_id as a FIELD, including tool
 // entries whose key (`tool_<toolId>`) does not encode it. The materialized
 // path (log-store Entry.messageId) is pinned by log-store's own

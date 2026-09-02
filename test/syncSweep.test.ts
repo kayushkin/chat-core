@@ -146,7 +146,7 @@ describe('SyncEngine.sweepValidators — idle over-poll fix', () => {
 // ── Two ways a cached tail went stale and stayed stale ────────────────────────
 //
 // Reported symptom: "sometimes I need to refresh because a window has been open,
-// and dashv2 is not actively checking for updates on session change like the
+// and the chat page is not actively checking for updates on session change like the
 // original did." Both halves are real and independent.
 
 describe('the sweep always checks the session that is on screen', () => {
