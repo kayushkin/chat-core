@@ -94,6 +94,7 @@ export {
   type SignalAnswerDraft,
   type SignalAnswerWire,
   type SignalOption,
+  type SignalCustomerReplyDraft,
   type SignalOptionWire,
   type SignalRequest,
   type SignalResolveState,

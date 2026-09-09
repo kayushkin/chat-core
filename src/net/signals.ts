@@ -63,8 +63,31 @@ export interface SignalWire {
   /** The noteboard item this signal propagates to, when the raising session is
    *  linked to one. */
   linked_todo_id?: string;
+  /** Who a surfaced question is for, as judged by the server's question
+   *  triage: `assignee` (the person on the card) or `customer` (whoever asked
+   *  for the work). Absent for notifications, chat questions, and questions
+   *  minted before triage existed. */
+  audience?: string;
+  /** A reply to the customer, drafted at triage and ready to send, for a
+   *  question whose audience is `customer`. `to` is empty when the sender of
+   *  the card's mail could not be resolved. */
+  customer_reply_draft?: SignalCustomerReplyDraftWire | null;
   created_at: string;
   resolved_at?: string | null;
+}
+
+/** `msg.SignalCustomerReplyDraft` as JSON. */
+export interface SignalCustomerReplyDraftWire {
+  to?: string;
+  subject: string;
+  body: string;
+}
+
+/** camelCase of {@link SignalCustomerReplyDraftWire}. */
+export interface SignalCustomerReplyDraft {
+  to: string;
+  subject: string;
+  body: string;
 }
 
 /** camelCase of {@link SignalOptionWire}. */
@@ -125,6 +148,12 @@ export interface Signal {
   severity: string;
   state: string;
   linkedTodoId: string;
+  /** '' when nobody judged who the question is for — see the wire field. Never
+   *  guessed from the surface or the session type. */
+  audience: string;
+  /** null unless triage drafted a reply to the customer. A draft is shown,
+   *  never sent, by anything in this client. */
+  customerReplyDraft: SignalCustomerReplyDraft | null;
   createdAt: string;
   /** null while the signal is open; stamped when `state` leaves `open`. */
   resolvedAt: string | null;
@@ -202,6 +231,10 @@ export function signalFromWire(w: SignalWire): Signal {
     severity: w.severity ?? '',
     state: w.state,
     linkedTodoId: w.linked_todo_id ?? '',
+    audience: w.audience ?? '',
+    customerReplyDraft: w.customer_reply_draft
+      ? { to: w.customer_reply_draft.to ?? '', subject: w.customer_reply_draft.subject, body: w.customer_reply_draft.body }
+      : null,
     createdAt: w.created_at,
     resolvedAt: w.resolved_at ?? null,
   };
