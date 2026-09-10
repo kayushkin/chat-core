@@ -510,8 +510,10 @@ export type TimelineTone =
   | 'turn' | 'task-start' | 'thinking' | 'tool' | 'tool-done' | 'tool-err'
   | 'result' | 'error' | 'system' | 'text';
 
-// ---- Reference chips (dash TurnList wiring) ----
-// Pure matcher + a remark transformer (dependency-free) and a React renderer.
+// ---- Reference chips ----
+// Pure matcher + a remark transformer (dependency-free). The React renderer,
+// `RefChip`, is bridge-ui's since 2026-09-10 — this package ships no components;
+// it exports the context (`ChatContext`, `useChatContext`) those components read.
 // Wire into ReactMarkdown:  remarkPlugins={[remarkRefChips]} components={{ 'ref-chip': RefChip }}
 //
 // Verbatim nodes are skipped, for opposite reasons: `link` (a linkified id keeps its link
@@ -527,15 +529,12 @@ export type TimelineTone =
 // collide with harness session uuids. The cue only says where to LOOK; the loaded item's
 // own `type` is the authority and the chip relabels itself from it.
 //
-// ⚠️ RefChip reads ChatProvider context (it resolves ids against llm-bridge and
-// noteboard), so it must be mounted inside one. It was a pure standalone <span> before.
-// It ships no CSS: every element carries a stable unhashed `ref-chip-*` class and
-// `data-ref-kind` / `data-ref-id`, and the host styles them (dash uses `:global()`).
-// `onActivate` fires only for kinds with a navigation target — sessions. A noteboard chip
-// opens its own detail panel, because nothing deep-links to a single item.
+// ⚠️ bridge-ui's RefChip reads ChatProvider context (it resolves ids against llm-bridge
+// and noteboard through the loaders below), so it must be mounted inside one.
 export function parseRefChips(value: string): RefSegment[];
 export function remarkRefChips(): (tree: unknown) => void;
-export function RefChip(props: RefChipProps): JSX.Element;
+export const ChatContext: React.Context<ChatContextValue | null>;
+export function useChatContext(): ChatContextValue;   // throws outside ChatProvider
 export type RefKind = 'session' | 'note' | 'todo';
 
 // Detail loaders behind the chip panels. Every one dedupes by id through a 30s promise
@@ -554,9 +553,9 @@ export interface RefDetailState<T> { data: T | null; error: string | null; loadi
 // ---- Session signals (the open questions a session is waiting on) ----
 // A signal is the canonical record of anything a session surfaces to a human: a question
 // that needs an answer, or a notification that needs at most an acknowledgement
-// (llm-bridge `msg/signal.go`). `SessionSignals` is mounted inside the RefChip session
-// panel, so opening session A's chip while working in session B answers A's question in
-// place. It ships no CSS: stable unhashed `signal-*` classes, styled by the host.
+// (llm-bridge `msg/signal.go`). The cards that render one — `SignalCard`,
+// `SignalRequestCard`, `SessionSignals`, `SignalRequestList` — are bridge-ui's since
+// 2026-09-10, on the verbs and reads below; this package ships the data.
 //
 // Answering is ONE door: POST /signals/{id}/answer, keyed by signal id, whichever producer
 // raised the question and whether or not the session is still running. The client used to
@@ -598,10 +597,6 @@ export interface RefDetailState<T> { data: T | null; error: string | null; loadi
 // `null` (never `[]`, which would say "deployed and quiet") and every surface renders
 // nothing rather than erroring. Reads dedupe through a 30s promise cache like the chip
 // loaders, and every resolve announces in-process so other mounted surfaces refetch.
-export function SessionSignals(props: SessionSignalsProps): JSX.Element | null;
-export function SignalRequestList(props: SignalRequestListProps): JSX.Element | null;
-export function SignalCard(props: SignalCardProps): JSX.Element;         // reads NO context
-export function SignalRequestCard(props: SignalRequestCardProps): JSX.Element;  // owns submit
 export function useOpenSignals(sessionId?: string): OpenSignalsState;
 export function clearOpenSignalsCache(): void;   // tests only
 export interface OpenSignalsState {

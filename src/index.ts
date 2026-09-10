@@ -28,7 +28,6 @@ export {
   type LiveStatus,
   usePrefetch,
 } from './react/hooks.js';
-export { RefChip, type RefChipProps } from './react/RefChip.js';
 export {
   useSessionRefDetail,
   useNoteboardRefDetail,
@@ -46,19 +45,13 @@ export {
   type ResolveResponse,
 } from './net/ResolveClient.js';
 
+// The context itself, for a component library that draws on this store —
+// bridge-ui's reference chips and signal cards read `api` off it. Every React
+// component this package used to ship lives there now; this package is the
+// data layer and ships none.
+export { ChatContext, useChatContext, type ChatContextValue } from './react/context.js';
+
 // ---- Session signals (the open questions a session is waiting on) ----
-export {
-  SessionSignals,
-  SignalRequestList,
-  type SessionSignalsProps,
-  type SignalRequestListProps,
-} from './react/SessionSignals.js';
-export {
-  SignalCard,
-  SignalRequestCard,
-  type SignalCardProps,
-  type SignalRequestCardProps,
-} from './react/SignalCard.js';
 export {
   useOpenSignals,
   clearOpenSignalsCache,
