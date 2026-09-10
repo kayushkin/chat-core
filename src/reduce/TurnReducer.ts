@@ -662,10 +662,12 @@ function applyPayload(prev: Entry, ev: WireEvent): Entry {
  *  (the frame's id is a bridge row, the page's eventIds are log-store rows).
  *  Happens on every cold open: the page is fetched, then the SSE connects with
  *  no cursor and the server replays the current turn — the same events the page
- *  just reported. The match is the shared content identity, materialized-only
- *  (a live entry with the same unit is reachable by its own key and never gets
- *  here): same messageId+role+kind, with the text CONTAINED for blocks (a fresh
- *  second block of the same message legitimately folds), same tool_id for tools.
+ *  just reported. The match is the shared content identity, materialized-only —
+ *  an entry with no folded stream ids, whether the page's own (`e_<id>`) or a
+ *  live-keyed one (`${messageId}_${kind}`) that the cache handed back on boot. A
+ *  live entry this tail built itself is reachable by its own key and is never
+ *  matched here: same messageId+role+kind, with the text CONTAINED for blocks (a
+ *  fresh second block of the same message legitimately folds), same tool_id for tools.
  *  Bookkeeping frames (no message id, no tool id) always fold — their
  *  materialized twins are hidden, so nothing doubles on screen. */
 function materializedCopyExists(
@@ -809,7 +811,14 @@ function foldEvent(state: TailState, ev: WireEvent, annotate: boolean): TailStat
   let turns = state.model.turns;
 
   const existing = entries[entryId];
-  if (!existing && materializedCopyExists(state, ev, kind, role)) {
+  // A same-key entry that was NOT built by this tail's own frames (no folded stream
+  // ids) is one the cache handed back: a live entry that survived a page merge and
+  // was written to IndexedDB. A frame re-delivered onto it is a replay, not new
+  // text, and `applyPayload` would APPEND it — one more copy of the answer per
+  // reload, which is what was measured on br_1788973449319671731 (2026-09-10).
+  const existingIsHydrated =
+    existing !== undefined && (state.entryEventIds.get(entryId)?.size ?? 0) === 0;
+  if ((!existing || existingIsHydrated) && materializedCopyExists(state, ev, kind, role)) {
     // A cross-space replay: fold nothing, but record the frame id so the check
     // is O(1) next time and a later literal replay short-circuits at the top.
     if (!evId) return state;
