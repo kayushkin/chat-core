@@ -15,9 +15,13 @@ tree is the next run's phantom failure.
 """
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import tree_hold  # noqa: E402  vendored; see tree_hold.py on keeping copies identical
 
 # The repository this scorer belongs to, found from the scorer's own location.
 # NOT an absolute path to wherever it was first written: a scorer pinned to a
@@ -322,8 +326,43 @@ def refuse_a_dirty_source_tree(plan):
 
 
 def main():
+    """Take this tree exclusively, then score every mutation in the plan.
+
+    Card `d869d2be`. A mutation's verdict here is read off the SUITE'S exit code, and
+    the exit code belongs to the whole tree rather than to the mutation this run wrote.
+    So a second run mutating the same files hands this one a red suite it did not cause,
+    and this one records it as `caught` — the collision does not add noise, it
+    **inflates the score**, and these scores are the numbers the nightly write-ups
+    quote.
+
+    ⚠️ The hold is taken HERE and not inside `score`, which is where the other five
+    engines in this rollout take it. Their `score` is the whole run; this one's `score`
+    is ONE mutation, called in a loop. Holding per mutation would release the tree
+    between every pair of mutations — which is exactly the gap that makes
+    `refuse_a_dirty_source_tree` blind to a concurrent run, since that guard also looks
+    only at moments when the tree happens to be clean. The hazard is continuous, so the
+    hold has to span the whole loop.
+
+    `--self-test` is deliberately outside the hold: it mutates only its own scratch file
+    under `scripts/`, touches nothing this scorer's plans touch, and is the thing you
+    run to check the instrument — so it must not be refused merely because a real run is
+    in progress.
+    """
     if "--self-test" in sys.argv:
         return self_test()
+    with tree_hold.exclusive_hold_on_tree(
+            ROOT, purpose=os.path.basename(sys.argv[0] or "sabotage")) as refusal:
+        if refusal:
+            sys.exit("REFUSING: " + refusal)
+        return score_every_mutation_on_a_held_tree()
+
+
+def score_every_mutation_on_a_held_tree():
+    """The scoring itself, on a tree this process already holds.
+
+    Call `main` rather than this: on its own it will happily mutate a tree another run
+    is mutating, which is exactly what the hold exists to stop.
+    """
     allow_dirty = "--allow-dirty" in sys.argv
     plan = load_plans([a for a in sys.argv[1:] if a != "--allow-dirty"])
     if not allow_dirty:
