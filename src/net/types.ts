@@ -17,6 +17,10 @@ export interface SessionSummary {
   folderName: string;
   displayName: string;
   agentId: string;
+  /** Who the session was started as: a principal-store id (`principal_000001`),
+   *  or '' for a session with no principal. Set at creation; a UI resolves the
+   *  name live from principal-store rather than carrying a copy. */
+  principalId: string;
   updatedAt: string; // RFC3339 + offset
   createdAt: string; // RFC3339 + offset
   /** The harness's OWN session id (rotates on resume/fork). For a promoted subagent

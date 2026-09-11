@@ -149,6 +149,7 @@ export interface ManagedSessionWire {
   folder_name?: string;
   display_name?: string;
   agent_id?: string;
+  principal_id?: string;
   updated_at?: string;
   created_at?: string;
 

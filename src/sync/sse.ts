@@ -94,6 +94,7 @@ function summaryFromManaged(m: ManagedSessionWire): SessionSummary {
     folderName: m.folder_name ?? '',
     displayName: m.display_name ?? '',
     agentId: m.agent_id ?? '',
+    principalId: m.principal_id ?? '',
     updatedAt: m.updated_at ?? '',
     createdAt: m.created_at ?? '',
     harnessSessionId: m.harness_session_id ?? '',
