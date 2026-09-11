@@ -225,8 +225,8 @@ describe('ApiClient.getSessionDetail — the identity, lineage and spend block',
     // subagent sessions on. Everything else detail-only.
     expect(Object.keys(detail.summary).sort()).toEqual([
       'agentId', 'createdAt', 'displayName', 'folderName', 'harness',
-      'harnessSessionId', 'instanceId', 'managerSessionId',
-      'mode', 'purpose', 'sessionId', 'state', 'type', 'updatedAt',
+      'harnessSessionId', 'instanceId', 'managerSessionId', 'mode', 'principalId',
+      'purpose', 'sessionId', 'state', 'type', 'updatedAt',
     ]);
   });
 
