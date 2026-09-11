@@ -579,13 +579,18 @@ export class ApiClient {
 
   // --- mutations (existing bridge endpoints; see bridge-ui useBridgeSession.ts) ---
 
-  async createSession(opts?: { instanceId?: string; harness?: string }): Promise<CreatedSession> {
+  async createSession(opts?: {
+    instanceId?: string;
+    harness?: string;
+    principalId?: string;
+  }): Promise<CreatedSession> {
     const wire = await this.postJSON<Record<string, unknown>>('/sessions', {
       type: 'interactive',
       purpose: 'chat',
       origin: 'frontend',
       ...(opts?.instanceId ? { instance_id: opts.instanceId } : {}),
       ...(opts?.harness ? { harness: opts.harness } : {}),
+      ...(opts?.principalId ? { principal_id: opts.principalId } : {}),
     });
     // POST /sessions returns the canonical `msg.ManagedSession` (snake_case) — its id
     // field is `session_id`, so read it from the canonical key rather than assuming a

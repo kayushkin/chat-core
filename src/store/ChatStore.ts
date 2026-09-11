@@ -95,6 +95,11 @@ export const EMPTY_FILTER: FilterState = {
 export interface NewSessionOpts {
   instanceId?: string;
   harness?: string;
+  /** Who the session is started as: a principal-store id (`principal_000001`), sent
+   *  on the create itself as `principal_id`, not on the follow-up config call. The
+   *  server checks it and, at spawn, offers only what the principal's grants name.
+   *  Absent means no principal — every session before the field existed. */
+  principalId?: string;
   model?: string;
   effort?: string;
   /** ⚠️ ZERO IS A REAL VALUE and means NO CEILING on the server — never fold it in
@@ -1376,6 +1381,7 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
           clientId: `pending_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
           ...(opts?.instanceId ? { instanceId: opts.instanceId } : {}),
           ...(opts?.harness ? { harness: opts.harness } : {}),
+          ...(opts?.principalId ? { principalId: opts.principalId } : {}),
           ...(opts?.model ? { model: opts.model } : {}),
           ...(opts?.effort ? { effort: opts.effort } : {}),
           ...(opts?.maxBudget !== undefined ? { maxBudget: opts.maxBudget } : {}),

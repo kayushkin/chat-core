@@ -23,6 +23,12 @@ describe('pending session — what usePendingSession() reads', () => {
     expect(pending?.clientId).toMatch(/^pending_/);
   });
 
+  it('openPending(opts) carries the principal the first send will create the session as', () => {
+    const s = store();
+    s.getState().actions.openPending({ instanceId: 'inst-cc-local', principalId: 'principal_000001' });
+    expect(s.getState().pending?.principalId).toBe('principal_000001');
+  });
+
   it('openPending() with nothing recorded still opens a pane — a first run has no prefs', () => {
     const s = store();
     s.getState().actions.openPending();

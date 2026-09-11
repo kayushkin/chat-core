@@ -339,6 +339,21 @@ describe('ApiClient.createSession / fork — map canonical session_id → sessio
     });
   });
 
+  it('createSession sends principal_id on the create itself, and nothing when there is none', async () => {
+    const seen: { url: string; init?: RequestInit }[] = [];
+    const api = new ApiClient({
+      fetch: fakeFetch(
+        { ok: true, status: 201, statusText: 'Created', jsonBody: { session_id: 'br_new', state: 'starting' } },
+        (url, init) => seen.push({ url, init }),
+      ),
+      basePath: '/api/bridge',
+    });
+    await api.createSession({ instanceId: 'inst1', harness: 'claudecode', principalId: 'principal_000001' });
+    expect(JSON.parse(String(seen[0]!.init?.body))).toMatchObject({ principal_id: 'principal_000001' });
+    await api.createSession({ instanceId: 'inst1', harness: 'claudecode' });
+    expect('principal_id' in JSON.parse(String(seen[1]!.init?.body))).toBe(false);
+  });
+
   it('fork POSTs display_name + type and maps the forked session_id', async () => {
     const seen: { url: string; init?: RequestInit }[] = [];
     const api = new ApiClient({

@@ -534,7 +534,11 @@ export function useComposer(sessionId: string | null): {
         const clientId = `c_${Date.now()}`;
         let createdId: string | null = null;
         void api
-          .createSession(pending ? { instanceId: pending.instanceId, harness: pending.harness } : undefined)
+          .createSession(
+            pending
+              ? { instanceId: pending.instanceId, harness: pending.harness, principalId: pending.principalId }
+              : undefined,
+          )
           .then((created) => {
             const newId = created.sessionId;
             createdId = newId;
