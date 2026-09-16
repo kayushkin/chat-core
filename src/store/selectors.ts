@@ -1,5 +1,5 @@
 import type { Entry, HarnessMeta, ModelOption, SessionSummary, Turn, TurnModel } from '../net/types.js';
-import { annotateOTelDuplicates, groupMembers } from '../reduce/otelDedup.js';
+import { annotateOTelDuplicates } from '../reduce/otelDedup.js';
 import { terminalStateFromTail } from '../reduce/terminalState.js';
 import { IDLE_ACTIVITY, type ActivityKind } from './activity.js';
 import { isRunningState } from './sessionStates.js';
@@ -658,7 +658,7 @@ export function visibleEntryIdsFor(
   view: 'turns' | 'raw',
 ): string[] {
   if (!model) return [];
-  const turn = model.turns.find((t) => t.id === turnId);
+  const turn = turnsById(model).get(turnId);
   if (!turn) return [];
   // TRUST the turn's own entry order — never re-sort by eventId. The model's
   // order is maintained by its producers (log-store materializes in event order,
@@ -670,12 +670,57 @@ export function visibleEntryIdsFor(
   return turn.entryIds.filter((id) => !model.entries[id]?.duplicate);
 }
 
+/** A model's turns by id. `visibleEntryIdsFor` is called once per turn on every render,
+ *  and finding the turn by scanning `model.turns` each time made a render quadratic in
+ *  the turn count. Keyed on the model, which is replaced rather than edited, so an
+ *  entry is never stale — see "Why these memoize in a WeakMap" above. */
+const turnsByIdByModel = new WeakMap<TurnModel, Map<string, Turn>>();
+
+function turnsById(model: TurnModel): Map<string, Turn> {
+  let byId = turnsByIdByModel.get(model);
+  if (!byId) {
+    byId = new Map(model.turns.map((t) => [t.id, t]));
+    turnsByIdByModel.set(model, byId);
+  }
+  return byId;
+}
+
+/** The dedup annotation of a model's entries, and each group's members. */
+interface SourceIndex {
+  byId: Map<string, Entry>;
+  byGroup: Map<string, Entry[]>;
+}
+
+const sourceIndexByModel = new WeakMap<TurnModel, SourceIndex>();
+
 /** All copies in an entry's dedup group (the sources badge). Recomputes the
- *  annotation over the model's entries to answer independent of storage. */
+ *  annotation over the model's entries to answer independent of storage.
+ *
+ *  The annotation runs ONCE per model. The Raw view asks this for every entry it draws,
+ *  and recomputing a pass over every entry of the transcript each time made drawing a
+ *  turn quadratic in its size: measured 2.8 s blocking the main thread on opening
+ *  br_1789409869293194266 (one turn, ~1,250 entries) in the Raw view. Members come back
+ *  in the same order `groupMembers` gives: the order of `model.entries`. */
 export function sourcesForEntry(model: TurnModel | undefined, entryId: string): Entry[] {
   if (!model) return [];
-  const annotated = annotateOTelDuplicates(Object.values(model.entries));
-  return groupMembers(annotated, entryId);
+  let index = sourceIndexByModel.get(model);
+  if (!index) {
+    const annotated = annotateOTelDuplicates(Object.values(model.entries));
+    index = { byId: new Map(), byGroup: new Map() };
+    for (const e of annotated) {
+      index.byId.set(e.id, e);
+      if (e.groupId) {
+        const members = index.byGroup.get(e.groupId);
+        if (members) members.push(e);
+        else index.byGroup.set(e.groupId, [e]);
+      }
+    }
+    sourceIndexByModel.set(model, index);
+  }
+  const entry = index.byId.get(entryId);
+  if (!entry) return [];
+  if (!entry.groupId) return [entry];
+  return index.byGroup.get(entry.groupId) ?? [entry];
 }
 
 // ---- Timeline selector (Path A Timeline pane) ----
