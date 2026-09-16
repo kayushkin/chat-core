@@ -104,6 +104,15 @@ export interface Entry {
   toolName?: string;
   toolInput?: unknown;
   toolResult?: unknown;
+  /** Set on a page's entries when the tool input or output was SHORTENED for the page
+   *  (`payload=preview`): `toolInput` / `toolResult` hold at most 2 KB of each string,
+   *  the matching `*Truncated` is true when a longer original exists, and `*Bytes` is
+   *  the original's size. `ApiClient.getEntry` returns the entry with both in full.
+   *  Absent on live-stream entries, which always carry the whole payload. */
+  toolInputBytes?: number;
+  toolInputTruncated?: boolean;
+  toolResultBytes?: number;
+  toolResultTruncated?: boolean;
   /** tool entries only: the source event carried no tool_id, so this entry can
    *  never be paired with its counterpart — a call here will never receive a
    *  result, and a result here will never find its call. OTel-derived tool

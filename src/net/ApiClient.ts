@@ -1,4 +1,5 @@
 import type {
+  Entry,
   FolderListWire,
   HarnessConfig,
   HarnessMeta,
@@ -484,7 +485,14 @@ export class ApiClient {
    * no error anywhere. There is no case where this client wants that shape.
    */
   getMessages(id: string, opts?: { limit?: number; before?: string | number }): Promise<MessagesResponse> {
-    return this.getJSON<MessagesResponse>(`/sessions/${id}/messages?${messagePageQuery(opts)}`);
+    return this.getJSON<MessagesResponse>(`/sessions/${id}/messages?${readingPageQuery(opts)}`);
+  }
+
+  /** One entry of the reading page with its tool input and output in full — what a
+   *  shortened entry (`toolResultTruncated` / `toolInputTruncated`) points at.
+   *  `eventId` is the entry's log-store event id (`entry.eventId`). */
+  getEntry(sessionId: string, eventId: number): Promise<Entry> {
+    return this.getJSON<Entry>(`/sessions/${sessionId}/entries/${eventId}`);
   }
 
   /**
@@ -910,4 +918,14 @@ function messagePageQuery(opts?: { limit?: number; before?: string | number }): 
   params.set('limit', String(opts?.limit ?? ApiClient.DEFAULT_MESSAGE_TURNS));
   if (opts?.before != null) params.set('before', String(opts.before));
   return params.toString();
+}
+
+/** The reading page's query: bounded as every page is, with tool payloads shortened.
+ *
+ *  A page used to carry every tool's whole input and output. One grep result on
+ *  br_1789409869293194266 was 620 KB of an 884 KB page, and the Turns view draws no
+ *  tool output at all; with previews that page is 80 KB. A shortened entry says so
+ *  (`toolResultTruncated`), and `getEntry` fetches it whole when someone opens it. */
+function readingPageQuery(opts?: { limit?: number; before?: string | number }): string {
+  return `${messagePageQuery(opts)}&payload=preview`;
 }

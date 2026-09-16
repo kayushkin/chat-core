@@ -9,6 +9,7 @@ export {
   useActiveSession,
   usePendingSession,
   useTurns,
+  useFullEntry,
   useComposer,
   useFilters,
   useSessionActions,

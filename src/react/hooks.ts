@@ -1380,3 +1380,64 @@ export function usePrefetch(): (sessionId: string) => void {
 const PENDING_DRAFT_KEY = '__pending__';
 const EMPTY_TURNS: Turn[] = [];
 const EMPTY_ENTRIES: Record<string, Entry> = {};
+
+/** An entry as drawn, with a way to load its tool input and output in full.
+ *
+ *  A page's entries carry tool payloads shortened to 2 KB (`toolResultTruncated`,
+ *  `toolInputTruncated`); a live-stream entry never does. `shortened` says whether the
+ *  entry being shown is still a preview, `loadFull` fetches the whole entry once, and a
+ *  failed fetch is reported in `error` rather than swallowed — a card must be able to
+ *  say "could not load the full output" instead of quietly showing the preview as if it
+ *  were everything. */
+export function useFullEntry(
+  sessionId: string | null,
+  entry: Entry,
+): {
+  entry: Entry;
+  shortened: boolean;
+  loading: boolean;
+  error: string | null;
+  loadFull: () => void;
+} {
+  const { api } = useChatContext();
+  const [full, setFull] = useState<Entry | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const key = `${sessionId ?? ''}:${entry.id}`;
+  const loadedKey = useRef<string | null>(null);
+
+  useEffect(() => {
+    // A different entry (or session) in the same component: forget the old full copy.
+    if (loadedKey.current !== null && loadedKey.current !== key) {
+      setFull(null);
+      setError(null);
+      loadedKey.current = null;
+    }
+  }, [key]);
+
+  const loadFull = useCallback(() => {
+    if (!sessionId || loading || full) return;
+    setLoading(true);
+    setError(null);
+    const requestedKey = key;
+    api
+      .getEntry(sessionId, entry.eventId)
+      .then((e) => {
+        loadedKey.current = requestedKey;
+        setFull(e);
+      })
+      .catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => setLoading(false));
+  }, [api, sessionId, entry.eventId, key, loading, full]);
+
+  const shown = full ?? entry;
+  return {
+    entry: shown,
+    shortened: !full && (entry.toolInputTruncated === true || entry.toolResultTruncated === true),
+    loading,
+    error,
+    loadFull,
+  };
+}

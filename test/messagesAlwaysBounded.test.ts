@@ -60,3 +60,26 @@ describe('the messages request always carries a bound', () => {
     }
   });
 });
+
+describe('the reading page asks for tool payload previews', () => {
+  it('every reading-page request carries payload=preview', async () => {
+    const { api, urls } = recordingClient();
+    await api.getMessages('sess-a');
+    await api.getMessages('sess-a', { limit: 5, before: 9 });
+    for (const url of urls) {
+      expect(new URL(url, 'http://x').searchParams.get('payload')).toBe('preview');
+    }
+  });
+
+  it('the raw page does not: it is the audit view of what was stored', async () => {
+    const { api, urls } = recordingClient();
+    await api.getMessagesRaw('sess-a');
+    expect(new URL(urls[0], 'http://x').searchParams.get('payload')).toBeNull();
+  });
+
+  it('getEntry asks for one entry by its event id', async () => {
+    const { api, urls } = recordingClient();
+    await api.getEntry('br_1', 4242);
+    expect(urls[0]).toBe('/api/bridge/sessions/br_1/entries/4242');
+  });
+});
