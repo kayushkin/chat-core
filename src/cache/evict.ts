@@ -47,7 +47,12 @@ export async function enforceCacheBound(
   const keys = await cache.turnKeys();
   const victims = selectEvictions(keys, limit);
   for (const id of victims) await cache.evictTurns(id);
-  await enforceListBound(cache, listLimit);
+  const evicted = new Set(victims);
+  await enforceListBound(
+    cache,
+    listLimit,
+    keys.filter((k) => !evicted.has(k.sessionId)).map((k) => k.sessionId),
+  );
   return victims;
 }
 
@@ -68,11 +73,16 @@ export async function enforceCacheBound(
 export async function enforceListBound(
   cache: SessionCache,
   limit = DEFAULT_LIST_CACHE_LIMIT,
+  /** The sessions whose turns are cached, when the caller has just read them — so one
+   *  sweep reads the key set once rather than twice. Read here when absent. */
+  sessionIdsWithCachedTurns?: string[],
 ): Promise<string[]> {
   const oldestFirst = await cache.listKeysOldestFirst();
   const over = oldestFirst.length - limit;
   if (over <= 0) return [];
-  const withTurns = new Set((await cache.turnKeys()).map((k) => k.sessionId));
+  const withTurns = new Set(
+    sessionIdsWithCachedTurns ?? (await cache.turnKeys()).map((k) => k.sessionId),
+  );
   const victims = oldestFirst.slice(0, over).filter((id) => !withTurns.has(id));
   await cache.evictListRows(victims);
   return victims;

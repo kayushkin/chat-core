@@ -244,3 +244,50 @@ describe('list cache bound', () => {
     await cache.close();
   });
 });
+
+describe('turnKeys', () => {
+  beforeEach(() => {
+    globalThis.indexedDB = new IDBFactory();
+  });
+
+  it('lists every cached transcript with its validator timestamp, and nothing else', async () => {
+    const cache = new SessionCache(true);
+    await cache.putTurns(model('br_a', '2026-09-01T00:00:00Z'));
+    await cache.putTurns(model('br_b', '2026-09-02T00:00:00Z'));
+    // A validator with no transcript is not a cached transcript.
+    await cache.putValidator('br_orphan', { maxEventId: 1, eventCount: 1, updatedAt: '2026-09-03T00:00:00Z' });
+
+    const keys = await cache.turnKeys();
+    expect(keys.sort((a, b) => a.sessionId.localeCompare(b.sessionId))).toEqual([
+      { sessionId: 'br_a', updatedAt: '2026-09-01T00:00:00Z' },
+      { sessionId: 'br_b', updatedAt: '2026-09-02T00:00:00Z' },
+    ]);
+    await cache.close();
+  });
+
+  it('never reads a transcript to list them', async () => {
+    const cache = new SessionCache(true);
+    await cache.putTurns(model('br_a', '2026-09-01T00:00:00Z'));
+    // Reading a value from the turns store would go through getAll/get on it.
+    const store = IDBObjectStore.prototype;
+    const getAll = store.getAll;
+    const get = store.get;
+    const readStores: string[] = [];
+    store.getAll = function (this: IDBObjectStore, ...args: Parameters<typeof getAll>) {
+      readStores.push(this.name);
+      return getAll.apply(this, args);
+    };
+    store.get = function (this: IDBObjectStore, ...args: Parameters<typeof get>) {
+      readStores.push(this.name);
+      return get.apply(this, args);
+    };
+    try {
+      await cache.turnKeys();
+    } finally {
+      store.getAll = getAll;
+      store.get = get;
+    }
+    expect(readStores).not.toContain('turns');
+    await cache.close();
+  });
+});

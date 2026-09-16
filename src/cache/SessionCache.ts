@@ -165,11 +165,17 @@ export class SessionCache {
   async putTurns(model: TurnModel, streamHead?: number): Promise<void> {
     if (!this.enabled) return;
     const db = await this.db();
-    await db.put('turns', model);
-    await db.put('validators', { sessionId: model.sessionId, ...model.validator });
-    if (streamHead !== undefined) {
-      await db.put('streamResume', { sessionId: model.sessionId, head: streamHead });
-    }
+    // One transaction, so a transcript never lands without the validator row
+    // `turnKeys` reads its timestamp from.
+    const tx = db.transaction(['turns', 'validators', 'streamResume'], 'readwrite');
+    await Promise.all([
+      tx.objectStore('turns').put(model),
+      tx.objectStore('validators').put({ sessionId: model.sessionId, ...model.validator }),
+      streamHead !== undefined
+        ? tx.objectStore('streamResume').put({ sessionId: model.sessionId, head: streamHead })
+        : Promise.resolve(),
+      tx.done,
+    ]);
   }
 
   /**
@@ -293,12 +299,29 @@ export class SessionCache {
     await tx.done;
   }
 
-  /** Enumerate cached turn sessionIds + their updatedAt, for the evictor. */
+  /** Enumerate cached turn sessionIds + their updatedAt, for the evictor.
+   *
+   *  The ids come from the `turns` store's KEYS and the timestamps from the small
+   *  `validators` rows, so no transcript is read. This used to `getAll('turns')`, which
+   *  structured-cloned every cached transcript — up to 50, a megabyte or more each —
+   *  onto the main thread; the evictor did that twice per sweep, every 15 seconds, in an
+   *  idle tab too, only to learn ids and timestamps.
+   *
+   *  A transcript with no validator row can only come from a write interrupted before
+   *  `putTurns` became one transaction. It reports an empty `updatedAt`, which sorts
+   *  oldest, so it is the first thing evicted rather than a row nothing can reach. */
   async turnKeys(): Promise<{ sessionId: string; updatedAt: string }[]> {
     if (!this.enabled) return [];
     const db = await this.db();
-    const rows = await db.getAll('turns');
-    return rows.map((r) => ({ sessionId: r.sessionId, updatedAt: r.validator.updatedAt }));
+    const [ids, validators] = await Promise.all([
+      db.getAllKeys('turns'),
+      db.getAll('validators'),
+    ]);
+    const updatedAtBySession = new Map(validators.map((v) => [v.sessionId, v.updatedAt]));
+    return ids.map((sessionId) => ({
+      sessionId,
+      updatedAt: updatedAtBySession.get(sessionId) ?? '',
+    }));
   }
 
   /** Drop a session's turns + validator (keeps the list row). Used by the LRU. */
