@@ -139,28 +139,4 @@ describe('cache writes from the live stream are coalesced', () => {
     const stored = await cache.getTurns('br_real');
     expect(stored?.validator.maxEventId).toBe(42);
   });
-  it('caches the stream resume point alongside the model', async () => {
-    // What makes a session painted from disk on the next boot open its stream with a
-    // resume point instead of having its whole current turn replayed at it.
-    vi.useRealTimers();
-    const cache = new SessionCache(true);
-
-    cache.scheduleTurnsWrite(model('br_resume', 9), 4242);
-    await new Promise((r) => setTimeout(r, SessionCache.TURNS_WRITE_COALESCE_MS + 50));
-
-    expect((await cache.hydrate()).streamResume.get('br_resume')).toBe(4242);
-  });
-
-  it('a write with no resume point leaves the cached one alone rather than clearing it', async () => {
-    // Live-stream writes carry the last frame id; some other paths carry nothing. A
-    // write without one must not erase a good resume point — that would silently put the
-    // session back to replaying its whole turn.
-    vi.useRealTimers();
-    const cache = new SessionCache(true);
-
-    await cache.putTurns(model('br_keep', 1), 77);
-    await cache.putTurns(model('br_keep', 2));
-
-    expect((await cache.hydrate()).streamResume.get('br_keep')).toBe(77);
-  });
 });

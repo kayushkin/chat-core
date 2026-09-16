@@ -94,7 +94,6 @@ function wire(failing: string[]): {
     api,
     cache: new SessionCache(false),
     sessionsPerPage: 3,
-    backgroundSessionBudget: 0,
   });
   return { store, prefetcher, seen };
 }
@@ -151,37 +150,12 @@ describe('boot fan-out — one failed read degrades, and degrading is not the sa
     expect(store.getState().folders).toEqual(['work', 'personal']);
   });
 
-  it('resolves when the VALIDATOR read fails on a warm store, so a cache it cannot revalidate is not fatal', async () => {
-    // The validator branch only runs with cached ids, and `cachedIds` is read off
-    // `turnsBySession` -- so seeding one turn model is what makes this read happen at
-    // all. Without the seed the request is never issued and a mutation to its catch
-    // clause scores UNNOTICED for want of a caller rather than for want of a test.
-    const { store, prefetcher } = wire(['/validators']);
-    store.getState().actions.setTurns('br_warm', turnModel('br_warm'));
-
-    await expect(prefetcher.boot()).resolves.toBeUndefined();
-    expect(store.getState().turnsBySession.has('br_warm')).toBe(true);
-  });
-
-  it('does issue the validator read when there ARE cached ids — the case above must not pass by never asking', async () => {
-    // The companion to it. Every other assertion here is satisfied by a boot that
-    // quietly stopped doing the work, so the reachability of the branch is asserted
-    // rather than assumed.
+  it('asks for no validators at boot, warm or cold: nothing read the answer', async () => {
+    // Boot used to send the cached session ids to /validators and drop the reply.
+    // The active session is revalidated when it is opened, which is the only place a
+    // stale cached model is ever shown.
     const { store, prefetcher, seen } = wire([]);
     store.getState().actions.setTurns('br_warm', turnModel('br_warm'));
-
-    await prefetcher.boot();
-
-    expect(seen.filter((u) => u.includes('/validators'))).toHaveLength(1);
-  });
-
-  it('asks for no validators at all when nothing is cached, rather than asking for none', async () => {
-    // The validator read has TWO producers of the same null: the failed request, and
-    // the `cachedIds.length > 0` branch that never requests. They mean opposite things
-    // -- "could not revalidate" against "nothing to revalidate" -- and the only place
-    // the difference shows is on the wire, so this is the one case here that asserts a
-    // url rather than the store.
-    const { prefetcher, seen } = wire([]);
     await prefetcher.boot();
     expect(seen.filter((u) => u.includes('/validators'))).toEqual([]);
   });

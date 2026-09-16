@@ -153,30 +153,15 @@ export interface ContentHits {
 export interface ChatState {
   sessions: Map<string, SessionSummary>;
   turnsBySession: Map<string, TurnModel>;
-  /** Lazily-fetched per-session detail info (system prompt, tools, permission mode,
-   *  …), keyed by session id. A present key — even mapping to `null` — means the
-   *  detail was fetched (null = the harness reported no info yet), so `useSessionInfo`
-   *  never re-fetches. Populated on first use, never on the hot path. */
-  sessionInfo: Map<string, SessionInfo | null>;
-  /** Session ids whose detail fetch is in flight (drives `useSessionInfo` loading). */
-  sessionInfoLoading: Set<string>;
-  /** Lazily-fetched FULL per-session detail (`ManagedSessionDetail`: summary + info +
-   *  harnessConfig), keyed by session id — the source for `useManagedSession` and the
-   *  interactive permission-mode selector. A present key mapping to a detail means it
-   *  was fetched; distinct from `sessionInfo` (which caches only the `info` sub-blob).
-   *  Populated on first use, never on the hot path. */
+  /** Lazily-fetched per-session detail (`ManagedSessionDetail`: summary + info +
+   *  harnessConfig), keyed by session id — the ONE cache behind `useManagedSession`,
+   *  `useSessionInfo` (which reads its `info`) and the permission-mode selector. A
+   *  present key means it was fetched. Populated on first use, never on the hot path. */
   sessionDetail: Map<string, ManagedSessionDetail>;
   /** Session ids whose full-detail fetch is in flight (drives `useManagedSession` loading). */
   sessionDetailLoading: Set<string>;
   /** Internal live-tail reducer state per session (not for direct UI reads). */
   tails: Map<string, TailState>;
-  /** Where each session's event stream can be resumed from, as reported by the page
-   *  that was fetched for it (`MessagesResponse.stream`).
-   *
-   *  This is what stops the server replaying a whole turn the client already has. It is
-   *  an llm-bridge-server row id and belongs to the SSE `id:` space — never the
-   *  log-store `Entry.eventId` space; see `StreamResumePoint`. */
-  streamResumeBySession: Map<string, number>;
   /** Sessions whose UNPROJECTED page (`/messages/raw`) has been loaded.
    *
    *  `turnsBySession.has(id)` cannot answer this. The default page is projected —
@@ -320,6 +305,11 @@ export interface ChatActions {
    *  Merges (never replaces) so the newer pages already on screen survive, and clears
    *  `olderSessionsLoading`. */
   appendOlderSessions(list: SessionSummary[], olderSessionsCursor: string | null): void;
+  /** Merge sessions into the window without touching the paging cursor — a lookup by
+   *  id, or a page for a filter that is no longer the one being paged. */
+  mergeSessions(list: SessionSummary[]): void;
+  /** Replace the paging cursor: the first page of a newly set filter has landed. */
+  setOlderSessionsCursor(olderSessionsCursor: string | null): void;
   setOlderSessionsLoading(loading: boolean): void;
   upsertSession(summary: SessionSummary): void;
   removeSession(sessionId: string): void;
@@ -344,8 +334,6 @@ export interface ChatActions {
     model: TurnModel,
     opts?: {
       raw?: boolean;
-      /** The stream resume point the page reported — see `streamResumeBySession`. */
-      streamHead?: number;
     },
   ): void;
   applyTailEvent(sessionId: string, event: WireEvent): void;
@@ -357,11 +345,6 @@ export interface ChatActions {
    *  `aggregates` rule as `setTurns`, in the other direction: the older page can fill a
    *  roll-up that was never known, but never overwrite the one already on screen. */
   prependOlder(sessionId: string, older: TurnModel): void;
-
-  /** Cache a session's fetched detail info (null = fetched, harness reported none);
-   *  clears the loading flag. Keyed by id so a repeat `useSessionInfo` reads the cache. */
-  setSessionInfo(sessionId: string, info: SessionInfo | null): void;
-  setSessionInfoLoading(sessionId: string, loading: boolean): void;
 
   /** Cache a session's fetched FULL detail (summary + info + harnessConfig); clears the
    *  detail-loading flag. Backs `useManagedSession`. */
@@ -581,6 +564,26 @@ export interface CreateChatStoreOptions {
   filterStorage?: WebStorageLike | null;
 }
 
+/** The session window with `list` merged in: one Map copy for the whole page — a
+ *  per-row `upsertSession` loop would copy it once per row. A row that arrived live
+ *  over SSE while the page was in flight is newer than the page, so its fields stay
+ *  on top; a new row takes its order stamp from its own `updatedAt`. */
+function mergedSessions(
+  state: Pick<ChatState, 'sessions' | 'listOrderStampBySession'>,
+  list: SessionSummary[],
+): Pick<ChatState, 'sessions' | 'listOrderStampBySession'> {
+  const sessions = new Map(state.sessions);
+  const listOrderStampBySession = new Map(state.listOrderStampBySession);
+  for (const s of list) {
+    const prev = sessions.get(s.sessionId);
+    sessions.set(s.sessionId, prev ? { ...s, ...prev } : s);
+    if (!listOrderStampBySession.has(s.sessionId)) {
+      listOrderStampBySession.set(s.sessionId, s.updatedAt);
+    }
+  }
+  return { sessions, listOrderStampBySession };
+}
+
 export function createChatStore(options: CreateChatStoreOptions = {}): ChatStoreApi {
   const draftStore = new DraftStore(
     options.draftStorage === undefined ? defaultDraftStorage() : options.draftStorage,
@@ -715,14 +718,10 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
       // which is exactly how the first version of this failed its own test.
       let rawTurnsLoaded = get().rawTurnsLoaded;
       let clearedAnyRaw = false;
-      // The resume point describes a page that is about to be evicted, so it goes with
-      // it: reopening the session refetches, and that fetch brings a fresh one.
-      const streamResumeBySession = new Map(get().streamResumeBySession);
       for (const id of victims) {
         turnsBySession.delete(id);
         tails.delete(id);
         sizeBySession.delete(id);
-        streamResumeBySession.delete(id);
         if (rawTurnsLoaded.has(id)) {
           if (!clearedAnyRaw) {
             rawTurnsLoaded = new Set(rawTurnsLoaded);
@@ -732,7 +731,6 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
         }
       }
       recency = recency.filter((id) => turnsBySession.has(id));
-      set({ streamResumeBySession });
       return { turnsBySession, tails, rawTurnsLoaded };
     }
 
@@ -782,25 +780,20 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
       },
 
       appendOlderSessions(list, olderSessionsCursor) {
-        // One Map copy and one folder scan for the whole page — a per-row
-        // `upsertSession` loop would do both 100 times over.
-        const sessions = new Map(get().sessions);
-        const listOrderStampBySession = new Map(get().listOrderStampBySession);
-        for (const s of list) {
-          const prev = sessions.get(s.sessionId);
-          // A row that arrived live over SSE while the page was in flight is newer
-          // than the page; keep the live fields on top.
-          sessions.set(s.sessionId, prev ? { ...s, ...prev } : s);
-          if (!listOrderStampBySession.has(s.sessionId)) {
-            listOrderStampBySession.set(s.sessionId, s.updatedAt);
-          }
-        }
         set({
-          sessions,
-          listOrderStampBySession,
+          ...mergedSessions(get(), list),
           olderSessionsCursor,
           olderSessionsLoading: false,
         });
+      },
+
+      mergeSessions(list) {
+        if (list.length === 0) return;
+        set(mergedSessions(get(), list));
+      },
+
+      setOlderSessionsCursor(olderSessionsCursor) {
+        set({ olderSessionsCursor });
       },
 
       setOlderSessionsLoading(olderSessionsLoading) {
@@ -844,10 +837,6 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
         tails.delete(sessionId);
         const rawTurnsLoaded = new Set(get().rawTurnsLoaded);
         rawTurnsLoaded.delete(sessionId);
-        const sessionInfo = new Map(get().sessionInfo);
-        sessionInfo.delete(sessionId);
-        const sessionInfoLoading = new Set(get().sessionInfoLoading);
-        sessionInfoLoading.delete(sessionId);
         const sessionDetail = new Map(get().sessionDetail);
         sessionDetail.delete(sessionId);
         const sessionDetailLoading = new Set(get().sessionDetailLoading);
@@ -872,8 +861,6 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
           pendingHooks,
           activity,
           listOrderStampBySession,
-          sessionInfo,
-          sessionInfoLoading,
           sessionDetail,
           sessionDetailLoading,
           drafts,
@@ -954,15 +941,6 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
           rawTurnsLoaded = new Set(rawTurnsLoaded);
           rawTurnsLoaded.add(sessionId);
         }
-        // Recorded only when the page reported one. An older server sends no resume
-        // point, and inventing a 0 there would tell the stream to resume from the start
-        // of the session — which is not "replay the current turn", it is replay
-        // everything, the opposite of what this is for.
-        let streamResumeBySession = get().streamResumeBySession;
-        if (opts?.streamHead !== undefined) {
-          streamResumeBySession = new Map(streamResumeBySession);
-          streamResumeBySession.set(sessionId, opts.streamHead);
-        }
         // The other half of `setActive`'s re-derivation, for the session that was COLD
         // when it was selected: the switch had no transcript to read, and this is the
         // commit that first has one. Without it the feature would only ever work for a
@@ -989,7 +967,6 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
           moreBySession,
           turnsLoading,
           rawTurnsLoaded,
-          streamResumeBySession,
           activity,
         });
       },
@@ -1142,21 +1119,6 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
         if (loading) turnsLoading.add(sessionId);
         else turnsLoading.delete(sessionId);
         set({ turnsLoading });
-      },
-
-      setSessionInfo(sessionId, info) {
-        const sessionInfo = new Map(get().sessionInfo);
-        sessionInfo.set(sessionId, info);
-        const sessionInfoLoading = new Set(get().sessionInfoLoading);
-        sessionInfoLoading.delete(sessionId);
-        set({ sessionInfo, sessionInfoLoading });
-      },
-
-      setSessionInfoLoading(sessionId, loading) {
-        const sessionInfoLoading = new Set(get().sessionInfoLoading);
-        if (loading) sessionInfoLoading.add(sessionId);
-        else sessionInfoLoading.delete(sessionId);
-        set({ sessionInfoLoading });
       },
 
       setSessionDetail(sessionId, detail) {
@@ -1457,12 +1419,9 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
     return {
       sessions: new Map(),
       turnsBySession: new Map(),
-      sessionInfo: new Map(),
-      sessionInfoLoading: new Set(),
       sessionDetail: new Map(),
       sessionDetailLoading: new Set(),
       tails: new Map(),
-      streamResumeBySession: new Map(),
       rawTurnsLoaded: new Set(),
       pendingHooks: new Map(),
       budgetHalts: new Map(),

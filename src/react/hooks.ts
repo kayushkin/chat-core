@@ -186,7 +186,7 @@ export function useActiveSession(): {
         actions.setTurnsLoading(nextId, true);
         void api
           .getMessages(nextId, { limit: 30 })
-          .then((resp) => actions.setTurns(nextId, resp.model, { streamHead: resp.stream?.head }))
+          .then((resp) => actions.setTurns(nextId, resp.model))
           .catch(() => actions.setTurnsLoading(nextId, false));
       };
       if (!state.turnsBySession.has(nextId) && !state.turnsLoading.has(nextId)) {
@@ -328,10 +328,7 @@ export function useTurns(
       : api.getMessages(sessionId, { limit: 30 });
     void page
       .then((resp) =>
-        actions.setTurns(sessionId, resp.model, {
-          raw: wantRaw,
-          streamHead: resp.stream?.head,
-        }),
+        actions.setTurns(sessionId, resp.model, { raw: wantRaw }),
       )
       .catch(() => actions.setTurnsLoading(sessionId, false));
   }, [sessionId, store, api, actions, view]);
@@ -629,7 +626,7 @@ export function useFilters(): {
    *  errored is indistinguishable from one that found nothing. */
   searchError: string | null;
 } {
-  const { store, api } = useChatContext();
+  const { store, api, prefetcher } = useChatContext();
   const filter = useStore(store, (s) => s.filter);
   const contentSearchReach = useStore(store, selectContentSearchReach);
   const inFlight = useStore(store, (s) => s.contentSearchInFlight);
@@ -655,6 +652,9 @@ export function useFilters(): {
   const set = useCallback(
     (patch: Partial<FilterState>) => {
       actions.setFilter(patch); // instant/local — never awaits the network.
+      // Then, in the background, the first server page for the new chips — a no-op
+      // unless a server-side axis moved.
+      void prefetcher.refilter();
       if (patch.search !== undefined) {
         const q = patch.search.trim();
         // Debounced: this used to fire one GET /sessions/search per KEYSTROKE,
@@ -675,7 +675,11 @@ export function useFilters(): {
               // `r.hits`, not `r.sessionIds`: the hits carry the `matchCount` the
               // sidebar ranks content-only matches by. Passing the id list alone is
               // what threw the server's ranking away.
-              .then((r) => actions.setContentHits(q, r.hits, r.truncated))
+              .then((r) => {
+                actions.setContentHits(q, r.hits, r.truncated);
+                // A hit outside the loaded pages has no row to show; fetch those rows.
+                void prefetcher.loadSessionsByIds(r.hits.map((h) => h.sessionId));
+              })
               // A failed transcript search is NOT an empty one. Folding it into an
               // empty hit set — which is what this catch used to do by doing nothing
               // at all — reports the gateway being down as "your words appear in no
@@ -691,7 +695,7 @@ export function useFilters(): {
         }
       }
     },
-    [actions, api],
+    [actions, api, prefetcher],
   );
   const openFolder = useCallback((folder: string) => actions.openFolder(folder), [actions]);
   return {
@@ -865,31 +869,21 @@ export function useFolders(): {
   return { folders, createFolder, deleteFolder, renameFolder, moveSessionToFolder, error };
 }
 
-/** Session detail info (system prompt, model, permission mode, tools, slash commands,
- *  sub-agents, skills, MCP servers). Lazily fetches `GET /sessions/{id}` on first use,
- *  caches the result in the store keyed by id (a cached `null` means the harness has
- *  reported no info yet — never re-fetched), and returns the cache thereafter. NEVER
- *  blocks the hot path: the fetch is fired in the background and the store update is
- *  what re-renders. `loading` is true only while the first fetch is in flight. */
+/** A session's `info` (model, tools, system prompt …), or null while it has not been
+ *  fetched. Read from the ONE per-session detail cache that `useManagedSession`
+ *  fills: both used to fetch `GET /sessions/{id}` separately and keep separate
+ *  copies, so opening a session asked for the same record twice. */
 export function useSessionInfo(sessionId: string | null): {
   info: SessionInfo | null;
   loading: boolean;
 } {
   const { store, api } = useChatContext();
   const actions = useActions();
-  const info = useStore(store, (s) => (sessionId ? s.sessionInfo.get(sessionId) ?? null : null));
-  const loading = useStore(store, (s) => (sessionId ? s.sessionInfoLoading.has(sessionId) : false));
+  const info = useStore(store, (s) => (sessionId ? s.sessionDetail.get(sessionId)?.info ?? null : null));
+  const loading = useStore(store, (s) => (sessionId ? s.sessionDetailLoading.has(sessionId) : false));
 
   useEffect(() => {
-    if (!sessionId) return;
-    const state = store.getState();
-    if (state.sessionInfo.has(sessionId)) return; // cached (incl. a fetched null)
-    if (state.sessionInfoLoading.has(sessionId)) return;
-    actions.setSessionInfoLoading(sessionId, true);
-    void api
-      .getSessionDetail(sessionId)
-      .then((detail) => actions.setSessionInfo(sessionId, detail.info))
-      .catch(() => actions.setSessionInfoLoading(sessionId, false));
+    if (sessionId) loadSessionDetail(store, api, actions, sessionId);
   }, [sessionId, store, api, actions]);
 
   return { info, loading };
@@ -918,15 +912,7 @@ export function useManagedSession(sessionId: string | null): {
   const loading = useStore(store, (s) => (sessionId ? s.sessionDetailLoading.has(sessionId) : false));
 
   useEffect(() => {
-    if (!sessionId) return;
-    const state = store.getState();
-    if (state.sessionDetail.has(sessionId)) return; // cached
-    if (state.sessionDetailLoading.has(sessionId)) return;
-    actions.setSessionDetailLoading(sessionId, true);
-    void api
-      .getSessionDetail(sessionId)
-      .then((detail) => actions.setSessionDetail(sessionId, detail))
-      .catch(() => actions.setSessionDetailLoading(sessionId, false));
+    if (sessionId) loadSessionDetail(store, api, actions, sessionId);
   }, [sessionId, store, api, actions]);
 
   const setPermissionState = useCallback(
@@ -1440,4 +1426,23 @@ export function useFullEntry(
     error,
     loadFull,
   };
+}
+
+/** Fetch a session's detail into the store once: a no-op when it is cached or
+ *  already on its way. The one loader for `GET /sessions/{id}` behind every hook
+ *  that reads the detail cache. A failed fetch clears the loading mark so the next
+ *  mount can try again. */
+function loadSessionDetail(
+  store: ReturnType<typeof useChatContext>['store'],
+  api: ReturnType<typeof useChatContext>['api'],
+  actions: ReturnType<typeof useActions>,
+  sessionId: string,
+): void {
+  const state = store.getState();
+  if (state.sessionDetail.has(sessionId) || state.sessionDetailLoading.has(sessionId)) return;
+  actions.setSessionDetailLoading(sessionId, true);
+  void api
+    .getSessionDetail(sessionId)
+    .then((detail) => actions.setSessionDetail(sessionId, detail))
+    .catch(() => actions.setSessionDetailLoading(sessionId, false));
 }

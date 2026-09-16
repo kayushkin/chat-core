@@ -23,9 +23,6 @@ export interface ChatProviderProps {
   recentN?: number; // warm-cache size, default 20
   turnsPerBundle?: number; // last-N turns per bundled session, default 30
   sessionsPerPage?: number; // sidebar sessions per page, default 100
-  /** Stop background session deepening once the window holds this many sessions;
-   *  0 disables deepening. Default 2000 — see `Prefetcher`. */
-  backgroundSessionBudget?: number;
   cache?: boolean; // enable IndexedDB persistence, default true
   /** Characters of transcript payload to keep warm in memory. Default
    *  `DEFAULT_TURN_RETENTION_BYTES`. This is the L1 working set, NOT a cache — the
@@ -54,7 +51,6 @@ export function ChatProvider(props: ChatProviderProps): JSX.Element {
     recentN = 20,
     turnsPerBundle = 30,
     sessionsPerPage,
-    backgroundSessionBudget,
     cache = true,
     turnRetentionBytes,
     turnRetentionMinSessions,
@@ -73,7 +69,6 @@ export function ChatProvider(props: ChatProviderProps): JSX.Element {
       recentN,
       turnsPerBundle,
       sessionsPerPage,
-      backgroundSessionBudget,
     });
     // The page size goes to BOTH: the Prefetcher paints one page from the cache
     // and the SyncEngine's sweep trims the cache to it. Configure one and not the
@@ -100,10 +95,6 @@ export function ChatProvider(props: ChatProviderProps): JSX.Element {
     });
     return () => {
       cancelled = true;
-      // Before the cache closes: the loop writes nothing to the cache, but it does
-      // keep issuing requests, and a provider that has been torn down has no list
-      // left to deepen.
-      ctx.prefetcher.stopBackgroundDeepening();
       ctx.sync.stop();
       void ctx.cache.close();
     };

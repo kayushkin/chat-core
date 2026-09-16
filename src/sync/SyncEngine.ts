@@ -227,36 +227,18 @@ export class SyncEngine {
 
   /** Per-session SSE resume cursor: the last frame id RECEIVED on the stream.
    *
-   *  ⛔ RESUMING FROM THE PAGE INSTEAD WAS TRIED AND WITHDRAWN on 2026-08-27, the day it
-   *  shipped. The store still carries `streamResumeBySession` and the server still sends
-   *  `StreamResumePoint` — both are correct and are what a second attempt needs — but
-   *  nothing reads them here, deliberately. Read this before wiring them up again.
-   *
-   *  It worked, by its own measure: 8 of 8 cold opens connected with a resume point and
-   *  the current-turn replay went from 5,569 KB to 0 across eight opens. It also DOUBLED
-   *  NARRATION in the UI, and the cause is structural rather than a slip.
-   *
-   *  The server reads the stream head BEFORE flushing pending log-store writes, which is
-   *  what guarantees no event is lost — and it also means the page may contain events
-   *  ABOVE that head, written while the flush ran. Those are re-delivered on the stream.
-   *  Page entries are keyed `e_<log-store row id>` and live ones `${messageId}_${kind}`
-   *  or `evt_<bridge row id>`, so the two never collide by id: overlap is reconciled by
-   *  CONTENT, in `mergeMaterializedPage`, which only runs when a page lands OVER a live
-   *  tail. Resuming from a page inverts that order and nothing reconciles the other way.
-   *  On an actively streaming session the window is wide.
-   *
-   *  No ordering avoids both failures. Reading the head after the flush closes the
-   *  duplication window and opens a LOSS window in its place — an event written in
-   *  between sits at or below the head while never reaching log-store, so it appears on
-   *  neither the page nor the resumed stream and nothing reports it missing. Duplication
-   *  is the safer half, which is why it was chosen; it still has to be handled.
-   *
-   *  WHAT WOULD MAKE IT SHIPPABLE: the reducer reconciling live-over-page as well as
-   *  page-over-live. The keys already exist in `pageReports`. The trap is naive skipping
-   *  by `messageId` — a `stream` or `block` frame above the head is genuinely NEW text
-   *  for a message the page already holds, and dropping it loses streamed content. The
-   *  atomic kinds (`system`, `tool_call`, `tool_result`, `result`, `user_message`) can be
-   *  skipped on a content match; the appending kinds cannot. */
+   *  ⛔ RESUMING FROM THE PAGE INSTEAD (the `stream.head` every messages page carries)
+   *  was tried and withdrawn on 2026-08-27, the day it shipped: it cut the current-turn
+   *  replay from 5,569 KB to 0 across eight opens and DOUBLED NARRATION. The server
+   *  reads the head before flushing log-store writes, so a page can hold events above
+   *  it that the stream re-delivers, and page entries (`e_<log-store id>`) and live
+   *  ones (`evt_<bridge id>`) never collide by id — overlap is reconciled by content
+   *  only when a page lands over a live tail, not the other way round. The client
+   *  plumbing that stored those heads, in memory and in IndexedDB, was deleted on
+   *  2026-09-16 because nothing read it. A second attempt needs the reducer to
+   *  reconcile live-over-page — skipping atomic kinds (`system`, `tool_call`,
+   *  `tool_result`, `result`, `user_message`) on a content match, never the appending
+   *  ones (`stream`, `block`) — or one id space for events. */
   private streamCursors = new Map<string, string>();
 
   // --- batched tail application ---
@@ -319,14 +301,7 @@ export class SyncEngine {
     // that, because IndexedDB structured-clones its argument on the main thread. See
     // SessionCache.scheduleTurnsWrite.
     const model = this.store.getState().turnsBySession.get(sessionId);
-    // The resume point during a live stream is simply the last frame received — the
-    // same id the server would hand back on `Last-Event-ID`. Cached with the model so a
-    // reload resumes where the stream got to rather than replaying the turn from its
-    // start.
-    if (model) {
-      const cursor = Number(this.streamCursors.get(sessionId));
-      this.cache.scheduleTurnsWrite(model, Number.isFinite(cursor) ? cursor : undefined);
-    }
+    if (model) this.cache.scheduleTurnsWrite(model);
   }
 
   private lastEventIdFor(sessionId: string): string | undefined {
@@ -456,9 +431,9 @@ export class SyncEngine {
       return;
     }
     const model = resp.model;
-    void this.cache.putTurns(model, resp.stream?.head);
+    void this.cache.putTurns(model);
     if (this.store.getState().activeId === sessionId) {
-      this.store.getState().actions.setTurns(sessionId, model, { streamHead: resp.stream?.head });
+      this.store.getState().actions.setTurns(sessionId, model);
     }
   }
 }

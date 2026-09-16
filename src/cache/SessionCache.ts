@@ -8,7 +8,7 @@ import type { SessionSummary, TurnModel, Validator } from '../net/types.js';
 // TRUTH (the SyncEngine reconciles).
 
 const DB_NAME = 'chat-core';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 /** A cached list row: the summary plus the updatedAt used for LRU eviction. */
 export interface CachedListRow {
@@ -31,17 +31,6 @@ interface ChatCoreDB extends DBSchema {
     key: string; // sessionId
     value: Validator & { sessionId: string };
   };
-  /** Where each cached session's event stream can be resumed from.
-   *
-   *  ITS OWN STORE, deliberately, rather than another field on `validators`. A
-   *  `Validator` carries log-store ids and this carries llm-bridge-server ids; the two
-   *  number the same events independently, and putting both in one record is exactly the
-   *  confusion that once made every reconnect resume from a number the server could not
-   *  interpret. Separate stores make reaching for the wrong one take effort. */
-  streamResume: {
-    key: string; // sessionId
-    value: { sessionId: string; head: number };
-  };
 }
 
 /** Everything hydrated from the cache on boot, for an instant first paint. */
@@ -49,10 +38,6 @@ export interface HydratedCache {
   list: SessionSummary[];
   turns: Map<string, TurnModel>;
   validators: Map<string, Validator>;
-  /** Where each cached session's event stream can be resumed from. A session with no
-   *  entry here is opened without a resume point — the server then replays its current
-   *  turn, which is correct and merely slower. */
-  streamResume: Map<string, number>;
 }
 
 export class SessionCache {
@@ -66,7 +51,7 @@ export class SessionCache {
   /** Models waiting to be written, by session id. At most one per session. */
   private readonly queuedTurnWrites = new Map<
     string,
-    { model: TurnModel; streamHead?: number; timer: ReturnType<typeof setTimeout> }
+    { model: TurnModel; timer: ReturnType<typeof setTimeout> }
   >();
 
   private dbPromise: Promise<IDBPDatabase<ChatCoreDB>> | null = null;
@@ -97,8 +82,12 @@ export class SessionCache {
           if (!db.objectStoreNames.contains('validators')) {
             db.createObjectStore('validators', { keyPath: 'sessionId' });
           }
-          if (!db.objectStoreNames.contains('streamResume')) {
-            db.createObjectStore('streamResume', { keyPath: 'sessionId' });
+          // Version 3 drops the stream resume points version 2 stored. Nothing read
+          // them: resuming a stream from a page was withdrawn on 2026-08-27 (see
+          // SyncEngine.streamCursors), and the store only grew.
+          // Typed as a plain string: the schema no longer names this store.
+          if ((db.objectStoreNames as DOMStringList).contains('streamResume')) {
+            (db as unknown as IDBDatabase).deleteObjectStore('streamResume');
           }
         },
       });
@@ -153,30 +142,19 @@ export class SessionCache {
 
   // --- turns ---
 
-  /**
-   * @param streamHead where this session's event stream can be resumed from, if known.
-   *   Cached so a session painted from disk on the next boot still opens its stream with
-   *   a resume point instead of having the whole current turn replayed at it. A STALE
-   *   head is safe and a missing one is safe; both resume earlier than necessary and
-   *   replay events the model already holds, which the reducer folds idempotently. Only
-   *   a head that is too HIGH could skip content, and nothing here can produce one — it
-   *   is only ever written alongside the model it was read with.
-   */
-  async putTurns(model: TurnModel, streamHead?: number): Promise<void> {
+  async putTurns(model: TurnModel): Promise<void> {
     if (!this.enabled) return;
     const db = await this.db();
     // One transaction, so a transcript never lands without the validator row
     // `turnKeys` reads its timestamp from.
-    const tx = db.transaction(['turns', 'validators', 'streamResume'], 'readwrite');
+    const tx = db.transaction(['turns', 'validators'], 'readwrite');
     await Promise.all([
       tx.objectStore('turns').put(model),
       tx.objectStore('validators').put({ sessionId: model.sessionId, ...model.validator }),
-      streamHead !== undefined
-        ? tx.objectStore('streamResume').put({ sessionId: model.sessionId, head: streamHead })
-        : Promise.resolve(),
       tx.done,
     ]);
   }
+
 
   /**
    * Write this model to the cache SOON, coalescing with any write already queued for
@@ -199,22 +177,21 @@ export class SessionCache {
    * At most one write per session per `TURNS_WRITE_COALESCE_MS`, and it is always the
    * NEWEST model — a later call replaces the queued value rather than adding a write.
    */
-  scheduleTurnsWrite(model: TurnModel, streamHead?: number): void {
+  scheduleTurnsWrite(model: TurnModel): void {
     if (!this.enabled) return;
     const queued = this.queuedTurnWrites.get(model.sessionId);
     if (queued) {
       // A timer is already running for this session: keep it, take the newer model.
       // Restarting the timer instead would let a busy stream defer the write forever.
       queued.model = model;
-      if (streamHead !== undefined) queued.streamHead = streamHead;
       return;
     }
     const timer = setTimeout(() => {
       const pending = this.queuedTurnWrites.get(model.sessionId);
       this.queuedTurnWrites.delete(model.sessionId);
-      if (pending) void this.putTurns(pending.model, pending.streamHead);
+      if (pending) void this.putTurns(pending.model);
     }, SessionCache.TURNS_WRITE_COALESCE_MS);
-    this.queuedTurnWrites.set(model.sessionId, { model, streamHead, timer });
+    this.queuedTurnWrites.set(model.sessionId, { model, timer });
   }
 
   /** Write every queued model now. Called when a stream ends, so the last state of a
@@ -224,7 +201,7 @@ export class SessionCache {
     const queued = [...this.queuedTurnWrites.values()];
     this.queuedTurnWrites.clear();
     for (const entry of queued) clearTimeout(entry.timer);
-    await Promise.all(queued.map((entry) => this.putTurns(entry.model, entry.streamHead)));
+    await Promise.all(queued.map((entry) => this.putTurns(entry.model)));
   }
 
   async getTurns(sessionId: string): Promise<TurnModel | undefined> {
@@ -255,14 +232,13 @@ export class SessionCache {
 
   async hydrate(): Promise<HydratedCache> {
     if (!this.enabled) {
-      return { list: [], turns: new Map(), validators: new Map(), streamResume: new Map() };
+      return { list: [], turns: new Map(), validators: new Map() };
     }
     const db = await this.db();
-    const [listRows, turnRows, validatorRows, resumeRows] = await Promise.all([
+    const [listRows, turnRows, validatorRows] = await Promise.all([
       db.getAll('list'),
       db.getAll('turns'),
       db.getAll('validators'),
-      db.getAll('streamResume'),
     ]);
     const list = listRows
       .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0))
@@ -274,9 +250,7 @@ export class SessionCache {
       const { sessionId, ...validator } = v;
       validators.set(sessionId, validator);
     }
-    const streamResume = new Map<string, number>();
-    for (const r of resumeRows) streamResume.set(r.sessionId, r.head);
-    return { list, turns, validators, streamResume };
+    return { list, turns, validators };
   }
 
   /** Every list row's sessionId, oldest `updatedAt` first, for the list evictor.

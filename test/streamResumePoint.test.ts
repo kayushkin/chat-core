@@ -6,15 +6,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 // every byte of it content the page had delivered milliseconds earlier. Handed a resume
 // point, the same connects replay 0 frames and 0 bytes.
 //
-// The page now carries that resume point (`MessagesResponse.stream.head`) and the client
-// records it — but ⛔ DOES NOT SEND IT. Sending it doubled narration in the UI and was
-// withdrawn on 2026-08-27, the day it shipped; `SyncEngine.streamCursors` carries the
-// full account of why and what a second attempt has to fix first.
+// Every messages page carries that resume point (`MessagesResponse.stream.head`), and
+// ⛔ the client does NOT use it: sending it doubled narration in the UI and was withdrawn
+// on 2026-08-27, and the plumbing that stored it was deleted on 2026-09-16.
+// `SyncEngine.streamCursors` carries the account and what a second attempt must fix.
 //
-// So these cases pin the client half AS IT STANDS: the resume point is recorded, it is
-// forgotten when the transcript is evicted, it is not sent, and — the one that outlives
-// the withdrawal because it would silently lose transcript — it is never confused with
-// the log-store id space.
+// These cases pin what stands: the stream opens without a page-derived resume point,
+// and — the one that would silently lose transcript — never with a log-store id.
 
 const connectSessionSSE = vi.fn();
 const connectListSSE = vi.fn();
@@ -80,36 +78,19 @@ afterEach(() => {
 });
 
 describe('the page tells the stream where to resume', () => {
-  it('records the resume point the page reported', () => {
-    const store = createChatStore();
-    store.getState().actions.setTurns(SID, model(2094222), { streamHead: 17 });
-
-    expect(store.getState().streamResumeBySession.get(SID)).toBe(17);
-  });
-
-  it('records nothing when the server sent no resume point', () => {
-    // An older llm-bridge-server. Absent must stay absent — inventing a 0 would tell the
-    // stream to resume after row 0, which replays the session from its start.
-    const store = createChatStore();
-    store.getState().actions.setTurns(SID, model(500));
-
-    expect(store.getState().streamResumeBySession.has(SID)).toBe(false);
-  });
-
   it('does NOT yet open the stream with it — see the withdrawal note', async () => {
-    // ⛔ The resume point is recorded but deliberately not sent. Sending it doubled
+    // ⛔ The page's resume point is deliberately not sent. Sending it doubled
     // narration in the UI: the page can contain events ABOVE the head (written while the
     // server flushed), the stream re-delivers those, and page-vs-live entries never
     // collide by id — overlap is reconciled by CONTENT in `mergeMaterializedPage`, which
     // only runs when a page lands OVER a live tail. Resuming from a page inverts that
     // order. `SyncEngine.streamCursors` carries the full account.
     //
-    // This case exists so re-enabling it is a deliberate act with a red test to answer,
-    // rather than something that slips back in because the plumbing was all still there.
+    // This case exists so re-enabling it is a deliberate act with a red test to answer.
     connectSessionSSE.mockImplementation(() => noEvents());
     connectListSSE.mockImplementation(() => noEvents());
     const { store, engine: e } = engine();
-    store.getState().actions.setTurns(SID, model(2094222), { streamHead: 4242 });
+    store.getState().actions.setTurns(SID, model(2094222));
     store.getState().actions.setActive(SID);
 
     running = e;
@@ -129,7 +110,7 @@ describe('the page tells the stream where to resume', () => {
     connectSessionSSE.mockImplementation(() => noEvents());
     connectListSSE.mockImplementation(() => noEvents());
     const { store, engine: e } = engine();
-    store.getState().actions.setTurns(SID, model(2094222), { streamHead: 17 });
+    store.getState().actions.setTurns(SID, model(2094222));
     store.getState().actions.setActive(SID);
 
     running = e;
@@ -137,61 +118,5 @@ describe('the page tells the stream where to resume', () => {
     await new Promise((r) => setTimeout(r, 10));
 
     expect(resumePointSent()).not.toBe('2094222');
-  });
-
-  it('sends nothing for a head of 0 — a session with no stored events needs everything', async () => {
-    // Still true whenever the resume point is wired back up: `Last-Event-ID: 0` asks the
-    // server to resume AFTER row 0, which is a different request from asking for the
-    // stream from its start.
-    connectSessionSSE.mockImplementation(() => noEvents());
-    connectListSSE.mockImplementation(() => noEvents());
-    const { store, engine: e } = engine();
-    store.getState().actions.setTurns(SID, model(0), { streamHead: 0 });
-    store.getState().actions.setActive(SID);
-
-    running = e;
-    e.start();
-    await new Promise((r) => setTimeout(r, 10));
-
-    expect(resumePointSent()).toBeUndefined();
-  });
-
-  it('forgets the resume point when the transcript is evicted', () => {
-    // It describes a page that is no longer held. Left behind, a reopened session would
-    // resume from a point its refetched page may not cover.
-    const store = createChatStore({ turnRetentionBytes: 1, turnRetentionMinSessions: 1 });
-    const { actions } = store.getState();
-    const heavy = (id: string): TurnModel => ({
-      sessionId: id,
-      turns: [],
-      entries: {
-        [`${id}-e`]: {
-          id: `${id}-e`,
-          turnId: 't',
-          role: 'user',
-          kind: 'text',
-          source: 'harness',
-          eventId: 1,
-          ts: '2026-08-26T00:00:00Z',
-          text: 'x'.repeat(50_000),
-          duplicate: false,
-          primary: true,
-        },
-      },
-      validator: { maxEventId: 1, eventCount: 1, updatedAt: '2026-08-26T00:00:00Z' },
-      more: false,
-    });
-
-    actions.setActive('br_old');
-    actions.setTurns('br_old', heavy('br_old'), { streamHead: 99 });
-    expect(store.getState().streamResumeBySession.get('br_old')).toBe(99);
-
-    for (let n = 0; n < 4; n++) {
-      actions.setActive(`br_new_${n}`);
-      actions.setTurns(`br_new_${n}`, heavy(`br_new_${n}`), { streamHead: 100 + n });
-    }
-
-    expect(store.getState().turnsBySession.has('br_old')).toBe(false);
-    expect(store.getState().streamResumeBySession.has('br_old')).toBe(false);
   });
 });

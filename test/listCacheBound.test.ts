@@ -291,3 +291,33 @@ describe('turnKeys', () => {
     await cache.close();
   });
 });
+
+describe('database upgrade', () => {
+  beforeEach(() => {
+    globalThis.indexedDB = new IDBFactory();
+  });
+
+  it('version 3 drops the stream resume store version 2 wrote, and keeps the transcripts', async () => {
+    const { openDB } = await import('idb');
+    const v2 = await openDB('chat-core', 2, {
+      upgrade(db) {
+        db.createObjectStore('list', { keyPath: 'sessionId' }).createIndex('updatedAt', 'updatedAt');
+        db.createObjectStore('turns', { keyPath: 'sessionId' });
+        db.createObjectStore('validators', { keyPath: 'sessionId' });
+        db.createObjectStore('streamResume', { keyPath: 'sessionId' });
+      },
+    });
+    await v2.put('turns', model('br_kept', '2026-09-01T00:00:00Z'));
+    await v2.put('streamResume', { sessionId: 'br_kept', head: 42 });
+    v2.close();
+
+    const cache = new SessionCache(true);
+    const hydrated = await cache.hydrate();
+    expect(hydrated.turns.has('br_kept')).toBe(true);
+    await cache.close();
+
+    const v3 = await openDB('chat-core', 3);
+    expect([...v3.objectStoreNames]).not.toContain('streamResume');
+    v3.close();
+  });
+});
