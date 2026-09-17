@@ -90,8 +90,24 @@ export function ChatProvider(props: ChatProviderProps): JSX.Element {
 
   useEffect(() => {
     let cancelled = false;
-    void ctx.prefetcher.boot().then(() => {
-      if (!cancelled) ctx.sync.start();
+    // The live stream starts FIRST, and never waits on boot.
+    //
+    // It used to be `boot().then(() => sync.start())`, which made the session-list SSE —
+    // and with it `connState`, the sidebar and every composer's Send button — a hostage
+    // of the boot sequence. Boot's first act is to read the IndexedDB cache, and an
+    // upgrade blocked by another open tab never settles, so `start()` was simply never
+    // reached: `connState` stayed 'idle', the sidebar showed "Connecting…" over an empty
+    // list, and Send was disabled in every session with nothing in the console. There was
+    // no `.catch()` either, so a boot that REJECTED disabled the UI just as permanently.
+    //
+    // The ordering was never load-bearing: `start()` reads `activeId` off the store and
+    // subscribes to it, so a cache paint or a network page landing afterwards is picked
+    // up exactly as any later change is. Nothing in boot has to precede the stream.
+    ctx.sync.start();
+    // LOUD: a boot failure costs the cache paint and the first list page, which the
+    // stream then has to fill in. That is a real degradation and it gets reported.
+    void ctx.prefetcher.boot().catch((err: unknown) => {
+      if (!cancelled) console.error('chat-core: boot failed; running on the stream alone', err);
     });
     return () => {
       cancelled = true;

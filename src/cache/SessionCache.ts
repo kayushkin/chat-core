@@ -10,6 +10,18 @@ import type { SessionSummary, TurnModel, Validator } from '../net/types.js';
 const DB_NAME = 'chat-core';
 const DB_VERSION = 4;
 
+/** How long to wait for the IndexedDB connection before giving up on the cache.
+ *
+ *  A version upgrade that another tab BLOCKS never settles on its own: the open
+ *  request neither resolves nor rejects while an older connection is held open, and
+ *  `await`ing it hangs forever. That is not theoretical — bumping DB_VERSION to 4 with
+ *  eight dash tabs open hung `Prefetcher.boot()` on its first line, so `SyncEngine.start()`
+ *  was never reached, `connState` stayed 'idle', the sidebar rendered "Connecting…" over
+ *  an empty list and every composer's Send sat disabled. Nothing threw, so nothing was
+ *  reported. The cache is a first-paint optimization and must never be able to do that:
+ *  past this budget it is declared unavailable and the session runs from the network. */
+const DB_OPEN_TIMEOUT_MS = 3000;
+
 /** A cached list row: the summary plus the updatedAt used for LRU eviction. */
 export interface CachedListRow {
   sessionId: string;
@@ -56,17 +68,29 @@ export class SessionCache {
 
   private dbPromise: Promise<IDBPDatabase<ChatCoreDB>> | null = null;
   private readonly enabled: boolean;
+  /** Set when the connection could not be opened (blocked by another tab, or the
+   *  browser refused persistence). Every read then answers empty and every write is a
+   *  no-op, rather than each call rejecting into a `void` and raising an unhandled
+   *  rejection per write. Sticky for the page's life: an upgrade blocked by another tab
+   *  stays blocked until that tab goes, and retrying on every write would re-queue a
+   *  request that cannot be served. */
+  private unavailable = false;
+
+  /** Whether the cache can be used at all — configured on AND its connection open-able. */
+  private get usable(): boolean {
+    return this.enabled && !this.unavailable;
+  }
 
   constructor(enabled = true) {
     this.enabled = enabled;
   }
 
   private db(): Promise<IDBPDatabase<ChatCoreDB>> {
-    if (!this.enabled) {
-      return Promise.reject(new Error('SessionCache disabled'));
+    if (!this.usable) {
+      return Promise.reject(new Error('SessionCache unavailable'));
     }
     if (!this.dbPromise) {
-      this.dbPromise = openDB<ChatCoreDB>(DB_NAME, DB_VERSION, {
+      const open = openDB<ChatCoreDB>(DB_NAME, DB_VERSION, {
         // Each store is created only if absent, so this runs correctly both for a fresh
         // database and for one left at an earlier version by a previous build.
         upgrade(db, oldVersion, _newVersion, transaction) {
@@ -97,7 +121,58 @@ export class SessionCache {
             void transaction.objectStore('validators').clear();
           }
         },
+        /** Another tab is opening a NEWER version and this connection is what stands in
+         *  its way. Close it so that upgrade can run: a tab left open is otherwise enough
+         *  to hang every other tab's boot, which is exactly what happened on the bump to
+         *  version 4. This tab's cache goes unavailable for the rest of its life — its
+         *  schema is the old one — and it keeps working from the network until reloaded. */
+        blocking: () => {
+          console.warn(
+            `chat-core: closing the ${DB_NAME} cache — another tab is upgrading it past version ${DB_VERSION}. This tab now runs without its cache; reload to get it back.`,
+          );
+          this.unavailable = true;
+          void this.dbPromise?.then((db) => db.close()).catch(() => undefined);
+        },
+        /** This open is the one being blocked, by a tab still holding an older version.
+         *  LOUD: the request will not settle until that tab closes, and the silent wait
+         *  is what emptied the sidebar and greyed out Send with nothing in the console. */
+        blocked: (currentVersion, blockedVersion) => {
+          console.error(
+            `chat-core: the ${DB_NAME} cache cannot upgrade from version ${currentVersion} to ${blockedVersion} — another tab is holding the older version open. Close the other dash tabs and reload. Running without the cache until then.`,
+          );
+        },
+        /** The browser dropped the connection (storage reclaimed, or the tab was frozen).
+         *  Forget it so the next call opens a fresh one rather than using a dead handle. */
+        terminated: () => {
+          console.warn(`chat-core: the ${DB_NAME} cache connection was terminated by the browser.`);
+          this.dbPromise = null;
+        },
       });
+
+      // The open is raced against a budget rather than awaited outright: a BLOCKED
+      // upgrade never settles, and the cache is not allowed to be the reason boot hangs.
+      // The losing side of the race is not cancelled — IndexedDB has no such affordance —
+      // so a late open still completes and simply goes unused.
+      let timer: ReturnType<typeof setTimeout>;
+      this.dbPromise = Promise.race([
+        open.then((db) => {
+          clearTimeout(timer);
+          return db;
+        }),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => {
+            this.unavailable = true;
+            reject(
+              new Error(
+                `SessionCache: ${DB_NAME} did not open within ${DB_OPEN_TIMEOUT_MS}ms (an upgrade to version ${DB_VERSION} blocked by another tab does not settle). Continuing without the cache.`,
+              ),
+            );
+          }, DB_OPEN_TIMEOUT_MS);
+        }),
+      ]);
+      // The rejection is delivered to whoever calls db(); this keeps the stored promise
+      // from also counting as an unhandled rejection in its own right.
+      this.dbPromise.catch(() => undefined);
     }
     return this.dbPromise;
   }
@@ -109,7 +184,7 @@ export class SessionCache {
   // --- list ---
 
   async putList(summaries: SessionSummary[]): Promise<void> {
-    if (!this.enabled) return;
+    if (!this.usable) return;
     const db = await this.db();
     const tx = db.transaction('list', 'readwrite');
     for (const s of summaries) {
@@ -119,7 +194,7 @@ export class SessionCache {
   }
 
   async putSummary(summary: SessionSummary): Promise<void> {
-    if (!this.enabled) return;
+    if (!this.usable) return;
     const db = await this.db();
     await db.put('list', {
       sessionId: summary.sessionId,
@@ -129,7 +204,7 @@ export class SessionCache {
   }
 
   async getList(): Promise<SessionSummary[]> {
-    if (!this.enabled) return [];
+    if (!this.usable) return [];
     const db = await this.db();
     const rows = await db.getAll('list');
     return rows
@@ -138,7 +213,7 @@ export class SessionCache {
   }
 
   async deleteSession(sessionId: string): Promise<void> {
-    if (!this.enabled) return;
+    if (!this.usable) return;
     const db = await this.db();
     await Promise.all([
       db.delete('list', sessionId),
@@ -150,7 +225,7 @@ export class SessionCache {
   // --- turns ---
 
   async putTurns(model: TurnModel): Promise<void> {
-    if (!this.enabled) return;
+    if (!this.usable) return;
     const db = await this.db();
     // One transaction, so a transcript never lands without the validator row
     // `turnKeys` reads its timestamp from.
@@ -185,7 +260,7 @@ export class SessionCache {
    * NEWEST model — a later call replaces the queued value rather than adding a write.
    */
   scheduleTurnsWrite(model: TurnModel): void {
-    if (!this.enabled) return;
+    if (!this.usable) return;
     const queued = this.queuedTurnWrites.get(model.sessionId);
     if (queued) {
       // A timer is already running for this session: keep it, take the newer model.
@@ -212,7 +287,7 @@ export class SessionCache {
   }
 
   async getTurns(sessionId: string): Promise<TurnModel | undefined> {
-    if (!this.enabled) return undefined;
+    if (!this.usable) return undefined;
     const db = await this.db();
     return db.get('turns', sessionId);
   }
@@ -220,13 +295,13 @@ export class SessionCache {
   // --- validators ---
 
   async putValidator(sessionId: string, validator: Validator): Promise<void> {
-    if (!this.enabled) return;
+    if (!this.usable) return;
     const db = await this.db();
     await db.put('validators', { sessionId, ...validator });
   }
 
   async getValidator(sessionId: string): Promise<Validator | undefined> {
-    if (!this.enabled) return undefined;
+    if (!this.usable) return undefined;
     const db = await this.db();
     const row = await db.get('validators', sessionId);
     if (!row) return undefined;
@@ -238,7 +313,7 @@ export class SessionCache {
   // --- boot hydrate: everything, in one shot ---
 
   async hydrate(): Promise<HydratedCache> {
-    if (!this.enabled) {
+    if (!this.usable) {
       return { list: [], turns: new Map(), validators: new Map() };
     }
     const db = await this.db();
@@ -265,7 +340,7 @@ export class SessionCache {
    *  single summary — this is the store the bound exists to stop growing, and
    *  reading all of it to decide what to drop would defeat the point. */
   async listKeysOldestFirst(): Promise<string[]> {
-    if (!this.enabled) return [];
+    if (!this.usable) return [];
     const db = await this.db();
     return db.getAllKeysFromIndex('list', 'updatedAt');
   }
@@ -273,7 +348,7 @@ export class SessionCache {
   /** Drop list rows, keeping each session's turns and validator. Used by the
    *  list LRU; `deleteSession` is the one that drops all three. */
   async evictListRows(sessionIds: string[]): Promise<void> {
-    if (!this.enabled || sessionIds.length === 0) return;
+    if (!this.usable || sessionIds.length === 0) return;
     const db = await this.db();
     const tx = db.transaction('list', 'readwrite');
     for (const id of sessionIds) await tx.store.delete(id);
@@ -292,7 +367,7 @@ export class SessionCache {
    *  `putTurns` became one transaction. It reports an empty `updatedAt`, which sorts
    *  oldest, so it is the first thing evicted rather than a row nothing can reach. */
   async turnKeys(): Promise<{ sessionId: string; updatedAt: string }[]> {
-    if (!this.enabled) return [];
+    if (!this.usable) return [];
     const db = await this.db();
     const [ids, validators] = await Promise.all([
       db.getAllKeys('turns'),
@@ -307,15 +382,22 @@ export class SessionCache {
 
   /** Drop a session's turns + validator (keeps the list row). Used by the LRU. */
   async evictTurns(sessionId: string): Promise<void> {
-    if (!this.enabled) return;
+    if (!this.usable) return;
     const db = await this.db();
     await Promise.all([db.delete('turns', sessionId), db.delete('validators', sessionId)]);
   }
 
   async close(): Promise<void> {
     if (!this.dbPromise) return;
-    const db = await this.dbPromise;
-    db.close();
+    const pending = this.dbPromise;
     this.dbPromise = null;
+    // A connection that never opened — blocked by another tab, or timed out — is
+    // nothing to close, and unmounting the provider is not the place to re-raise that.
+    // It was already reported loudly by `db()`; here it only means there is no handle.
+    try {
+      (await pending).close();
+    } catch {
+      // No connection to close.
+    }
   }
 }

@@ -70,6 +70,17 @@ export interface PrefetcherConfig {
   sessionsPerPage?: number;
 }
 
+/** How long the cold cache paint may take before boot gives up on it and goes to the
+ *  network.
+ *
+ *  The cache is an optimization and boot is what the whole UI waits on, so this step is
+ *  bounded rather than trusted. `SessionCache` already bounds its own CONNECTION, but a
+ *  bound there only covers the failure that was diagnosed (an upgrade blocked by another
+ *  tab); this one covers the class — any read that does not come back, for any reason —
+ *  at the layer that actually holds up `prime()`. A late paint is discarded rather than
+ *  applied, so it can never land on top of fresher network rows. */
+const CACHE_PAINT_BUDGET_MS = 4000;
+
 export class Prefetcher {
   /** Default sessions per sidebar page. Mirrors the summary endpoint's own default
    *  so a boot that names no page size asks for exactly what the server would give. */
@@ -116,7 +127,17 @@ export class Prefetcher {
     if (!this.cache.isEnabled) return;
     const actions = this.store.getState().actions;
     try {
-      const hydrated = await this.cache.hydrate();
+      // Raced, not awaited: see CACHE_PAINT_BUDGET_MS. `null` means the budget won.
+      const hydrated = await Promise.race([
+        this.cache.hydrate(),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), CACHE_PAINT_BUDGET_MS)),
+      ]);
+      if (hydrated === null) {
+        console.warn(
+          `chat-core: the cache did not answer within ${CACHE_PAINT_BUDGET_MS}ms — painting from the network instead. If this repeats, another tab is holding an older version of the cache open.`,
+        );
+        return;
+      }
       // Bounded to one page, so the paint cannot show hundreds of rows and then
       // SHRINK back the moment the network's first page replaces them. The cached
       // list is sorted newest-first, so the head of it is the same window page one
@@ -127,8 +148,12 @@ export class Prefetcher {
       const painted = hydrated.list.slice(0, this.sessionsPerPage);
       if (painted.length > 0) actions.setSessions(painted);
       for (const [id, model] of hydrated.turns) actions.setTurns(id, model);
-    } catch {
-      // Cold cache / disabled — the network paint below covers it.
+    } catch (err) {
+      // Cold cache, disabled, or unavailable (an upgrade another tab is blocking —
+      // SessionCache.db bounds that wait rather than hanging on it). The network paint
+      // below covers all three; it is reported because a silent miss here reads as an
+      // empty account.
+      console.warn('chat-core: cache paint skipped', err);
     }
   }
 
@@ -190,7 +215,12 @@ export class Prefetcher {
     // The list bound is the page size, not a constant: the cold paint reads one
     // page, so one page is exactly what is worth keeping.
     if (this.cache.isEnabled) {
-      void enforceCacheBound(this.cache, this.cacheLimit, this.sessionsPerPage);
+      // Reported rather than left to become an unhandled rejection: an eviction pass that
+      // cannot run means the cache grows without bound, which is worth knowing about even
+      // though it costs the user nothing right now.
+      void enforceCacheBound(this.cache, this.cacheLimit, this.sessionsPerPage).catch(
+        (err: unknown) => console.warn('chat-core: cache eviction pass failed', err),
+      );
     }
   }
 
