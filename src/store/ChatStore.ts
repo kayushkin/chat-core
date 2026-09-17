@@ -1466,6 +1466,7 @@ function appendOptimistic(tail: TailState, text: string, clientId: string): Tail
     source: 'harness',
     eventId: maxEventId + 0.5, // orders after the last real event, before the next
     ts: nowIso,
+    origin: 'live',
     text,
     duplicate: false,
     primary: true,

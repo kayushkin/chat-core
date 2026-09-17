@@ -297,7 +297,7 @@ describe('database upgrade', () => {
     globalThis.indexedDB = new IDBFactory();
   });
 
-  it('version 3 drops the stream resume store version 2 wrote, and keeps the transcripts', async () => {
+  it('drops the stream resume store version 2 wrote', async () => {
     const { openDB } = await import('idb');
     const v2 = await openDB('chat-core', 2, {
       upgrade(db) {
@@ -307,17 +307,46 @@ describe('database upgrade', () => {
         db.createObjectStore('streamResume', { keyPath: 'sessionId' });
       },
     });
-    await v2.put('turns', model('br_kept', '2026-09-01T00:00:00Z'));
     await v2.put('streamResume', { sessionId: 'br_kept', head: 42 });
     v2.close();
 
     const cache = new SessionCache(true);
-    const hydrated = await cache.hydrate();
-    expect(hydrated.turns.has('br_kept')).toBe(true);
+    await cache.hydrate();
     await cache.close();
 
-    const v3 = await openDB('chat-core', 3);
-    expect([...v3.objectStoreNames]).not.toContain('streamResume');
+    const upgraded = await openDB('chat-core');
+    expect([...upgraded.objectStoreNames]).not.toContain('streamResume');
+    upgraded.close();
+  });
+
+  it('version 4 empties transcripts written before entries carried `origin`, and keeps the list', async () => {
+    // A pre-stamp transcript holds live rows nothing marks as live; read back, the merge
+    // takes them for page history and draws the prompt twice (liveReplayCacheRoundTrip).
+    const { openDB } = await import('idb');
+    const v3 = await openDB('chat-core', 3, {
+      upgrade(db) {
+        db.createObjectStore('list', { keyPath: 'sessionId' }).createIndex('updatedAt', 'updatedAt');
+        db.createObjectStore('turns', { keyPath: 'sessionId' });
+        db.createObjectStore('validators', { keyPath: 'sessionId' });
+      },
+    });
+    const unstamped = model('br_unstamped', '2026-09-01T00:00:00Z');
+    await v3.put('turns', unstamped);
+    await v3.put('validators', { sessionId: 'br_unstamped', validator: unstamped.validator });
+    await v3.put('list', { sessionId: 'br_unstamped', summary: { sessionId: 'br_unstamped' }, updatedAt: '2026-09-01T00:00:00Z' });
     v3.close();
+
+    const cache = new SessionCache(true);
+    const hydrated = await cache.hydrate();
+    expect(hydrated.turns.has('br_unstamped')).toBe(false);
+    expect(hydrated.validators.has('br_unstamped')).toBe(false);
+    expect(hydrated.list.map((s) => s.sessionId)).toContain('br_unstamped');
+
+    // And a transcript written by THIS build survives the next open.
+    await cache.putTurns(model('br_stamped', '2026-09-17T00:00:00Z'));
+    await cache.close();
+    const reopened = new SessionCache(true);
+    expect((await reopened.hydrate()).turns.has('br_stamped')).toBe(true);
+    await reopened.close();
   });
 });

@@ -76,6 +76,10 @@ export interface EntryUsage {
   cacheWriteTokens?: number;
 }
 
+/** Where the client got an entry: folded from the live stream (or born in the
+ *  client, as the optimistic prompt is), or read from a server page. */
+export type EntryOrigin = 'live' | 'page';
+
 export interface Entry {
   id: string; // stable per-entry key (message_id + role, or synthesized from event_id)
   turnId: string; // groups entries into a turn
@@ -84,6 +88,16 @@ export interface Entry {
   source: EntrySource;
   eventId: number; // the log-store event row id — monotonic, used for ordering + resume
   ts: string; // RFC3339 + offset
+
+  /** Where this entry came from. The CLIENT stamps it — `'live'` where the fold or the
+   *  optimistic send creates the entry, `'page'` where a server page is merged in; the
+   *  server never sends it. It is a field on the entry, not a lookup in the tail's
+   *  frame-id map, because the entry outlives that map: every streamed batch writes
+   *  the model to IndexedDB and a reload reads it back with the map empty. Judged by
+   *  the map, a cached live prompt (`msg_…_user`) looked like old history, the merge
+   *  kept it beside the page's copy (`e_…`), and the prompt was drawn again after the
+   *  answer (measured 2026-09-17 on br_1789665111110648544). */
+  origin?: EntryOrigin;
 
   /** Canonical bridge-assigned id of the chat message this entry belongs to
    *  (`message_id` on every event; `messageId` on the materialized wire). The

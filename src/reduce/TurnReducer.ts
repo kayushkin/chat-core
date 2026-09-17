@@ -155,6 +155,11 @@ export function initTailState(sessionId: string, model?: TurnModel): TailState {
   };
   const turnIndex = new Map<string, number>();
   base.turns.forEach((t, i) => turnIndex.set(t.id, i));
+  // The model is a server page, or a cached model: pages plus live rows that kept
+  // their own stamp. Whatever carries none came off a page.
+  const stamped: Record<string, Entry> = {};
+  for (const [id, entry] of Object.entries(base.entries)) stamped[id] = stampedAsPage(entry);
+  const stampedBase: TurnModel = { ...base, entries: stamped };
   // ⚠️ Deliberately EMPTY. These maps hold STREAM frame ids; the model's
   // eventIds are log-store ids — a different numbering of the same events.
   // Seeding seenEventIds from the page used to swallow any live frame whose
@@ -162,11 +167,23 @@ export function initTailState(sessionId: string, model?: TurnModel): TailState {
   // faces of the two-id-space bug.
   return {
     sessionId,
-    model: base,
+    model: stampedBase,
     turnIndex,
     entryEventIds: new Map<string, Set<number>>(),
     seenEventIds: new Set<number>(),
   };
+}
+
+/** Was this entry folded from the live stream (or born in the client)? Reads the
+ *  stamp the fold writes — see `Entry.origin` for why it is not the frame-id map. */
+export function isLiveEntry(entry: Entry): boolean {
+  return entry.origin === 'live';
+}
+
+/** Stamp an entry a server page delivered. An entry that already says where it came
+ *  from keeps its object, so a cached live row stays live and row memos keep hitting. */
+function stampedAsPage(entry: Entry): Entry {
+  return entry.origin ? entry : { ...entry, origin: 'page' };
 }
 
 /** Trim + collapse whitespace, the correlation form for optimistic-user matching.
@@ -214,7 +231,8 @@ function sameMaterializedEntry(held: Entry, incoming: Entry): boolean {
  * share is the canonical identifiers ON the events: `turnId`, `messageId`,
  * `tool_id`, `taskId`, the timestamp. Those are the join:
  *
- *  - a live-folded entry (non-empty stream-id set) is superseded when the page
+ *  - a live entry (`origin: 'live'` — the stamp, never the stream-id set, which a
+ *    cache round trip empties) is superseded when the page
  *    REPORTS its content unit: same messageId+role+kind for message content;
  *    same tool_id (call, and result when the live entry holds one) for tools;
  *    same subtype+correlator for task system events; same kind+subtype+second
@@ -224,7 +242,7 @@ function sameMaterializedEntry(held: Entry, incoming: Entry): boolean {
  *    the materialized copy is structurally unable to carry the text;
  *  - an OPTIMISTIC user row is superseded when the page reports the real prompt
  *    (client request id, else normalized text);
- *  - a previously-materialized entry (empty stream-id set) not in this page is
+ *  - a page entry (`origin: 'page'`) not in this page is
  *    off-window history and stays; one in the page takes the page's version,
  *    reusing the held object when the content is unchanged so memos keep hitting.
  *
@@ -343,8 +361,7 @@ export function mergeMaterializedPage(
       liveHeldIds.add(id); // client-born: orders with the live tail, never as history
       continue;
     }
-    const liveFolded = (prior.entryEventIds.get(id)?.size ?? 0) > 0;
-    if (!liveFolded) {
+    if (!isLiveEntry(held)) {
       // Previously-materialized, off this page's window: history, kept as-is.
       keptHeldIds.push(id);
       continue;
@@ -361,7 +378,7 @@ export function mergeMaterializedPage(
   for (const id of Object.keys(incoming.entries)) {
     const inc = incoming.entries[id]!;
     const held = prior.model.entries[id];
-    entries[id] = held && sameMaterializedEntry(held, inc) ? held : inc;
+    entries[id] = held && sameMaterializedEntry(held, inc) ? held : stampedAsPage(inc);
   }
   for (const id of keptHeldIds) entries[id] = prior.model.entries[id]!;
 
@@ -658,11 +675,11 @@ function applyPayload(prev: Entry, ev: WireEvent): Entry {
  * Re-runs the OTel annotator so the collapsed/raw views stay correct.
  */
 /** True when a stream frame re-delivers content the model already holds as a
- *  MATERIALIZED entry — the cross-space replay the numeric seen-set cannot catch
+ *  entry its own frames did not build — the cross-space replay the numeric seen-set cannot catch
  *  (the frame's id is a bridge row, the page's eventIds are log-store rows).
  *  Happens on every cold open: the page is fetched, then the SSE connects with
  *  no cursor and the server replays the current turn — the same events the page
- *  just reported. The match is the shared content identity, materialized-only —
+ *  just reported. The match is the shared content identity, against
  *  an entry with no folded stream ids, whether the page's own (`e_<id>`) or a
  *  live-keyed one (`${messageId}_${kind}`) that the cache handed back on boot. A
  *  live entry this tail built itself is reachable by its own key and is never
@@ -670,21 +687,26 @@ function applyPayload(prev: Entry, ev: WireEvent): Entry {
  *  fresh second block of the same message legitimately folds), same tool_id for tools.
  *  Bookkeeping frames (no message id, no tool id) always fold — their
  *  materialized twins are hidden, so nothing doubles on screen. */
-function materializedCopyExists(
+function heldCopyExists(
   state: TailState,
   ev: WireEvent,
   kind: EntryKind,
   role: Role,
 ): boolean {
   const data = ev.data;
-  const isMaterialized = (e: Entry) => (state.entryEventIds.get(e.id)?.size ?? 0) === 0;
+  // ⚠️ The frame-id map on purpose, NOT `Entry.origin`. The question here is whether
+  // THIS tail's frames built the entry. A live row the cache handed back is `origin:
+  // 'live'` and still must count as already held, or the replayed frame appends a
+  // second copy of the answer (hydratedTailReplay.test.ts). The merge asks the other
+  // question — where did the entry come from — and that one the stamp answers.
+  const heldBeforeThisTailsFrames = (e: Entry) => (state.entryEventIds.get(e.id)?.size ?? 0) === 0;
 
   if (ev.type === 'tool_call' || ev.type === 'tool_result') {
     const toolId = data.tool_call?.tool_id || data.tool_result?.tool_id;
     if (!toolId) return false;
     const wantKind = ev.type;
     for (const e of Object.values(state.model.entries)) {
-      if (e.kind !== wantKind || !isMaterialized(e)) continue;
+      if (e.kind !== wantKind || !heldBeforeThisTailsFrames(e)) continue;
       const raw = e.raw as
         | { tool_call?: { tool_id?: string }; tool_result?: { tool_id?: string } }
         | undefined;
@@ -706,7 +728,7 @@ function materializedCopyExists(
 
   for (const e of Object.values(state.model.entries)) {
     if (e.messageId !== msgId || e.role !== role || e.kind !== kind) continue;
-    if (!isMaterialized(e)) continue;
+    if (!heldBeforeThisTailsFrames(e)) continue;
     if (text === undefined) return true;
     if (ev.type === 'user_message') {
       if (normalizeText(e.text ?? '') === normalizeText(text)) return true;
@@ -737,16 +759,14 @@ export function applyEvent(state: TailState, ev: WireEvent): TailState {
 export function annotateTail(state: TailState): TailState {
   return {
     ...state,
-    model: { ...state.model, entries: annotatedRecord(state.model.entries, state.entryEventIds) },
+    model: { ...state.model, entries: annotatedRecord(state.model.entries) },
   };
 }
 
-function annotatedRecord(
-  entries: Record<string, Entry>,
-  entryEventIds: ReadonlyMap<string, ReadonlySet<number>>,
-): Record<string, Entry> {
-  // A materialized entry is one no live frame ever folded into — the page's own.
-  const isMaterialized = (e: Entry) => (entryEventIds.get(e.id)?.size ?? 0) === 0;
+function annotatedRecord(entries: Record<string, Entry>): Record<string, Entry> {
+  // A materialized entry is the page's own — judged by the entry's stamp, which
+  // survives a cache round trip, not by this tail's frame-id map, which does not.
+  const isMaterialized = (e: Entry) => !isLiveEntry(e);
   const annotated = annotateOTelDuplicates(Object.values(entries));
   const out: Record<string, Entry> = {};
   for (const a of annotated) {
@@ -818,7 +838,7 @@ function foldEvent(state: TailState, ev: WireEvent, annotate: boolean): TailStat
   // reload, which is what was measured on br_1788973449319671731 (2026-09-10).
   const existingIsHydrated =
     existing !== undefined && (state.entryEventIds.get(entryId)?.size ?? 0) === 0;
-  if ((!existing || existingIsHydrated) && materializedCopyExists(state, ev, kind, role)) {
+  if ((!existing || existingIsHydrated) && heldCopyExists(state, ev, kind, role)) {
     // A cross-space replay: fold nothing, but record the frame id so the check
     // is O(1) next time and a later literal replay short-circuits at the top.
     if (!evId) return state;
@@ -838,6 +858,7 @@ function foldEvent(state: TailState, ev: WireEvent, annotate: boolean): TailStat
       source: sourceOf(ev.data),
       eventId: evId,
       ts,
+      origin: 'live',
       duplicate: false,
       primary: true,
       // A tool event with no tool_id is keyed by event id, so nothing can ever
@@ -888,7 +909,7 @@ function foldEvent(state: TailState, ev: WireEvent, annotate: boolean): TailStat
   // the whole model — a thousand of them on a real session — and this rebuilds every one.
   // Skipped for a batched fold, which annotates once at the end instead; see
   // `annotateTail`.
-  const annotatedEntries = annotate ? annotatedRecord(entries, entryEventIds) : entries;
+  const annotatedEntries = annotate ? annotatedRecord(entries) : entries;
 
   const maxEventId = Math.max(state.model.validator.maxEventId, evId);
   // Spread the prior model rather than re-listing its fields. This used to be an

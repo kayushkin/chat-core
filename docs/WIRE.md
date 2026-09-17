@@ -11,6 +11,9 @@ the Go structs must serialize to exactly these JSON shapes. Keep both in lockste
 - Nothing is lossy. Dedup is expressed as annotation on `Entry` (`duplicate`, `primary`,
   `groupId`), never by omitting an event. The raw Timeline view must be able to reconstruct
   every stored event from the payload.
+- `Entry.origin` (`live` | `page`) is **not on the wire.** The client stamps it — the fold and
+  the optimistic send write `live`, merging a server page writes `page` — and it is stored in
+  the IndexedDB cache with the entry. A server must not send it.
 
 ## Endpoints (all additive; existing endpoints unchanged)
 

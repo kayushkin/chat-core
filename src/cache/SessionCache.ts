@@ -8,7 +8,7 @@ import type { SessionSummary, TurnModel, Validator } from '../net/types.js';
 // TRUTH (the SyncEngine reconciles).
 
 const DB_NAME = 'chat-core';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 
 /** A cached list row: the summary plus the updatedAt used for LRU eviction. */
 export interface CachedListRow {
@@ -69,7 +69,7 @@ export class SessionCache {
       this.dbPromise = openDB<ChatCoreDB>(DB_NAME, DB_VERSION, {
         // Each store is created only if absent, so this runs correctly both for a fresh
         // database and for one left at an earlier version by a previous build.
-        upgrade(db) {
+        upgrade(db, oldVersion, _newVersion, transaction) {
           if (!db.objectStoreNames.contains('list')) {
             db.createObjectStore('list', { keyPath: 'sessionId' }).createIndex(
               'updatedAt',
@@ -88,6 +88,13 @@ export class SessionCache {
           // Typed as a plain string: the schema no longer names this store.
           if ((db.objectStoreNames as DOMStringList).contains('streamResume')) {
             (db as unknown as IDBDatabase).deleteObjectStore('streamResume');
+          }
+          // Version 4 empties the cached transcripts a build before `Entry.origin` wrote.
+          // Their live rows carry no stamp, so the merge would read them as page history
+          // and draw the prompt twice one last time. The next page fetch refills them.
+          if (oldVersion > 0 && oldVersion < 4) {
+            void transaction.objectStore('turns').clear();
+            void transaction.objectStore('validators').clear();
           }
         },
       });
