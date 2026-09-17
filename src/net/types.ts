@@ -32,6 +32,66 @@ export interface SessionSummary {
   /** The managing session in the team tree (bridge session id); empty = top-level.
    *  A promoted subagent session carries its parent here. */
   managerSessionId: string;
+  /** Everything the session is doing right now, as llm-bridge-server decided it,
+   *  with the event row id it is current as of. `state` above is `status.state` —
+   *  the store keeps the two equal (`store/sessionStatus.ts`). Optional on the type
+   *  only because a row cached before 2026-09-17 has none; the store fills it in on
+   *  the way in, so a row READ from the store always has one. */
+  status?: SessionStatus;
+}
+
+/**
+ * A session's whole status — llm-bridge `msg.SessionStatus`, field for field and in
+ * its own snake_case.
+ *
+ * ⚠️ Deliberately NOT re-keyed to camelCase like the types around it. The same JSON
+ * arrives four ways — on a `session_status` event, on a session-list upsert, on a
+ * `/sessions/summary` row and out of the IndexedDB cache — and a converter would have
+ * to sit on all four. One shape with no converter is one thing that cannot drift.
+ *
+ * This replaced three client-side derivations (the live activity fold, the
+ * transcript-derived activity, and the tool/subagent scan of the last turn) that
+ * each rebuilt part of this from a transcript copy, and could not say which of two
+ * disagreeing facts was newer. `as_of` can: see `newerSessionStatus`.
+ */
+export interface SessionStatus {
+  state: string;
+  /** `thinking` or `text` while `state` is `model_generating`; absent otherwise. */
+  generating?: 'thinking' | 'text';
+  /** Tool calls issued and not yet answered, oldest first. */
+  tools?: SessionStatusTool[];
+  /** Harness tasks (subagents, backgrounded shells) still running, oldest first. */
+  subagents?: SessionStatusSubagent[];
+  /** The provider's last rate-limit verdict when it was not `allowed`. */
+  rate_limit?: { status: string; limit_type?: string; resets_at?: number };
+  /** RFC3339. Absent between turns. */
+  turn_started_at?: string;
+  /** RFC3339. When `state` last changed. */
+  changed_at?: string;
+  /** The llm-bridge-server event row id this status is current as of. Every status
+   *  the server emits has its own, so of two statuses for one session the larger
+   *  `as_of` is the newer. 0 = synthesized from a bare `state` (an old cached row). */
+  as_of: number;
+}
+
+export interface SessionStatusTool {
+  tool_id: string;
+  name: string;
+  /** One human line for the call's input (`cat thing.txt`), written by the server. */
+  summary?: string;
+  started_at: string;
+}
+
+export interface SessionStatusSubagent {
+  task_id: string;
+  /** `local_agent`, `local_bash`, … — a backgrounded shell is not an agent. */
+  task_type?: string;
+  subagent_type?: string;
+  description?: string;
+  last_tool_name?: string;
+  started_at: string;
+  /** The task's own bridge session, when the server promoted one. */
+  session_id?: string;
 }
 
 /** Cheap staleness currency. A cached TurnModel is fresh iff its validator equals the

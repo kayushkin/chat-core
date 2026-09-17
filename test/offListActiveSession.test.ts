@@ -2,8 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createChatStore } from '../src/store/ChatStore.js';
 import {
   activeSummary,
-  activeSummaryEffective,
-  effectiveState,
+  selectSessionStatus,
   sessionSummaryFor,
 } from '../src/store/selectors.js';
 import type { ManagedSessionDetail, SessionSummary } from '../src/net/types.js';
@@ -58,8 +57,8 @@ describe('active session outside the loaded list — summary survives the list r
     // The refresh: a full page of OTHER sessions, exactly what a live sidebar loads.
     s.getState().actions.setSessions([summary({ sessionId: 'br_recent' })]);
     expect(activeSummary(s.getState())?.displayName).toBe('missing CC message');
-    expect(activeSummaryEffective(s.getState())?.displayName).toBe('missing CC message');
-    expect(effectiveState(s.getState(), 'br_old')).toBe('idle');
+    expect(activeSummary(s.getState())?.displayName).toBe('missing CC message');
+    expect(selectSessionStatus(s.getState(), 'br_old')?.state).toBe('idle');
   });
 
   it('a list row wins over the cached detail while it exists — live upserts stay fresh', () => {

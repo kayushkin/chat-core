@@ -123,14 +123,16 @@ describe('a finished response is what moves a row', () => {
   });
 });
 
-describe('the tail wire — the ending the summary can strand (F1)', () => {
-  it('a result event on the live tail lifts the session, with no summary transition', () => {
+describe('the tail wire — a turn ending heard on the session\'s own stream', () => {
+  it('a session_status that ends the turn lifts the session, before any list upsert says so', () => {
     const store = seedThree(['idle', 'idle', 'tool_running']);
-    // The summary stays pinned at tool_running forever — the F1 strand. The
-    // transcript still carries the ending, and it is the only wire that does.
+    // The open session's stream usually delivers the ending before the list stream
+    // does. It must move the row then, not when the upsert catches up.
     store.getState().actions.applyTailEvent(
       'c',
-      ev('result', '2026-08-30T13:00:00+00:00', { result: { text: 'done' } }),
+      ev('session_status', '2026-08-30T13:00:00+00:00', {
+        status: { state: 'idle', changed_at: '2026-08-30T13:00:00+00:00', as_of: 900 },
+      }),
     );
     expect(orderOf(store)).toEqual(['c', 'a', 'b']);
   });

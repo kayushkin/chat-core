@@ -99,6 +99,7 @@ function summaryFromManaged(m: ManagedSessionWire): SessionSummary {
     createdAt: m.created_at ?? '',
     harnessSessionId: m.harness_session_id ?? '',
     managerSessionId: m.manager_session_id ?? '',
+    ...(m.status ? { status: m.status } : {}),
   };
 }
 
@@ -108,11 +109,11 @@ export async function* connectListSSE(
   fetchFn: typeof fetch,
   basePath: string,
   signal?: AbortSignal,
-): AsyncGenerator<SessionListFrame & { summary?: SessionSummary }> {
-  const res = await fetchFn(`${basePath}/session-events`, {
-    headers: { Accept: 'text/event-stream' },
-    signal,
-  });
+  lastEventId?: string,
+): AsyncGenerator<SessionListFrame & { summary?: SessionSummary; id?: string }> {
+  const headers: Record<string, string> = { Accept: 'text/event-stream' };
+  if (lastEventId) headers['Last-Event-ID'] = lastEventId;
+  const res = await fetchFn(`${basePath}/session-events`, { headers, signal });
   if (!res.ok) throw new Error(`list SSE connect failed: ${res.status} ${res.statusText}`);
   if (!res.body) throw new Error('No response body');
 
@@ -126,14 +127,19 @@ export async function* connectListSSE(
       }
     }
     if (frame.type === 'hello') {
-      yield { type: 'hello' };
+      // `resume` is the server's answer to the Last-Event-ID we sent: `replayed`
+      // (every missed frame follows), `gap` (more were missed than it keeps — the
+      // caller must re-read the sessions), or `none` (we sent no id). An older
+      // server sends no field, which reads as `none`.
+      const resume = data.resume === 'replayed' || data.resume === 'gap' ? data.resume : 'none';
+      yield { type: 'hello', resume };
     } else if (frame.type === 'upsert' && data.session) {
       const wire = data.session as ManagedSessionWire;
-      yield { type: 'upsert', session: wire, summary: summaryFromManaged(wire) };
+      yield { type: 'upsert', session: wire, summary: summaryFromManaged(wire), ...(frame.id ? { id: frame.id } : {}) };
     } else if (frame.type === 'delete' && data.session_id) {
-      yield { type: 'delete', sessionId: String(data.session_id) };
+      yield { type: 'delete', sessionId: String(data.session_id), ...(frame.id ? { id: frame.id } : {}) };
     } else if (frame.type === 'signal' && data.session_id) {
-      yield { type: 'signal', sessionId: String(data.session_id) };
+      yield { type: 'signal', sessionId: String(data.session_id), ...(frame.id ? { id: frame.id } : {}) };
     }
   }
 }

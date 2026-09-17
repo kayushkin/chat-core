@@ -24,9 +24,8 @@ export {
   useContextUsage,
   usePendingPermissions,
   useBudgetHalt,
-  useActivity,
-  useLiveStatus,
-  type LiveStatus,
+  useSessionStatus,
+  useInProgressTodo,
   usePrefetch,
 } from './react/hooks.js';
 export {
@@ -98,6 +97,9 @@ export {
 // ---- Wire types (docs/WIRE.md, src/net/types.ts) ----
 export type {
   SessionSummary,
+  SessionStatus,
+  SessionStatusTool,
+  SessionStatusSubagent,
   Validator,
   EntrySource,
   EntryKind,
@@ -202,20 +204,12 @@ export {
   HOOK_PHASE_COMPLETED,
 } from './store/pendingHooks.js';
 export {
-  activityFromEvent,
-  activityFromModel,
-  sameActivity,
-  IDLE_ACTIVITY,
-  type ActivityKind,
-} from './store/activity.js';
-export {
-  liveStatusFromModel,
-  joinSubagentSessions,
-  toolCallSummary,
-  type LiveTurnStatus,
-  type LiveToolCall,
-  type LiveSubagent,
-} from './store/liveStatus.js';
+  newerSessionStatus,
+  statusFromBareState,
+  statusOf,
+  withNewestStatus,
+} from './store/sessionStatus.js';
+export { inProgressTodoFromModel, type InProgressTodo } from './store/inProgressTodo.js';
 export { RUNNING_STATES, isRunningState } from './store/sessionStates.js';
 // The sessions a session spawned, joined on the server's own parent pointer
 // (`managerSessionId`). Reads the store AND the server: the store so a subagent
@@ -240,12 +234,8 @@ export {
   visibleSessions,
   visibleCount,
   activeSummary,
-  activeSummaryEffective,
   sessionSummaryFor,
-  effectiveState,
-  effectiveStateOf,
-  selectActivity,
-  activeActivity,
+  selectSessionStatus,
   turnsFor,
   turnList,
   entriesFor,
@@ -283,11 +273,6 @@ export {
   groupMembers,
   isOTelSourced,
 } from './reduce/otelDedup.js';
-export {
-  terminalStateFromTail,
-  TERMINAL_ERROR_CODES,
-  TERMINAL_EVENT_TYPES,
-} from './reduce/terminalState.js';
 export {
   parseRefChips,
   remarkRefChips,

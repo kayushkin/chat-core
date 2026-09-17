@@ -1,8 +1,6 @@
-import type { Entry, HarnessMeta, ModelOption, SessionSummary, Turn, TurnModel } from '../net/types.js';
+import type { Entry, HarnessMeta, ModelOption, SessionStatus, SessionSummary, Turn, TurnModel } from '../net/types.js';
 import { annotateOTelDuplicates } from '../reduce/otelDedup.js';
-import { terminalStateFromTail } from '../reduce/terminalState.js';
-import { IDLE_ACTIVITY, type ActivityKind } from './activity.js';
-import { isRunningState } from './sessionStates.js';
+import { statusFromBareState } from './sessionStatus.js';
 import { resultedToolIds, toolIdOf } from './toolPairing.js';
 import type { ChatState, ContentHits, FilterState } from './ChatStore.js';
 
@@ -428,107 +426,34 @@ export function activeSummary(state: ChatState): SessionSummary | null {
   return sessionSummaryFor(state, state.activeId);
 }
 
-// The states that mean "still working" — the ones a terminal tail may override — now
-// live in ./sessionStates.js, because the activity fold has to agree with this list
-// about when a turn has ended. Parked/settled states (awaiting_user,
-// awaiting_permission, paused, idle, completed, error, aborted, disconnected) are left
-// untouched: they are not stale spinners.
+// There is no "effective state" any more. A running list state used to be overridden
+// here when the warm transcript's tail looked finished, to cover a session row the
+// server had stranded at `tool_running`. The server now writes state and status
+// together on every change and reconciles a stranded row itself; measured on
+// 2026-09-17, 1 of 64,000 rows read `tool_running` and it was genuinely running. A
+// second opinion held by the client is a second place for the two to disagree.
+
+const SYNTHESIZED_STATUS = new WeakMap<SessionSummary, SessionStatus>();
 
 /**
- * The effective (reconciled) state of a session. If the session's cached/warm
- * TurnModel tail is terminal per `terminalStateFromTail`, a running/holding summary
- * state is overridden with the tail's verdict ('completed' | 'error') — this clears
- * the stale spinner the server's state derivation can strand (F1). A session that is
- * genuinely in flight (no terminal tail) or already in a settled/parked state is
- * returned unchanged.
+ * A session's status — never undefined for a known session, null for an unknown one.
  *
- * The verdict is returned verbatim. It used to be re-spelled through a
- * `terminal === 'failed' ? 'failed' : 'completed'` ternary, which was an identity
- * function over the two values `terminalStateFromTail` can return — a second place
- * for the vocabulary to fork, doing no work. See that function on why the failure
- * state is spelled 'error'.
+ * Referentially stable while the summary is: a row with no `status` of its own (one
+ * the store has not normalized, in a test fixture say) gets ONE synthesized object
+ * per summary object, so a `useStore` subscription does not see a new snapshot on
+ * every read.
  */
-export function effectiveState(state: ChatState, sessionId: string | null): string {
-  if (!sessionId) return '';
-  return effectiveStateOf(
-    sessionSummaryFor(state, sessionId)?.state,
-    state.turnsBySession.get(sessionId),
-  );
-}
-
-/**
- * `effectiveState` over a summary state and a model handed in directly, for callers
- * holding a model the store has not been given yet. `setTurns` is why it exists: it
- * reconciles the page it is about to install, and reading the store there would
- * reconcile against the model that page is replacing.
- *
- * The rule itself lives here and nowhere else — a second copy of "a running state
- * loses to a terminal tail" is a second place for the two to disagree about whether
- * a session is working.
- */
-export function effectiveStateOf(
-  summaryState: string | undefined,
-  model: TurnModel | undefined,
-): string {
-  const raw = summaryState ?? '';
-  if (!isRunningState(raw)) return raw;
-  return terminalStateFromTail(model) ?? raw;
-}
-
-/**
- * What a session is doing right now — thinking, streaming, or the tool it is running
- * — or `idle`. See `store/activity.ts`.
- *
- * Returns the shared `IDLE_ACTIVITY` reference for every session with no entry, so a
- * `useStore` subscription on an idle session never sees a new object and never
- * re-renders on identity alone.
- *
- * ⚠️ Only the ACTIVE session ever has an entry. This deliberately does NOT fall back
- * to reading the session's state, because there is no honest translation: a summary
- * that says `tool_running` cannot say WHICH tool, and guessing `streaming` from
- * `running` would put a label on screen that no event supports. A session with no
- * live stream is reported idle, and the caller decides whether to show the state
- * instead.
- *
- * The active session's entry survives a switch away and back, but never as the value
- * it held: `setActive` re-derives it from that session's own transcript. So a label
- * read here is always sourced from an event that arrived — off the live stream while
- * the stream is attached, off the materialized entries at the moment of selection —
- * and never from the state alone.
- */
-export function selectActivity(state: ChatState, sessionId: string | null): ActivityKind {
-  if (!sessionId) return IDLE_ACTIVITY;
-  return state.activity.get(sessionId) ?? IDLE_ACTIVITY;
-}
-
-/** The active session's activity. */
-export function activeActivity(state: ChatState): ActivityKind {
-  return selectActivity(state, state.activeId);
-}
-
-// Memo for the reconciled active summary: recompute only when the summary object or
-// its warm TurnModel changes identity, so useStore sees a stable reference between
-// unrelated renders (a fresh object every call would loop the subscription).
-let activeEffectiveCache: {
-  summary: SessionSummary | null;
-  model: TurnModel | undefined;
-  result: SessionSummary | null;
-} | null = null;
-
-/** The active session's summary with its `state` reconciled against the warm tail
- *  (see `effectiveState`). Same reference as `activeSummary` when the tail implies no
- *  correction, so nothing downstream churns. */
-export function activeSummaryEffective(state: ChatState): SessionSummary | null {
-  const summary = activeSummary(state);
+export function selectSessionStatus(state: ChatState, sessionId: string | null): SessionStatus | null {
+  if (!sessionId) return null;
+  const summary = sessionSummaryFor(state, sessionId);
   if (!summary) return null;
-  const model = state.turnsBySession.get(summary.sessionId);
-  if (activeEffectiveCache && activeEffectiveCache.summary === summary && activeEffectiveCache.model === model) {
-    return activeEffectiveCache.result;
+  if (summary.status) return summary.status;
+  let synthesized = SYNTHESIZED_STATUS.get(summary);
+  if (!synthesized) {
+    synthesized = statusFromBareState(summary.state);
+    SYNTHESIZED_STATUS.set(summary, synthesized);
   }
-  const eff = effectiveState(state, summary.sessionId);
-  const result = eff === summary.state ? summary : { ...summary, state: eff };
-  activeEffectiveCache = { summary, model, result };
-  return result;
+  return synthesized;
 }
 
 /** The materialized model for a session, or undefined if not warm. */

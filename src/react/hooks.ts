@@ -10,6 +10,7 @@ import type {
   SessionConfig,
   SessionInfo,
   SessionPermissionState,
+  SessionStatus,
   SessionSummary,
   Turn,
 } from '../net/types.js';
@@ -32,18 +33,11 @@ import {
 } from '../store/folders.js';
 import { resolvePendingHook } from '../store/pendingHooks.js';
 import { budgetHaltFromRefusal, type BudgetHalt } from '../store/budgetHalt.js';
-import type { ActivityKind } from '../store/activity.js';
+import { inProgressTodoFromModel, type InProgressTodo } from '../store/inProgressTodo.js';
 import {
-  joinSubagentSessions,
-  liveStatusFromModel,
-  type LiveSubagent,
-  type LiveToolCall,
-} from '../store/liveStatus.js';
-import {
-  activeSummaryEffective,
-  selectActivity,
+  activeSummary,
+  selectSessionStatus,
   contextUsage,
-  effectiveState,
   harnessCapabilities,
   modelsForHarness,
   selectContentSearchReach,
@@ -98,11 +92,9 @@ export function useConnState(): ConnState {
 }
 
 /** Sidebar list, already filtered + grouped + sorted by the current filter/folder.
- *  `effectiveState(sessionId)` returns the tail-reconciled state for a row's status
- *  indicator: a session the server still reports as running/holding but whose warm
- *  tail is terminal reads as completed/failed, so a stale spinner self-heals on open
- *  (F1). The function's identity changes when the tails or session maps change, so a
- *  settling tail re-renders the affected rows.
+ *  A row's status indicator reads the row's own `state` (and `status`), which the
+ *  server decides and the store keeps newest-`as_of`-first. There is no client-side
+ *  reconciled state any more — see the note above `selectSessionStatus`.
  *
  *  The list is ONE page deep on boot. `moreSessions` is true while the server holds
  *  older sessions the sidebar has not loaded, and `loadOlderSessions()` pulls the next
@@ -118,7 +110,6 @@ export function useSessionList(): {
   groups: { folder: string; sessions: SessionSummary[] }[];
   total: number;
   loading: boolean;
-  effectiveState: (sessionId: string) => string;
   facets: Facets;
   moreSessions: boolean;
   loadingOlderSessions: boolean;
@@ -137,17 +128,10 @@ export function useSessionList(): {
   // so the sidebar can render every available option with its count. Memoized on the
   // sessions Map identity (see selectFacets).
   const facets = useStore(store, selectFacets);
-  const turnsBySession = useStore(store, (s) => s.turnsBySession);
-  const sessions = useStore(store, (s) => s.sessions);
-  const effState = useCallback(
-    (sessionId: string) => effectiveState(store.getState(), sessionId),
-    [store, turnsBySession, sessions],
-  );
   return {
     groups,
     total,
     loading,
-    effectiveState: effState,
     facets,
     moreSessions,
     loadingOlderSessions,
@@ -163,8 +147,7 @@ export function useActiveSession(): {
 } {
   const { store, api, prefetcher } = useChatContext();
   const id = useStore(store, (s) => s.activeId);
-  // Reconciled against the warm tail so a stale running/holding state clears on open.
-  const summary = useStore(store, activeSummaryEffective);
+  const summary = useStore(store, activeSummary);
   const actions = useActions();
 
   const select = useCallback(
@@ -1289,72 +1272,39 @@ export function useBudgetHalt(sessionId: string | null): {
 }
 
 /**
- * What a session is doing at this instant — `{kind:'thinking'}`, `{kind:'streaming'}`,
- * `{kind:'tool', name}` or `{kind:'idle'}`.
+ * What a session is doing right now, as llm-bridge-server decided it: state,
+ * thinking-or-text, the tool calls in flight, the subagents still running, since
+ * when. Null for a session this client does not know.
  *
- * This is the live half of a status label. `useSessionList().effectiveState` answers
- * "what phase is this session in", which is a row the server writes and can strand;
- * this answers "what is it doing right now", read off the event that just arrived.
- * A header chip wants both: the state as the word, the activity as the suffix.
+ * Correct for EVERY session, open or not, and correct in the same commit as a
+ * switch: the status rides the session row, the session-list stream keeps that row
+ * current whether or not the session is open, and the open session's own stream
+ * delivers the same statuses sooner. Whichever arrives, the larger `as_of` is kept
+ * (`store/sessionStatus.ts`), so nothing here is rebuilt from a transcript and
+ * nothing depends on arrival order.
  *
- * ⚠️ Do NOT gate the suffix on the session's state. bridge-ui does, on
- * `starting`/`model_generating`/`tool_running`/`compacting`, and three of those four
- * are emitted zero times — its own suffix has therefore never rendered in anger. An
- * activity that is not `idle` is itself the evidence that work is happening, because
- * the only thing that can produce one is an event that just arrived; render on that
- * alone.
- *
- * ⚠️ Meaningful for the ACTIVE session only. Every other session reports idle,
- * because chat-core opens no stream for it — see `ChatState.activity`.
+ * It replaced `useActivity` and `useLiveStatus`, which derived this from the open
+ * session's live frames and its transcript — right only for the open session, and
+ * only once its stream had caught up.
  */
-export function useActivity(sessionId: string | null): ActivityKind {
+export function useSessionStatus(sessionId: string | null): SessionStatus | null {
   const { store } = useChatContext();
-  return useStore(store, (s) => selectActivity(s, sessionId));
-}
-
-/** Everything a live status line needs, composed: the activity word plus the
- *  model-derived facts behind it. See `store/liveStatus.ts`. */
-export interface LiveStatus {
-  /** What the session is doing right now — same value `useActivity` returns. */
-  activity: ActivityKind;
-  /** The harness's own in-progress todo item, when its latest todo list has one. */
-  todo?: { text: string; sinceTs: string };
-  /** Tool calls in flight this turn, oldest first. */
-  toolCalls: LiveToolCall[];
-  /** Tasks (subagents / backgrounded shells) still working this turn, each with
-   *  its promoted bridge session attached where one exists. */
-  subagents: LiveSubagent[];
-  /** When the latest call started: the newest in-flight tool call's timestamp,
-   *  else the newest entry of the live turn (RFC3339 + offset). */
-  startedAt?: string;
+  return useStore(store, (s) => selectSessionStatus(s, sessionId));
 }
 
 /**
- * The live status line for one session: activity, in-progress todo, in-flight
- * tool calls, and running subagents with their promoted sessions joined on.
+ * The harness's own in-progress todo item ("Refactoring the parser"), read from the
+ * newest todo list in the session's transcript. Undefined when the transcript is
+ * not loaded or its latest list has nothing in progress.
  *
- * The same caveats as `useActivity`: meaningful for the ACTIVE session only
- * (nothing else has a live stream), and not to be gated on the session's state —
- * a non-idle activity is itself the evidence that work is happening. The
- * model-derived half is memoized per model identity, so calling this from a
- * component that already re-renders per event adds no second derivation.
+ * The one part of a status line still read from the transcript, because it is not
+ * status: it is a line of the conversation, shown beside the status. It takes no
+ * part in deciding what the session is doing.
  */
-export function useLiveStatus(sessionId: string | null): LiveStatus {
+export function useInProgressTodo(sessionId: string | null): InProgressTodo | undefined {
   const { store } = useChatContext();
   const model = useStore(store, (s) => turnsFor(s, sessionId));
-  const activity = useStore(store, (s) => selectActivity(s, sessionId));
-  const sessions = useStore(store, (s) => s.sessions);
-  return useMemo(() => {
-    const base = liveStatusFromModel(model);
-    const newestToolCall = base.toolCalls[base.toolCalls.length - 1];
-    return {
-      activity,
-      todo: base.todo,
-      toolCalls: base.toolCalls,
-      subagents: joinSubagentSessions(base.subagents, sessions),
-      startedAt: newestToolCall?.startedAt ?? base.lastEntryTs,
-    };
-  }, [model, activity, sessions]);
+  return inProgressTodoFromModel(model);
 }
 
 /** Prefetch hint — call on sidebar row hover. Warms a cold session. */

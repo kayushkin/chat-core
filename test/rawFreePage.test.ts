@@ -4,7 +4,6 @@ import {
   initTailState,
   mergeMaterializedPage,
 } from '../src/reduce/TurnReducer.js';
-import { terminalStateFromTail } from '../src/reduce/terminalState.js';
 import { toolIdOf, resultedToolIds } from '../src/store/toolPairing.js';
 import type { Entry, TurnModel } from '../src/net/types.js';
 import type { WireEvent } from '../src/net/wireEvents.js';
@@ -91,13 +90,6 @@ describe('every consumer works with a page that carries no raw', () => {
     expect(pageEntry({ kind: 'tool_result' }).toolError).toBeUndefined();
   });
 
-  it('decides terminal state from eventType, not from raw', () => {
-    const tail = initTailState(
-      'sess',
-      pageModel([pageEntry({ id: 'e1', kind: 'result', eventType: 'result', eventId: 5 })]),
-    );
-    expect(terminalStateFromTail(tail.model)).toBe('completed');
-  });
 });
 
 describe('the live fold and the materialized page agree', () => {

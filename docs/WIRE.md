@@ -266,17 +266,33 @@ never invented. log-store's `Entry` struct and the live-tail reducer populate th
   `task_started` was missed on the parent rather than dropping it. A view of what THIS session
   did must leave those out.
 
-### Client terminal-state reconcile (F1)
-The server's `sessions.state` can stay pinned to a holding value (`tool_running`) after a turn
-actually settled. `reduce/terminalState.ts` `terminalStateFromTail(model)` scans the
-materialized tail for a terminal signal — a kind `'result'` entry, a kind `'error'` entry whose
-`code` is `TURN_IDLE_TIMEOUT`/`PROCESS_DIED`, or a raw event `type` in
-`{turn_complete, close, result}` — and the `effectiveState` selector overrides a stale
-running/holding summary state with the tail's verdict (`completed`/`failed`). Content was never
-missing; only the displayed state is corrected.
+### Session status (`SessionStatus`) — decided by the server, ordered by `as_of`
+What a session is doing right now is `msg.SessionStatus`, **passed through in its own
+snake_case** everywhere it appears: `state`, `generating` (`thinking`|`text`), `tools[]`
+(`tool_id`, `name`, `summary`, `started_at`), `subagents[]` (`task_id`, `task_type`,
+`subagent_type`, `description`, `last_tool_name`, `started_at`, `session_id`), `rate_limit`,
+`turn_started_at`, `changed_at`, and **`as_of`** — the llm-bridge-server event row id the
+status is current as of.
 
-## SSE (unchanged from today)
-- `GET /session-events` — one global stream of list deltas (`hello`/`upsert`/`delete`).
+It arrives four ways — a `session_status` event on the session's own stream, `session.status`
+on a list-stream upsert, `status` on a `/sessions/summary` row, and the IndexedDB cache — in no
+guaranteed order. **The larger `as_of` wins** (`store/sessionStatus.ts`); arrival order decides
+nothing. `SessionSummary.state` is always `status.state`. A row with no status (cached before
+2026-09-17) reads as `{state, as_of: 0}`.
+
+The client derives no status from the transcript. The activity fold, the transcript-derived
+activity, the last-turn tool/subagent scan and the F1 terminal-state reconcile
+(`effectiveState`, `terminalStateFromTail`) were all deleted on 2026-09-17 in its favour. The
+one transcript read left beside a status line is the harness's in-progress todo
+(`store/inProgressTodo.ts`), which is conversation, not status.
+
+## SSE
+- `GET /session-events` — one global stream of list deltas (`hello`/`upsert`/`delete`/`signal`).
+  The client sends `Last-Event-ID` on a reconnect. The `hello` answers with `resume`:
+  `replayed` (the missed frames follow), `gap` (more were missed than the server's 512-frame
+  buffer holds) or `none`. On anything but `replayed` after a reconnect, the client re-reads
+  every row it holds (`SyncEngine.refreshHeldSessions`) — a lost upsert is otherwise a session
+  whose status stays wrong until its next change.
 - `GET /sessions/{id}/events` — per-session stream for the ACTIVE session only; resumes via
   `Last-Event-ID`. Warm-but-inactive sessions are refreshed via validator sweeps, not live
-  streams.
+  streams. Their STATUS needs neither: it rides the list stream.

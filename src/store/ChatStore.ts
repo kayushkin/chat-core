@@ -8,6 +8,7 @@ import type {
   PendingHook,
   SearchHit,
   SessionInfo,
+  SessionStatus,
   SessionSummary,
   Turn,
   TurnModel,
@@ -24,14 +25,8 @@ import {
   type TailState,
 } from '../reduce/TurnReducer.js';
 import { foldHookEvent } from './pendingHooks.js';
-import { effectiveStateOf } from './selectors.js';
 import { isRunningState } from './sessionStates.js';
-import {
-  activityFromEvent,
-  activityFromModel,
-  sameActivity,
-  type ActivityKind,
-} from './activity.js';
+import { newerSessionStatus, withNewestStatus } from './sessionStatus.js';
 import { budgetHaltFromEvent, type BudgetHalt } from './budgetHalt.js';
 import { DraftStore, defaultDraftStorage, type DraftStorageLike } from './draftStorage.js';
 import { FilterStore, PERSISTED_FILTER_AXES } from './filterStorage.js';
@@ -184,25 +179,6 @@ export interface ChatState {
    *  answering. Set from the 402 a refused request throws and from the mid-turn
    *  `budget_exceeded` error event; cleared when the ceiling is raised. */
   budgetHalts: Map<string, BudgetHalt>;
-  /** What a session is doing right now, `sessionId -> ActivityKind` — thinking,
-   *  streaming, or the tool it is running. Folded off the live event stream by
-   *  `applyTailEvent`; see `store/activity.ts` for why this is not the same fact as
-   *  `SessionSummary.state`.
-   *
-   *  ⚠️ Holds at most the ACTIVE session. Only the active session has a live stream
-   *  (`sync/SyncEngine.ts`), so an entry left behind for a session the user has
-   *  navigated away from cannot be refreshed and would sit there naming a tool that
-   *  finished minutes ago — which is why `setActive` drops every entry it finds,
-   *  including the incoming session's own.
-   *
-   *  It does not leave a blank in its place: `setActive` re-derives the incoming
-   *  session's entry from that session's transcript (`activityFromModel`), so a
-   *  switch fills the label in rather than waiting on the next frame. Read
-   *  `seedActivityFromTranscript` before changing either side.
-   *
-   *  A sub-label on non-active SIDEBAR rows is still not reachable from this map by
-   *  design — it needs a field on the summary wire. */
-  activity: Map<string, ActivityKind>;
   /** What the sidebar ORDERS by, `sessionId -> RFC3339 stamp`. NOT `updatedAt`:
    *  the server bumps that on every event, so with several sessions running at
    *  once the rows leapfrogged each other continuously and the list could not be
@@ -312,6 +288,11 @@ export interface ChatActions {
   setOlderSessionsCursor(olderSessionsCursor: string | null): void;
   setOlderSessionsLoading(loading: boolean): void;
   upsertSession(summary: SessionSummary): void;
+  /** Apply a status that arrived on its own — a `session_status` event on the open
+   *  session's stream. Kept only if it is newer (`as_of`) than the one the session
+   *  already carries; `state` follows it. Reaches a session the list does not hold
+   *  (one opened by id) through its cached detail. A no-op for an unknown session. */
+  applySessionStatus(sessionId: string, status: SessionStatus): void;
   removeSession(sessionId: string): void;
 
   /** Replace the folder list with what `GET /folders` returned, order intact.
@@ -457,48 +438,6 @@ function turnEndedBetween(prev: SessionSummary | undefined, next: SessionSummary
   return prev !== undefined && isRunningState(prev.state) && !isRunningState(next.state);
 }
 
-/** The activity map `setActive` installs: at most one entry, for the session being
- *  selected, derived from the transcript already in memory.
- *
- *  Returns the CURRENT map unchanged when the answer is "no entries either way", so
- *  selecting one settled session after another never replaces the map and never
- *  re-renders a subscriber to tell it nothing changed.
- *
- *  `activityFromTranscript` decides what the transcript is allowed to say; `setActive`
- *  says why the outgoing session's entry is never kept. */
-function seedActivityFromTranscript(
-  state: ChatState,
-  activeId: string | null,
-): Map<string, ActivityKind> {
-  const seeded = activeId
-    ? activityFromTranscript(state.sessions.get(activeId)?.state, state.turnsBySession.get(activeId))
-    : null;
-  if (!seeded) return state.activity.size ? new Map<string, ActivityKind>() : state.activity;
-  const prior = state.activity.get(activeId!);
-  if (prior && state.activity.size === 1 && sameActivity(prior, seeded)) return state.activity;
-  return new Map<string, ActivityKind>([[activeId!, seeded]]);
-}
-
-/** The label a session's own transcript supports, or null when it supports none.
- *
- *  Gated on the session being RUNNING per `effectiveStateOf` — the server's word,
- *  already reconciled against a terminal tail. That gate is not belt-and-braces: it
- *  covers the one fact a materialized entry cannot carry. A `session_state` event
- *  announcing the end of a turn keeps its state only on `raw`, which the default page
- *  omits, so the transcript alone can read a finished turn as still composing.
- *
- *  `idle` is folded to null because an absent entry already means idle, and recording
- *  it would be a second spelling of the same fact — one that costs a map replacement
- *  to say. */
-function activityFromTranscript(
-  summaryState: string | undefined,
-  model: TurnModel | undefined,
-): ActivityKind | null {
-  if (!isRunningState(effectiveStateOf(summaryState, model))) return null;
-  const derived = activityFromModel(model);
-  return derived && derived.kind !== 'idle' ? derived : null;
-}
-
 function getOrInitTail(state: ChatState, sessionId: string): TailState {
   const existing = state.tails.get(sessionId);
   if (existing) return existing;
@@ -576,7 +515,9 @@ function mergedSessions(
   const listOrderStampBySession = new Map(state.listOrderStampBySession);
   for (const s of list) {
     const prev = sessions.get(s.sessionId);
-    sessions.set(s.sessionId, prev ? { ...s, ...prev } : s);
+    // `prev`'s fields stay on top, except the status, which is decided by `as_of`
+    // and not by which of the two arrived first.
+    sessions.set(s.sessionId, withNewestStatus(prev, s, true));
     if (!listOrderStampBySession.has(s.sessionId)) {
       listOrderStampBySession.set(s.sessionId, s.updatedAt);
     }
@@ -765,9 +706,12 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
         // stamp — but a stamp already held wins over re-seeding from `updatedAt`,
         // or every list refresh would snap the frozen order back to raw recency.
         const prior = get().listOrderStampBySession;
+        const held = get().sessions;
         const listOrderStampBySession = new Map<string, string>();
         for (const s of list) {
-          sessions.set(s.sessionId, s);
+          // The list is replaced, but a status already held may be newer than the
+          // page's: a live event can land while the page is in flight.
+          sessions.set(s.sessionId, withNewestStatus(held.get(s.sessionId), s));
           listOrderStampBySession.set(s.sessionId, prior.get(s.sessionId) ?? s.updatedAt);
         }
         set({
@@ -803,7 +747,10 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
       upsertSession(summary) {
         const sessions = new Map(get().sessions);
         const prev = sessions.get(summary.sessionId);
-        sessions.set(summary.sessionId, prev ? { ...prev, ...summary } : summary);
+        // Newest `as_of` wins, not newest arrival: this upsert may be older than a
+        // `session_status` the open session's own stream has already delivered.
+        summary = withNewestStatus(prev, summary);
+        sessions.set(summary.sessionId, summary);
         // The order stamp moves on exactly two upserts: a session seen for the first
         // time (it enters at its recency position), and a running turn ending (the
         // response's final text is in the chat). Every other upsert — and the server
@@ -820,6 +767,39 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
           listOrderStampBySession.set(summary.sessionId, stamp);
         }
         set({ sessions, listOrderStampBySession });
+      },
+
+      applySessionStatus(sessionId, status) {
+        const listed = get().sessions.get(sessionId);
+        if (listed) {
+          if (newerSessionStatus(listed.status, status) !== status) return;
+          if (listed.status?.as_of === status.as_of) return; // the same event, replayed
+          const sessions = new Map(get().sessions);
+          sessions.set(sessionId, { ...listed, status, state: status.state });
+          // A turn's ending moves the sidebar order stamp, exactly as it does when
+          // the ending arrives as a list upsert — whichever wire carries it first.
+          let listOrderStampBySession = get().listOrderStampBySession;
+          const endedAt = status.changed_at;
+          if (endedAt && isRunningState(listed.state) && !isRunningState(status.state)) {
+            const current = listOrderStampBySession.get(sessionId);
+            if (current === undefined || endedAt > current) {
+              listOrderStampBySession = new Map(listOrderStampBySession);
+              listOrderStampBySession.set(sessionId, endedAt);
+            }
+          }
+          set({ sessions, listOrderStampBySession });
+          return;
+        }
+        const detail = get().sessionDetail.get(sessionId);
+        if (!detail) return;
+        const held = detail.summary.status;
+        if (newerSessionStatus(held, status) !== status || held?.as_of === status.as_of) return;
+        const sessionDetail = new Map(get().sessionDetail);
+        sessionDetail.set(sessionId, {
+          ...detail,
+          summary: { ...detail.summary, status, state: status.state },
+        });
+        set({ sessionDetail });
       },
 
       removeSession(sessionId) {
@@ -843,8 +823,6 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
         sessionDetailLoading.delete(sessionId);
         const pendingHooks = new Map(get().pendingHooks);
         pendingHooks.delete(sessionId);
-        const activity = new Map(get().activity);
-        activity.delete(sessionId);
         const listOrderStampBySession = new Map(get().listOrderStampBySession);
         listOrderStampBySession.delete(sessionId);
         // The one authoritative "this session is gone" signal there is, so it is the
@@ -859,7 +837,6 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
           tails,
           rawTurnsLoaded,
           pendingHooks,
-          activity,
           listOrderStampBySession,
           sessionDetail,
           sessionDetailLoading,
@@ -873,32 +850,18 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
       },
 
       setActive(activeId) {
-        // Every existing entry goes, including the incoming session's own: only the
-        // active session has a live stream, so an entry left from the last time this
-        // session WAS active has had no way to move since, and coming back to a
-        // session left mid-tool it would say `· Bash` for a tool that finished an
-        // hour ago. Keeping it is the one thing this must not do.
-        //
-        // What replaces it is not a blank. The incoming session's label is REBUILT
-        // from its own transcript (`activityFromModel`), so the status line above the
-        // composer is filled in the same commit as the switch instead of waiting for
-        // the next frame — on a session running a long tool call that wait is minutes
-        // of a chat that looks idle while it works. A derived label cannot go stale
-        // the way a kept one does: it is read from entries that are on screen right
-        // now, and the first live frame overwrites it either way.
-        //
-        // A settled session derives nothing and reads idle, which is the truth about
-        // it — see `activityFromTranscript` for what the derivation will and will not
-        // claim, and `setTurns` for the half of this that fires when the transcript
-        // arrives after the switch rather than before it.
-        const activity = seedActivityFromTranscript(get(), activeId);
+        // Nothing about the session's STATUS is touched here, and that is the point.
+        // A label used to be rebuilt from the transcript on every switch, because the
+        // only live source was the open session's stream and a kept label went stale.
+        // The status now rides the session row, which the list stream keeps current
+        // for every session, so the row being switched TO is already right.
         // Selecting a session is the strongest statement of use there is, and it is the
         // only one that arrives for a session already warm in memory — switching back to
         // a loaded session fetches nothing, so without this its recency would still read
         // as whenever it was last fetched and it would be evicted out from under a user
         // flipping between two sessions.
         if (activeId) touch(activeId);
-        set({ activeId, activity });
+        set({ activeId });
       },
 
       setTurns(sessionId, incoming, opts) {
@@ -941,33 +904,11 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
           rawTurnsLoaded = new Set(rawTurnsLoaded);
           rawTurnsLoaded.add(sessionId);
         }
-        // The other half of `setActive`'s re-derivation, for the session that was COLD
-        // when it was selected: the switch had no transcript to read, and this is the
-        // commit that first has one. Without it the feature would only ever work for a
-        // session already warm in memory — every session is cold after a reload, which
-        // is precisely when a user is most likely to be looking for what is running.
-        //
-        // Reconciled against `model`, the page merged just above, rather than through
-        // the store: the store still holds the model this one replaces, and a page that
-        // carries the turn's ending would be read against a tail that does not.
-        //
-        // Only for the ACTIVE session (a prefetch must not label a session nobody is
-        // looking at) and only when no entry exists (the live fold outranks this — it
-        // is reading frames this page is already behind).
-        let activity = get().activity;
-        if (sessionId === get().activeId && !activity.has(sessionId)) {
-          const seeded = activityFromTranscript(get().sessions.get(sessionId)?.state, model);
-          if (seeded) {
-            activity = new Map(activity);
-            activity.set(sessionId, seeded);
-          }
-        }
         set({
           ...retained,
           moreBySession,
           turnsLoading,
           rawTurnsLoaded,
-          activity,
         });
       },
 
@@ -1016,53 +957,18 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
           const halt = budgetHaltFromEvent(sessionId, event);
           if (halt) actions.setBudgetHalt(halt);
         }
-        // Activity is folded FIRST for a third version of the same reason, and this
-        // one is the sharpest: a `stream` delta that repeats an eventId the reducer
-        // has already folded is an exact no-op for the transcript and still the best
-        // evidence there is that the model is generating RIGHT NOW. Behind the early
-        // return it would be dropped, and the label would freeze on whatever came
-        // before. `sameActivity` keeps the per-token churn from reaching subscribers.
-        // LAST frame wins: activity is a "right now" label, and the intermediate
-        // values of a batch are already history by the time it is applied.
-        let nextActivity = null as ReturnType<typeof activityFromEvent>;
-        // The newest turn ending in the batch, for the sidebar order stamp below.
-        // Read off the same fold: an activity of `idle` is only ever produced by a
-        // terminal signal (result / turn_complete / close, a terminal error code, a
-        // settled session_state), so "this frame says idle" and "the turn ended
-        // here" are one fact.
-        let turnEndedAt: string | undefined;
+        // The status is folded FIRST for a third version of the same reason: a
+        // `session_status` event moves no turn, so behind the early return below it
+        // would be dropped. The NEWEST one in the batch is the only one that matters,
+        // and `newerSessionStatus` decides whether even that one is news — the stream
+        // replays the whole current turn on every open, and a replayed status is older
+        // than what the session row already carries.
+        let incomingStatus: SessionStatus | undefined;
         for (const event of events) {
-          const implied = activityFromEvent(event);
-          if (!implied) continue;
-          nextActivity = implied;
-          if (implied.kind === 'idle') turnEndedAt = event.data.timestamp ?? turnEndedAt;
+          const status = event.type === 'session_status' ? event.data.status : undefined;
+          if (status) incomingStatus = newerSessionStatus(incomingStatus, status);
         }
-        if (nextActivity) {
-          const prior = state.activity.get(sessionId);
-          if (!prior || !sameActivity(prior, nextActivity)) {
-            const activity = new Map(state.activity);
-            activity.set(sessionId, nextActivity);
-            set({ activity });
-          }
-        }
-        // The tail half of the sidebar order stamp: the summary transition
-        // (`upsertSession`) normally carries a turn's ending, but a stranded state —
-        // the F1 defect `effectiveState` exists for — never transitions, and this is
-        // then the only wire the ending arrives on. Advances by max, because the
-        // stream replays the whole current turn on every session open and a replayed
-        // ending must not move a stamp the summary has since carried past it. A
-        // terminal frame with no timestamp advances nothing: there is no honest
-        // value to advance TO, and inventing one here would reorder the list on a
-        // clock no event supports.
-        if (turnEndedAt) {
-          const priorStamps = get().listOrderStampBySession;
-          const current = priorStamps.get(sessionId);
-          if (current === undefined || turnEndedAt > current) {
-            const listOrderStampBySession = new Map(priorStamps);
-            listOrderStampBySession.set(sessionId, turnEndedAt);
-            set({ listOrderStampBySession });
-          }
-        }
+        if (incomingStatus) actions.applySessionStatus(sessionId, incomingStatus);
         // Whether this session had no transcript at all before this frame. That is the
         // only case where a live frame grows the RETAINED SET rather than one member of
         // it, and so the only case that has to re-run the budget.
@@ -1425,7 +1331,6 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
       rawTurnsLoaded: new Set(),
       pendingHooks: new Map(),
       budgetHalts: new Map(),
-      activity: new Map(),
       listOrderStampBySession: new Map(),
       activeId: null,
       filter: { ...EMPTY_FILTER, ...persistedFilterAxes },

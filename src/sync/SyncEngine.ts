@@ -51,6 +51,10 @@ export class SyncEngine {
    *  (boot already read the folders) from a reconnect (they may have changed under
    *  us while the stream was down). */
   private listHelloSeen = false;
+  /** The last frame id received on the list stream, sent back as `Last-Event-ID` on
+   *  a reconnect so the server replays what was missed. The server has numbered its
+   *  frames and kept the last 512 since the hub was written; nothing sent the id. */
+  private listStreamCursor: string | undefined;
   private unsubStore: (() => void) | null = null;
   private onVisible: (() => void) | null = null;
   private running = false;
@@ -123,9 +127,15 @@ export class SyncEngine {
       const abort = new AbortController();
       this.listAbort = abort;
       try {
-        for await (const frame of connectListSSE(this.api.fetchFor(), this.api.basePath, abort.signal)) {
+        for await (const frame of connectListSSE(
+          this.api.fetchFor(),
+          this.api.basePath,
+          abort.signal,
+          this.listStreamCursor,
+        )) {
           if (!this.running) return;
           const actions = this.store.getState().actions;
+          if ('id' in frame && frame.id) this.listStreamCursor = frame.id;
           if (frame.type === 'hello') {
             delay = 1000;
             actions.setConn('open');
@@ -136,6 +146,13 @@ export class SyncEngine {
             // in doubt, so it is re-read here. NOT on the first hello: `boot()` has
             // just fetched it, and sync starts after boot resolves.
             if (this.listHelloSeen) void this.refreshFolders();
+            // `replayed`: the frames missed while disconnected follow this hello, so
+            // every session row — and the status on it — catches up by itself.
+            // Anything else on a RE-connect means frames were lost (`gap`: more than
+            // the server keeps; `none`: it restarted and our cursor meant nothing to
+            // it), and a lost upsert is a session whose status stays wrong until its
+            // next change. Re-read the rows we hold.
+            if (this.listHelloSeen && frame.resume !== 'replayed') void this.refreshHeldSessions();
             this.listHelloSeen = true;
           } else if (frame.type === 'upsert' && frame.summary) {
             actions.upsertSession(frame.summary);
@@ -163,6 +180,24 @@ export class SyncEngine {
       this.store.getState().actions.setConn('connecting');
       await sleep(delay);
       delay = Math.min(delay * 2, 30000);
+    }
+  }
+
+  /** Re-read every session row the store holds, after a reconnect that lost frames.
+   *  Rows go in through `upsertSession`, not `mergeSessions`: a merge keeps the held
+   *  row's fields on top because a live row is normally newer than a page, and here
+   *  the held rows are exactly the ones known to have missed updates. The status on
+   *  each is still decided by `as_of`, as everywhere. */
+  private async refreshHeldSessions(): Promise<void> {
+    const sessionIds = [...this.store.getState().sessions.keys()];
+    if (sessionIds.length === 0) return;
+    try {
+      const resp = await this.api.getSummary({ sessionIds, limit: sessionIds.length });
+      if (!this.running) return;
+      const actions = this.store.getState().actions;
+      for (const summary of resp.sessions) actions.upsertSession(summary);
+    } catch {
+      // Non-fatal: the rows stay as they are and the next reconnect tries again.
     }
   }
 

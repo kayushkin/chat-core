@@ -1,3 +1,4 @@
+import type { SessionStatus } from './types.js';
 // The raw SSE/event wire shapes the live-tail reducer consumes. These mirror the
 // canonical llm-bridge `msg.Event` JSON (snake_case on the wire, as emitted by
 // llm-bridge-server) — deliberately narrow to the fields chat-core reads. The
@@ -100,6 +101,8 @@ export interface WireEventData {
     subagent_session_id?: string;
   };
   state?: { state?: string; previous?: string; reason?: string };
+  /** Body of a `session_status` event — the session's whole status. */
+  status?: SessionStatus;
   info?: unknown;
   hook?: HookEventWire;
 }
@@ -141,6 +144,8 @@ export interface HookEventWire {
 export interface ManagedSessionWire {
   session_id: string;
   state?: string;
+  /** `msg.SessionStatus`, passed through untouched — see `SessionStatus`. */
+  status?: SessionStatus;
   harness?: string;
   instance_id?: string;
   type?: string;
@@ -292,7 +297,7 @@ export interface StoreModelWire {
 
 /** Frame on the global session-list stream (`GET /session-events`). */
 export type SessionListFrame =
-  | { type: 'hello' }
+  | { type: 'hello'; resume: 'none' | 'replayed' | 'gap' }
   | { type: 'upsert'; session: ManagedSessionWire }
   | { type: 'delete'; sessionId: string }
   /** A session's open questions moved: one was raised, answered, dismissed or
