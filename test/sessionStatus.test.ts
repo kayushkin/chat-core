@@ -161,3 +161,43 @@ describe('a session opened by id, which the list does not hold', () => {
     expect(selectSessionStatus(store.getState(), 'off-list')).toEqual(BASH_RUNNING);
   });
 });
+
+describe('a status that arrives before the session has a row', () => {
+  // The open session's stream and the first list page start together, and the stream
+  // is often first. The list row can also be the OLDER of the two: it lags a
+  // seconds-old session's whole first turn.
+  const running: SessionStatus = { state: 'model_generating', generating: 'text', as_of: 498 };
+
+  it('waits, and outranks the lagging row that arrives after it', () => {
+    const store = createChatStore();
+    const { actions } = store.getState();
+    actions.applyTailEvent('s', statusEvent(running));
+    expect(selectSessionStatus(store.getState(), 's')).toBeNull();
+
+    actions.setSessions([summary({ sessionId: 's', state: 'idle' })]);
+    expect(selectSessionStatus(store.getState(), 's')).toEqual(running);
+    expect(store.getState().sessions.get('s')?.state).toBe('model_generating');
+  });
+
+  it('loses to a row whose own status is newer', () => {
+    const store = createChatStore();
+    const { actions } = store.getState();
+    actions.applyTailEvent('s', statusEvent(running));
+    const settled: SessionStatus = { state: 'idle', as_of: 600 };
+    actions.upsertSession(summary({ sessionId: 's', state: 'idle', status: settled }));
+    expect(selectSessionStatus(store.getState(), 's')).toEqual(settled);
+  });
+
+  it('reaches a session opened by id through the detail that arrives after it', () => {
+    const store = createChatStore();
+    const { actions } = store.getState();
+    actions.applyTailEvent('off-list', statusEvent(running));
+    actions.setSessionDetail('off-list', {
+      sessionId: 'off-list',
+      summary: summary({ sessionId: 'off-list', state: 'idle' }),
+      info: null,
+      harnessConfig: null,
+    });
+    expect(selectSessionStatus(store.getState(), 'off-list')).toEqual(running);
+  });
+});

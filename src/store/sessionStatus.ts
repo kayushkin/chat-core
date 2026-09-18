@@ -39,12 +39,18 @@ export function newerSessionStatus(
  * `held`'s fields under `incoming`'s (when `keepHeldFields`, the other way round),
  * carrying whichever status is newer, with `state` set to match it.
  *
- * An `incoming` with NO status of its own — or one whose status names a different
- * state than its `state` does — is a bare claim about `state`: an optimistic local
- * mutation (mark done, stop), or a server that predates the status. When it names a different state from the one held, it is taken as a
- * status as of the held one's `as_of` — new enough to show now, and outranked by the
- * next real status the server sends. When it names the same state it says nothing
- * new, and the held status, with its tools and subagents, stays.
+ * Two kinds of `incoming` carry no usable status of their own, and they mean
+ * opposite things:
+ *
+ *  - A status that names a DIFFERENT state than `incoming.state` is an optimistic
+ *    local mutation. `{ ...row, state: 'completed' }` is how every one is written, and
+ *    it carries the row's old status along. It is a claim about now: taken as a status
+ *    as of the held one's `as_of`, so it shows at once and the next real status the
+ *    server sends outranks it.
+ *  - NO status at all is a row from before the status existed — an old cache entry,
+ *    an older server. It knows only a state, as of nothing (`as_of: 0`), so any real
+ *    status already held outranks it. This matters for a status that arrived on the
+ *    session's stream BEFORE its row did: the row must not erase it.
  */
 export function withNewestStatus(
   held: SessionSummary | undefined,
@@ -52,16 +58,10 @@ export function withNewestStatus(
   keepHeldFields = false,
 ): SessionSummary {
   let own = incoming.status;
-  // `{ ...row, state: 'completed' }` is how every optimistic mutation is written,
-  // and it carries the row's OLD status along with the new state. The two
-  // disagreeing is what a bare claim looks like from here.
-  if (own && own.state !== incoming.state) own = undefined;
-  if (!own) {
-    own =
-      held?.status && held.status.state === incoming.state
-        ? held.status
-        : { state: incoming.state, as_of: held?.status?.as_of ?? 0 };
+  if (own && own.state !== incoming.state) {
+    own = { state: incoming.state, as_of: held?.status?.as_of ?? 0 };
   }
+  own ??= statusFromBareState(incoming.state);
   const status = newerSessionStatus(held?.status, own);
   const merged = held ? (keepHeldFields ? { ...incoming, ...held } : { ...held, ...incoming }) : incoming;
   return { ...merged, status, state: status.state };

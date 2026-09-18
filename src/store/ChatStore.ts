@@ -179,6 +179,15 @@ export interface ChatState {
    *  answering. Set from the 402 a refused request throws and from the mid-turn
    *  `budget_exceeded` error event; cleared when the ceiling is raised. */
   budgetHalts: Map<string, BudgetHalt>;
+  /** Statuses that arrived for a session this client has no row for YET.
+   *
+   *  The open session's stream and the first list page start together, and the stream
+   *  is often first: it replays the current turn, `session_status` events included,
+   *  before the row exists. Dropping those left a row that arrived LATER but was
+   *  OLDER (the list lags a seconds-old session's whole first turn) showing its stale
+   *  state until the next status change. They wait here instead, and every path that
+   *  stores a row weighs the waiting status against the row's own by `as_of`. */
+  statusAwaitingRow: Map<string, SessionStatus>;
   /** What the sidebar ORDERS by, `sessionId -> RFC3339 stamp`. NOT `updatedAt`:
    *  the server bumps that on every event, so with several sessions running at
    *  once the rows leapfrogged each other continuously and the list could not be
@@ -507,8 +516,21 @@ export interface CreateChatStoreOptions {
  *  per-row `upsertSession` loop would copy it once per row. A row that arrived live
  *  over SSE while the page was in flight is newer than the page, so its fields stay
  *  on top; a new row takes its order stamp from its own `updatedAt`. */
+/** What `withNewestStatus` should weigh an incoming row against: the row already
+ *  held, or — when there is none — a status that arrived before any row did. */
+function heldOrAwaiting(
+  state: Pick<ChatState, 'statusAwaitingRow'>,
+  sessionId: string,
+  row: SessionSummary | undefined,
+): SessionSummary | undefined {
+  if (row) return row;
+  const status = state.statusAwaitingRow.get(sessionId);
+  // Only `status` is read off a held row that is not a real one.
+  return status ? ({ status } as SessionSummary) : undefined;
+}
+
 function mergedSessions(
-  state: Pick<ChatState, 'sessions' | 'listOrderStampBySession'>,
+  state: Pick<ChatState, 'sessions' | 'listOrderStampBySession' | 'statusAwaitingRow'>,
   list: SessionSummary[],
 ): Pick<ChatState, 'sessions' | 'listOrderStampBySession'> {
   const sessions = new Map(state.sessions);
@@ -517,7 +539,7 @@ function mergedSessions(
     const prev = sessions.get(s.sessionId);
     // `prev`'s fields stay on top, except the status, which is decided by `as_of`
     // and not by which of the two arrived first.
-    sessions.set(s.sessionId, withNewestStatus(prev, s, true));
+    sessions.set(s.sessionId, withNewestStatus(heldOrAwaiting(state, s.sessionId, prev), s, true));
     if (!listOrderStampBySession.has(s.sessionId)) {
       listOrderStampBySession.set(s.sessionId, s.updatedAt);
     }
@@ -711,7 +733,7 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
         for (const s of list) {
           // The list is replaced, but a status already held may be newer than the
           // page's: a live event can land while the page is in flight.
-          sessions.set(s.sessionId, withNewestStatus(held.get(s.sessionId), s));
+          sessions.set(s.sessionId, withNewestStatus(heldOrAwaiting(get(), s.sessionId, held.get(s.sessionId)), s));
           listOrderStampBySession.set(s.sessionId, prior.get(s.sessionId) ?? s.updatedAt);
         }
         set({
@@ -749,7 +771,7 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
         const prev = sessions.get(summary.sessionId);
         // Newest `as_of` wins, not newest arrival: this upsert may be older than a
         // `session_status` the open session's own stream has already delivered.
-        summary = withNewestStatus(prev, summary);
+        summary = withNewestStatus(heldOrAwaiting(get(), summary.sessionId, prev), summary);
         sessions.set(summary.sessionId, summary);
         // The order stamp moves on exactly two upserts: a session seen for the first
         // time (it enters at its recency position), and a running turn ending (the
@@ -791,7 +813,15 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
           return;
         }
         const detail = get().sessionDetail.get(sessionId);
-        if (!detail) return;
+        if (!detail) {
+          // No row of any kind yet. Keep the status for the row that is on its way.
+          const waiting = get().statusAwaitingRow.get(sessionId);
+          if (newerSessionStatus(waiting, status) !== status || waiting?.as_of === status.as_of) return;
+          const statusAwaitingRow = new Map(get().statusAwaitingRow);
+          statusAwaitingRow.set(sessionId, status);
+          set({ statusAwaitingRow });
+          return;
+        }
         const held = detail.summary.status;
         if (newerSessionStatus(held, status) !== status || held?.as_of === status.as_of) return;
         const sessionDetail = new Map(get().sessionDetail);
@@ -825,6 +855,8 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
         pendingHooks.delete(sessionId);
         const listOrderStampBySession = new Map(get().listOrderStampBySession);
         listOrderStampBySession.delete(sessionId);
+        const statusAwaitingRow = new Map(get().statusAwaitingRow);
+        statusAwaitingRow.delete(sessionId);
         // The one authoritative "this session is gone" signal there is, so it is the
         // one place a draft can be dropped for a reason rather than for age. Persist
         // the removal too, or the draft comes straight back on the next reload.
@@ -838,6 +870,7 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
           rawTurnsLoaded,
           pendingHooks,
           listOrderStampBySession,
+          statusAwaitingRow,
           sessionDetail,
           sessionDetailLoading,
           drafts,
@@ -1029,7 +1062,10 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
 
       setSessionDetail(sessionId, detail) {
         const sessionDetail = new Map(get().sessionDetail);
-        sessionDetail.set(sessionId, detail);
+        // The detail's summary is a session row like any other: a status already held
+        // for this session — on an earlier detail, or waiting for a row — may be newer.
+        const held = heldOrAwaiting(get(), sessionId, get().sessionDetail.get(sessionId)?.summary);
+        sessionDetail.set(sessionId, { ...detail, summary: withNewestStatus(held, detail.summary) });
         const sessionDetailLoading = new Set(get().sessionDetailLoading);
         sessionDetailLoading.delete(sessionId);
         set({ sessionDetail, sessionDetailLoading });
@@ -1331,6 +1367,7 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
       rawTurnsLoaded: new Set(),
       pendingHooks: new Map(),
       budgetHalts: new Map(),
+      statusAwaitingRow: new Map(),
       listOrderStampBySession: new Map(),
       activeId: null,
       filter: { ...EMPTY_FILTER, ...persistedFilterAxes },
