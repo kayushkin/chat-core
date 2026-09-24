@@ -687,8 +687,7 @@ export class ApiClient {
    * model-store registry. Drops `enabled=false` rows (mirroring bridge-ui) and projects
    * each to a `ModelOption` carrying `provider` so `useModels` can filter by a harness's
    * supported providers, plus the `shortName` nickname a dense picker renders. LOUD:
-   * throws on any non-2xx. (bridge-ui reads the same endpoint in a `BridgeChat.tsx`
-   * effect.)
+   * throws on any non-2xx.
    */
   async getModels(): Promise<ModelOption[]> {
     const wire = await this.getJSON<StoreModelWire[] | null>('/models');
