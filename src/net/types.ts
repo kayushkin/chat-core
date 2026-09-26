@@ -356,6 +356,9 @@ export interface SessionInfo {
   workingDir?: string;
   model?: string;
   permissionMode?: string;
+  /** The reasoning effort the agent reports it runs at — its own resolved level,
+   *  so it is set even when nothing chose one and the agent used its default. */
+  effort?: string;
   tools?: ToolInfo[];
   slashCommands?: string[];
   agents?: string[];

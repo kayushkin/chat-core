@@ -103,7 +103,9 @@ export interface WireEventData {
   state?: { state?: string; previous?: string; reason?: string };
   /** Body of a `session_status` event — the session's whole status. */
   status?: SessionStatus;
-  info?: unknown;
+  /** Body of a `session_info` event — the harness's whole SessionInfo, which
+   *  replaces the one the session carries. */
+  info?: SessionInfoWire;
   hook?: HookEventWire;
 }
 
@@ -211,6 +213,7 @@ export interface SessionInfoWire {
   working_dir?: string;
   model?: string;
   permission_mode?: string;
+  effort?: string;
   tools?: ToolInfoWire[];
   slash_commands?: string[];
   agents?: string[];

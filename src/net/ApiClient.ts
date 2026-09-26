@@ -13,7 +13,6 @@ import type {
   SearchHitWire,
   SearchResponse,
   SessionConfig,
-  SessionInfo,
   SessionPermissionState,
   SessionSummaryFilterAxes,
   SummaryResponse,
@@ -27,9 +26,9 @@ import type {
   HarnessInfoWire,
   HookEventWire,
   ManagedSessionDetailWire,
-  SessionInfoWire,
   StoreModelWire,
 } from './wireEvents.js';
+import { sessionInfoFromWire } from './sessionInfo.js';
 import { summaryFromManaged } from '../sync/sse.js';
 import { HOOK_PHASE_AWAITING, pendingHookFromWire } from '../store/pendingHooks.js';
 
@@ -48,25 +47,6 @@ import { HOOK_PHASE_AWAITING, pendingHookFromWire } from '../store/pendingHooks.
  *  Every extra hit is another row the list cannot paint until summaries can be
  *  fetched by id. Raise this together with that fetch, never before it. */
 export const SEARCH_HIT_LIMIT = 100;
-
-/** Map the snake_case `msg.SessionInfo` wire blob to the camelCase `SessionInfo`.
- *  The single source of truth for this mapping — every field is copied explicitly
- *  (never spread), so a wire rename fails the type-check here instead of leaking a
- *  snake_case key into the client. Absent fields stay absent; nothing is invented. */
-function sessionInfoFromWire(w: SessionInfoWire): SessionInfo {
-  return {
-    systemPrompt: w.system_prompt,
-    appendSystemPrompt: w.append_system_prompt,
-    workingDir: w.working_dir,
-    model: w.model,
-    permissionMode: w.permission_mode,
-    tools: w.tools?.map((t) => ({ name: t.name, description: t.description })),
-    slashCommands: w.slash_commands,
-    agents: w.agents,
-    skills: w.skills,
-    mcpServers: w.mcp_servers?.map((s) => ({ name: s.name, status: s.status })),
-  };
-}
 
 /** Map the opaque snake_case `harness_config` bag to the camelCase `HarnessConfig`.
  *  The bridge's well-known keys are copied explicitly (so a wire rename fails the

@@ -14,6 +14,7 @@ import type {
   TurnModel,
 } from '../net/types.js';
 import type { WireEvent } from '../net/wireEvents.js';
+import { sessionInfoFromWire } from '../net/sessionInfo.js';
 import {
   annotateTail,
   carryForwardAggregates,
@@ -302,6 +303,12 @@ export interface ChatActions {
    *  already carries; `state` follows it. Reaches a session the list does not hold
    *  (one opened by id) through its cached detail. A no-op for an unknown session. */
   applySessionStatus(sessionId: string, status: SessionStatus): void;
+  /** Replace a session's `info` with one that arrived live — a `session_info` event.
+   *  The harness sends its whole SessionInfo each time (the claudecode harness sends
+   *  one after init and again when Claude Code reports a new effort), and the server
+   *  stores it the same way. A no-op until the session's detail has been fetched: the
+   *  fetch returns the stored info, which is at least as new. */
+  applySessionInfo(sessionId: string, info: SessionInfo): void;
   removeSession(sessionId: string): void;
 
   /** Replace the folder list with what `GET /folders` returned, order intact.
@@ -791,6 +798,14 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
         set({ sessions, listOrderStampBySession });
       },
 
+      applySessionInfo(sessionId, info) {
+        const prev = get().sessionDetail.get(sessionId);
+        if (!prev) return;
+        const sessionDetail = new Map(get().sessionDetail);
+        sessionDetail.set(sessionId, { ...prev, info });
+        set({ sessionDetail });
+      },
+
       applySessionStatus(sessionId, status) {
         const listed = get().sessions.get(sessionId);
         if (listed) {
@@ -1002,6 +1017,13 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
           if (status) incomingStatus = newerSessionStatus(incomingStatus, status);
         }
         if (incomingStatus) actions.applySessionStatus(sessionId, incomingStatus);
+        // Folded ahead of the early return for the same reason: `session_info` moves no
+        // turn. Events arrive in order, so the last one in the batch is the newest.
+        let incomingInfo: SessionInfo | undefined;
+        for (const event of events) {
+          if (event.type === 'session_info' && event.data.info) incomingInfo = sessionInfoFromWire(event.data.info);
+        }
+        if (incomingInfo) actions.applySessionInfo(sessionId, incomingInfo);
         // Whether this session had no transcript at all before this frame. That is the
         // only case where a live frame grows the RETAINED SET rather than one member of
         // it, and so the only case that has to re-run the budget.
