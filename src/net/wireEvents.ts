@@ -1,4 +1,4 @@
-import type { SessionStatus } from './types.js';
+import type { SessionFile, SessionStatus } from './types.js';
 // The raw SSE/event wire shapes the live-tail reducer consumes. These mirror the
 // canonical llm-bridge `msg.Event` JSON (snake_case on the wire, as emitted by
 // llm-bridge-server) — deliberately narrow to the fields chat-core reads. The
@@ -57,7 +57,20 @@ export interface WireEventData {
   };
   thinking?: { text?: string; subtype?: string };
   tool_call?: { tool_id?: string; name?: string; input?: unknown };
-  tool_result?: { tool_id?: string; name?: string; output?: unknown; is_error?: boolean };
+  tool_result?: {
+    tool_id?: string;
+    name?: string;
+    output?: unknown;
+    is_error?: boolean;
+    /** The result's non-text blocks — `ToolResultEvent.Content`, canonical content
+     *  blocks. Only images are read. */
+    content?: Array<{
+      type?: string;
+      image_block?: { source?: { kind?: string; media_type?: string; data?: string } };
+    }>;
+  };
+  /** Body of a `session_file` event: a file shared into the session. */
+  session_file?: SessionFile;
   result?: { text?: string; usage?: unknown; is_error?: boolean };
   // Mirrors the canonical msg.ErrorEvent JSON (snake_case on the wire). `code` values
   // TURN_IDLE_TIMEOUT / PROCESS_DIED are turn terminators; api_error /

@@ -13,6 +13,7 @@ import type {
   SearchHitWire,
   SearchResponse,
   SessionConfig,
+  SessionFile,
   SessionPermissionState,
   SessionSummaryFilterAxes,
   SummaryResponse,
@@ -588,6 +589,50 @@ export class ApiClient {
 
   send(id: string, text: string): Promise<SendResult> {
     return this.postJSON<SendResult>(`/sessions/${id}/send`, { message: text });
+  }
+
+  /**
+   * Share a file into a session. POST /sessions/{id}/files?filename=… with the bytes
+   * as the body and their type as Content-Type. Answers the canonical record, whose
+   * `path` is where the session's agent reads the file; the session's stream gets a
+   * `session_file` event for it too. LOUD like every write: a refusal (too large,
+   * a name that is not a plain name, file-store down) throws an `ApiError` carrying
+   * the server's message.
+   */
+  async shareSessionFile(sessionId: string, file: Blob, filename: string): Promise<SessionFile> {
+    const path = `/sessions/${encodeURIComponent(sessionId)}/files?filename=${encodeURIComponent(filename)}`;
+    const res = await this.doFetch(`${this.basePath}${path}`, {
+      method: 'POST',
+      // A pasted or picked file the browser cannot type is still bytes; the server
+      // requires a type, and this is the honest one.
+      headers: { 'Content-Type': file.type || 'application/octet-stream' },
+      body: file,
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      throw new ApiError({
+        message: `POST ${path} failed: ${res.status} ${res.statusText} ${detail}`.trim(),
+        status: res.status,
+        body: detail,
+        method: 'POST',
+        path,
+      });
+    }
+    return (await res.json()) as SessionFile;
+  }
+
+  /** Where a browser reads a shared file's bytes. `inline` asks for it to be shown
+   *  rather than downloaded; file-store grants that only to the types on its inline
+   *  list, and serves everything else as a download whatever is asked. */
+  sessionFileContentUrl(sessionId: string, fileId: string, opts?: { inline?: boolean }): string {
+    const inline = opts?.inline ? '?inline=true' : '';
+    return `${this.basePath}/sessions/${encodeURIComponent(sessionId)}/files/${encodeURIComponent(fileId)}/content${inline}`;
+  }
+
+  /** Where a browser reads the bytes of an image a settled tool result carried. See
+   *  `ToolResultImage`: a live entry holds its bytes and needs no URL. */
+  toolResultImageUrl(sessionId: string, eventId: number, index: number): string {
+    return `${this.basePath}/sessions/${encodeURIComponent(sessionId)}/entries/${eventId}/images/${index}`;
   }
 
   /**

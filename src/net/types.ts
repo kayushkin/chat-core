@@ -112,6 +112,7 @@ export type EntryKind =
   | 'system'
   | 'result'
   | 'error'
+  | 'file' // a file shared into the session, by the user or by its agent
   | 'meta'; // catch-all for anything not specially rendered
 
 export type Role = 'user' | 'assistant' | 'system' | 'tool';
@@ -134,6 +135,40 @@ export interface EntryUsage {
   outputTokens?: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
+}
+
+/** One image of a tool result. `index` is its position in `ToolResultEvent.Content`.
+ *
+ *  Its bytes are in one of two places, and exactly one of these is set:
+ *   - `base64Data` on a LIVE-folded entry, which holds the whole event;
+ *   - `eventId` on a PAGE entry: log-store's row id of the tool_result event, which
+ *     `ApiClient.toolResultImageUrl` turns into the image route. A page lists images
+ *     without their bytes, because a screenshot is ~100 KB of base64 and the page is
+ *     what `raw` was dropped from to keep small. It is stamped here rather than read
+ *     off the entry because a call and its result merge into one row, and the row's
+ *     own `eventId` is then no longer the result's. */
+export interface ToolResultImage {
+  index: number;
+  mediaType: string;
+  base64Data?: string;
+  eventId?: number;
+}
+
+/** Who shared a file into a session — `msg.SessionFileSharer`. */
+export type SessionFileSharer = 'user' | 'agent';
+
+/** A file shared into a session — the canonical `msg.SessionFile`, snake_case as
+ *  llm-bridge-server and log-store send it. `path` is where the session's agent reads
+ *  the same bytes; the browser reads them through `ApiClient.sessionFileContentUrl`. */
+export interface SessionFile {
+  file_id: string;
+  session_id: string;
+  filename: string;
+  media_type: string;
+  size_bytes: number;
+  shared_by: SessionFileSharer;
+  path: string;
+  created_at: string;
 }
 
 /** Where the client got an entry: folded from the live stream (or born in the
@@ -215,6 +250,12 @@ export interface Entry {
   toolId?: string;
   /** Whether the tool failed — `ToolResultEvent.IsError`. */
   toolError?: boolean;
+  /** The images a tool result carried (`ToolResultEvent.Content`): a screenshot, an
+   *  image file the agent read. Each names where its bytes are — see
+   *  `ToolResultImage`. Absent when the result carried none. */
+  toolResultImages?: ToolResultImage[];
+  /** kind `'file'` only: the file shared into the session, as the canonical record. */
+  sessionFile?: SessionFile;
   /** The caller-minted per-turn id, used to correlate an optimistic user row with
    *  the real `user_message`.
    *

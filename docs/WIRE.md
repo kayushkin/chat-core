@@ -64,6 +64,12 @@ transcript text matched `q`. The client folds `sessionIds` into the search-filte
 AUGMENTATION of the instant local name filter — the client never blocks name-matching on
 it, and a response for a superseded query is dropped (the hit set is pinned to its query).
 
+### `POST /sessions/{id}/files?filename=<name>` — body the bytes, `Content-Type` their type
+Shares a file into the session; answers the `SessionFile`, and the stream gets a
+`session_file` event for it. `GET /sessions/{id}/files/{file_id}/content[?inline=true]` reads
+it back with file-store's headers. LOUD: a refusal (413 too large, 400 a name that is not a
+plain name, 503 no file-store) throws.
+
 ### `POST /sessions/{id}/interrupt`
 Interrupt/stop the running turn. The client treats this as a LOUD call: any non-2xx throws
 and MUST surface (never a swallowed fake-idle). In particular the server returns **409**
@@ -265,6 +271,15 @@ never invented. log-store's `Entry` struct and the live-tail reducer populate th
   should almost never hold one; the exception is the fail-safe that keeps a frame whose
   `task_started` was missed on the parent rather than dropping it. A view of what THIS session
   did must leave those out.
+- `toolResultImages?: ToolResultImage[]` — the images a tool result carried
+  (`ToolResultEvent.Content`): a screenshot, an image file the agent read. log-store lists them
+  by `index` and `mediaType` only, never their bytes; the client stamps each with the tool
+  result's own `eventId`, and `ApiClient.toolResultImageUrl` turns that into
+  `GET /sessions/{id}/entries/{eventId}/images/{index}`. A live-folded entry carries
+  `base64Data` instead and needs no URL. An image held by URL is not drawn.
+- `sessionFile?: SessionFile` — kind `'file'`: a file shared into the session
+  (`session_file` event, `msg.SessionFile`), role `user` or `assistant` by `shared_by`.
+  `ApiClient.shareSessionFile` shares one, `ApiClient.sessionFileContentUrl` reads it back.
 
 ### Session status (`SessionStatus`) — decided by the server, ordered by `as_of`
 What a session is doing right now is `msg.SessionStatus`, **passed through in its own

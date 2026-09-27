@@ -1,4 +1,4 @@
-import type { Entry, EntryKind, Role, Turn, TurnModel, Validator } from '../net/types.js';
+import type { Entry, EntryKind, Role, ToolResultImage, Turn, TurnModel, Validator } from '../net/types.js';
 import type { WireEvent, WireEventData } from '../net/wireEvents.js';
 import { annotateOTelDuplicates } from './otelDedup.js';
 // The ONE answer to "what tool id does this entry carry", shared with the pairing
@@ -183,7 +183,28 @@ export function isLiveEntry(entry: Entry): boolean {
 /** Stamp an entry a server page delivered. An entry that already says where it came
  *  from keeps its object, so a cached live row stays live and row memos keep hitting. */
 function stampedAsPage(entry: Entry): Entry {
-  return entry.origin ? entry : { ...entry, origin: 'page' };
+  if (entry.origin) return entry;
+  // A page lists a tool result's images without their bytes; stamp each with the
+  // event it came from while this entry still IS that event. See ToolResultImage.
+  const toolResultImages = entry.toolResultImages?.map((image) =>
+    image.eventId !== undefined || image.base64Data !== undefined ? image : { ...image, eventId: entry.eventId },
+  );
+  return { ...entry, origin: 'page', ...(toolResultImages ? { toolResultImages } : {}) };
+}
+
+/** A live tool result's images, with their bytes. A block held by URL rather than
+ *  base64 is not drawn: the browser would fetch a URL a tool chose, from the
+ *  dashboard's origin. */
+function liveToolResultImages(
+  content: NonNullable<WireEvent['data']['tool_result']>['content'],
+): ToolResultImage[] {
+  const images: ToolResultImage[] = [];
+  (content ?? []).forEach((block, index) => {
+    const source = block.image_block?.source;
+    if (block.type !== 'image' || source?.kind !== 'base64' || !source.data) return;
+    images.push({ index, mediaType: source.media_type ?? '', base64Data: source.data });
+  });
+  return images;
 }
 
 /** Trim + collapse whitespace, the correlation form for optimistic-user matching.
@@ -498,6 +519,8 @@ export function kindOf(ev: WireEvent): EntryKind {
       return 'error';
     case 'system':
       return 'system';
+    case 'session_file':
+      return 'file';
     case 'session_state':
     case 'session_info':
       return 'meta';
@@ -508,6 +531,8 @@ export function kindOf(ev: WireEvent): EntryKind {
 
 function roleOf(ev: WireEvent, kind: EntryKind): Role {
   if (ev.type === 'user_message') return 'user';
+  // A shared file is said by whoever shared it — log-store's classify does the same.
+  if (ev.type === 'session_file') return ev.data.session_file?.shared_by === 'agent' ? 'assistant' : 'user';
   if (ev.type === 'tool_call' || ev.type === 'tool_result') return 'tool';
   if (ev.type === 'system' || ev.type === 'session_state' || ev.type === 'session_info') {
     return 'system';
@@ -597,6 +622,13 @@ function applyPayload(prev: Entry, ev: WireEvent): Entry {
       next.toolResult = raw.tool_result?.output ?? prev.toolResult;
       next.toolId = raw.tool_result?.tool_id ?? prev.toolId;
       if (raw.tool_result?.is_error !== undefined) next.toolError = raw.tool_result.is_error;
+      {
+        const images = liveToolResultImages(raw.tool_result?.content);
+        if (images.length > 0) next.toolResultImages = images;
+      }
+      break;
+    case 'session_file':
+      if (raw.session_file) next.sessionFile = raw.session_file;
       break;
     case 'result':
       next.text = raw.result?.text || prev.text;

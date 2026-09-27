@@ -693,3 +693,28 @@ describe('ApiClient.search — parses the array log-store actually sends', () =>
     await expect(api.search('needle')).rejects.toThrow(/expected an array/);
   });
 });
+
+describe('ApiClient.shareSessionFile', () => {
+  it('POSTs the bytes with their type and the name in the query', async () => {
+    const seen: Array<{ url: string; init?: RequestInit }> = [];
+    const record = { file_id: 'file_000001', path: '/x/a b.png' };
+    const api = new ApiClient({
+      fetch: fakeFetch({ ok: true, status: 201, statusText: 'Created', jsonBody: record }, (url, init) => seen.push({ url, init })),
+      basePath: '/api/bridge',
+    });
+    const file = new Blob(['PNG'], { type: 'image/png' });
+    await expect(api.shareSessionFile('br_1', file, 'a b.png')).resolves.toEqual(record);
+    expect(seen[0].url).toBe('/api/bridge/sessions/br_1/files?filename=a%20b.png');
+    expect(seen[0].init?.method).toBe('POST');
+    expect((seen[0].init?.headers as Record<string, string>)['Content-Type']).toBe('image/png');
+    expect(seen[0].init?.body).toBe(file);
+  });
+
+  it('throws the server refusal rather than resolving', async () => {
+    const api = new ApiClient({
+      fetch: fakeFetch({ ok: false, status: 413, statusText: 'Payload Too Large', textBody: 'at most 26214400 bytes' }),
+      basePath: '/api/bridge',
+    });
+    await expect(api.shareSessionFile('br_1', new Blob(['x']), 'big.bin')).rejects.toThrow(/413.*26214400/);
+  });
+});
