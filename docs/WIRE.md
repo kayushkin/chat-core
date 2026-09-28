@@ -70,6 +70,13 @@ Shares a file into the session; answers the `SessionFile`, and the stream gets a
 it back with file-store's headers. LOUD: a refusal (413 too large, 400 a name that is not a
 plain name, 503 no file-store) throws.
 
+### `POST /sessions/{id}/actions/{action_id}/run`
+Confirms a session action the agent offered: llm-bridge-server runs it and answers the
+`SessionAction` as `running`; the run's end arrives as a `session_action` event. LOUD: 409
+when it already ran or when what it would run changed since it was offered. `GET
+/sessions/{id}/actions` lists every action's newest record. The agent offers one with
+`POST /sessions/{id}/actions` (its `bridge-button` command); the client never does.
+
 ### `POST /sessions/{id}/interrupt`
 Interrupt/stop the running turn. The client treats this as a LOUD call: any non-2xx throws
 and MUST surface (never a swallowed fake-idle). In particular the server returns **409**
@@ -280,6 +287,12 @@ never invented. log-store's `Entry` struct and the live-tail reducer populate th
 - `sessionFile?: SessionFile` — kind `'file'`: a file shared into the session
   (`session_file` event, `msg.SessionFile`), role `user` or `assistant` by `shared_by`.
   `ApiClient.shareSessionFile` shares one, `ApiClient.sessionFileContentUrl` reads it back.
+- `sessionAction?: SessionAction` — kind `'action'`: a session action (`session_action`
+  event, `msg.SessionAction`) as that event recorded it. Every change is its own event
+  carrying the whole record: the entry whose record is `offered` (role `assistant`) is where
+  the button goes, and each later one (role `system`) is a step of its one run.
+  `newestSessionActions(entries)` gives each action's current record;
+  `ApiClient.runSessionAction` confirms one.
 
 ### Session status (`SessionStatus`) — decided by the server, ordered by `as_of`
 What a session is doing right now is `msg.SessionStatus`, **passed through in its own

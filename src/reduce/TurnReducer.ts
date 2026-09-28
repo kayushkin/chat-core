@@ -521,6 +521,8 @@ export function kindOf(ev: WireEvent): EntryKind {
       return 'system';
     case 'session_file':
       return 'file';
+    case 'session_action':
+      return 'action';
     case 'session_state':
     case 'session_info':
       return 'meta';
@@ -533,6 +535,9 @@ function roleOf(ev: WireEvent, kind: EntryKind): Role {
   if (ev.type === 'user_message') return 'user';
   // A shared file is said by whoever shared it — log-store's classify does the same.
   if (ev.type === 'session_file') return ev.data.session_file?.shared_by === 'agent' ? 'assistant' : 'user';
+  // The agent offers a button; each later step of its run is a record of what happened.
+  // log-store's classify does the same.
+  if (ev.type === 'session_action') return ev.data.session_action?.state === 'offered' ? 'assistant' : 'system';
   if (ev.type === 'tool_call' || ev.type === 'tool_result') return 'tool';
   if (ev.type === 'system' || ev.type === 'session_state' || ev.type === 'session_info') {
     return 'system';
@@ -629,6 +634,9 @@ function applyPayload(prev: Entry, ev: WireEvent): Entry {
       break;
     case 'session_file':
       if (raw.session_file) next.sessionFile = raw.session_file;
+      break;
+    case 'session_action':
+      if (raw.session_action) next.sessionAction = raw.session_action;
       break;
     case 'result':
       next.text = raw.result?.text || prev.text;

@@ -113,6 +113,7 @@ export type EntryKind =
   | 'result'
   | 'error'
   | 'file' // a file shared into the session, by the user or by its agent
+  | 'action' // a button the agent offered, or a later step of its one run
   | 'meta'; // catch-all for anything not specially rendered
 
 export type Role = 'user' | 'assistant' | 'system' | 'tool';
@@ -169,6 +170,46 @@ export interface SessionFile {
   shared_by: SessionFileSharer;
   path: string;
   created_at: string;
+}
+
+/** What a session action does when a person confirms it — `msg.SessionActionType`. */
+export type SessionActionType =
+  | 'deploy'
+  | 'run_scheduler_job'
+  | 'send_message'
+  | 'fork_and_send'
+  | 'new_session_and_send';
+
+/** Where a session action is in its one run — `msg.SessionActionState`. */
+export type SessionActionState = 'offered' | 'running' | 'succeeded' | 'failed' | 'outcome_unknown';
+
+/** What the agent asked for — `msg.SessionActionOffer`. `type` decides which one of
+ *  `repo_id`, `scheduler_job_id` and `message` is set. */
+export interface SessionActionOffer {
+  label: string;
+  type: SessionActionType;
+  repo_id?: number;
+  scheduler_job_id?: number;
+  message?: string;
+}
+
+/** A button an agent put in its session and the record of its run — the canonical
+ *  `msg.SessionAction`. `command` is llm-bridge-server's statement of exactly what a
+ *  confirm runs. Every change arrives as a `session_action` event carrying the whole
+ *  record, so the newest record for an `action_id` is its current state. */
+export interface SessionAction {
+  action_id: string;
+  session_id: string;
+  offer: SessionActionOffer;
+  command: string;
+  state: SessionActionState;
+  offered_at: string;
+  run_by_principal_id?: string;
+  started_at?: string;
+  finished_at?: string;
+  output?: string;
+  error?: string;
+  result_session_id?: string;
 }
 
 /** Where the client got an entry: folded from the live stream (or born in the
@@ -256,6 +297,10 @@ export interface Entry {
   toolResultImages?: ToolResultImage[];
   /** kind `'file'` only: the file shared into the session, as the canonical record. */
   sessionFile?: SessionFile;
+  /** kind `'action'` only: the session action as this event recorded it. The entry
+   *  whose record is `offered` is where the button was put; later entries are the
+   *  steps of its run. */
+  sessionAction?: SessionAction;
   /** The caller-minted per-turn id, used to correlate an optimistic user row with
    *  the real `user_message`.
    *

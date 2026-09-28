@@ -669,8 +669,15 @@ Mirror the exact canonical bridge endpoints (verified against bridge-ui `useBrid
 //   setConfig(id: string, config: SessionConfig): Promise<unknown>;           // POST /sessions/{id}/config — { model?, effort?, max_budget?, disabled_tools? }
 //   getHarnesses(): Promise<HarnessMeta[]>;                                     // GET /harnesses (canonical harness registry)
 //   getModels(): Promise<ModelOption[]>;                                       // GET /models (enabled rows → ModelOption)
+//   listSessionActions(id: string): Promise<SessionAction[]>;                 // GET /sessions/{id}/actions
+//   runSessionAction(id: string, actionId: string): Promise<SessionAction>;   // POST /sessions/{id}/actions/{action_id}/run — 409 if already run or changed
 // }
 ```
+
+Session actions — buttons an agent put in its chat (`SessionAction`, `SessionActionOffer`,
+`SessionActionState`, `SessionActionType`; entry kind `'action'`):
+`newestSessionActions(entries) → Map<action_id, SessionAction>` gives each action's current
+record, since every change is its own entry.
 
 Pure, framework-free selectors (exported for non-React consumers/tests):
 `harnessCapabilities(harnesses, harnessId) → Set<string>` and

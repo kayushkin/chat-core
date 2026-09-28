@@ -110,6 +110,10 @@ export type {
   ToolResultImage,
   SessionFile,
   SessionFileSharer,
+  SessionAction,
+  SessionActionOffer,
+  SessionActionState,
+  SessionActionType,
   Turn,
   TurnModel,
   TurnAggregates,
@@ -277,6 +281,7 @@ export {
   groupMembers,
   isOTelSourced,
 } from './reduce/otelDedup.js';
+export { newestSessionActions } from './reduce/sessionActions.js';
 export {
   parseRefChips,
   remarkRefChips,

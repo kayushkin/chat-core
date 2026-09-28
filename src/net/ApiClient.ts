@@ -13,6 +13,7 @@ import type {
   SearchHitWire,
   SearchResponse,
   SessionConfig,
+  SessionAction,
   SessionFile,
   SessionPermissionState,
   SessionSummaryFilterAxes,
@@ -619,6 +620,28 @@ export class ApiClient {
       });
     }
     return (await res.json()) as SessionFile;
+  }
+
+  /**
+   * Every action offered in a session, oldest first, each as its newest record.
+   * GET /sessions/{id}/actions.
+   */
+  listSessionActions(sessionId: string): Promise<SessionAction[]> {
+    return this.getJSON<SessionAction[]>(`/sessions/${encodeURIComponent(sessionId)}/actions`);
+  }
+
+  /**
+   * Confirm a session action: llm-bridge-server runs it. POST
+   * /sessions/{id}/actions/{action_id}/run answers the record as `running`; how the
+   * run ends arrives as a `session_action` event. LOUD like every write: an action
+   * that already ran, or whose command changed since it was offered, is a 409 that
+   * throws an `ApiError` carrying the server's message.
+   */
+  runSessionAction(sessionId: string, actionId: string): Promise<SessionAction> {
+    return this.postJSON<SessionAction>(
+      `/sessions/${encodeURIComponent(sessionId)}/actions/${encodeURIComponent(actionId)}/run`,
+      {},
+    );
   }
 
   /** Where a browser reads a shared file's bytes. `inline` asks for it to be shown
