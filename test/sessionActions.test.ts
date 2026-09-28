@@ -61,3 +61,23 @@ describe('a session action', () => {
     expect(newest.get('session_action_000002')?.state).toBe('offered');
   });
 });
+
+describe('a session action id written in text', () => {
+  it('becomes an action chip, and the agent prose that carries it places the button', async () => {
+    const { parseRefChips } = await import('../src/reduce/refChips.js');
+    const { sessionActionIdsPlacedInProse } = await import('../src/reduce/sessionActions.js');
+    expect(parseRefChips('Ready: session_action_000007 or `session_action_000008`.').filter((s) => s.type === 'chip')).toEqual([
+      { type: 'chip', kind: 'action', refId: 'session_action_000007' },
+      { type: 'chip', kind: 'action', refId: 'session_action_000008' },
+    ]);
+    // Too short to be an id, and part of a longer word: plain text.
+    expect(parseRefChips('session_action_12 and xsession_action_000009').every((s) => s.type === 'text')).toBe(true);
+
+    const s = apply([
+      ev('result', { message_id: 'm1', result: { text: 'Press session_action_000007 to deploy.' } }),
+      ev('user_message', { message_id: 'm2', result: { text: 'what is session_action_000008?' } }),
+    ]);
+    const placed = sessionActionIdsPlacedInProse(entries(s));
+    expect([...placed]).toEqual(['session_action_000007']);
+  });
+});

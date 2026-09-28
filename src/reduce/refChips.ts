@@ -33,8 +33,13 @@
  * in the entity-type registry and reports every one that recognizes the id.
  * This is the kind that makes chips independent of how the author phrased the
  * mention — "note <uuid>", "saved as <uuid>", or the uuid alone all resolve.
+ *
+ * `action` is a session action id (`session_action_000007`): a button the
+ * session's agent offered. The agent writes the id where the button belongs,
+ * and the chat draws the button there — but only for an action offered in the
+ * same session, so text alone can never make a button.
  */
-export type RefKind = 'session' | 'note' | 'todo' | 'uuid';
+export type RefKind = 'session' | 'note' | 'todo' | 'uuid' | 'action';
 
 /** An ordered piece of a parsed message: literal text or a detected reference. */
 export type RefSegment =
@@ -52,6 +57,9 @@ export type RefSegment =
 // optionally with an _id suffix) immediately precedes it. The cue word itself is
 // left as plain text; only the uuid becomes a chip.
 const SESSION_ID = String.raw`br_\d{16,19}|(?:herald|autoworker)(?:-[a-z0-9]+)*-\d{16,19}`;
+// A session action id is llm-bridge-server's zero-padded row number, unambiguous
+// by its prefix.
+const SESSION_ACTION_ID = String.raw`session_action_\d{6,}`;
 const UUID = String.raw`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`;
 
 // The producer/orchestrator writes references in its own bracket dialect —
@@ -111,6 +119,7 @@ function kindForCue(cue: string): RefKind {
 //   4 = bare session id (whole match is the chip)
 //   5 = item cue word    6 = separator    7 = item uuid
 //   8 = bare uuid, no cue — kind `uuid`, classified by the host's resolver
+//   9 = session action id — kind `action`
 //
 // The bracket alternatives come FIRST so a bracket token is consumed whole. They
 // start one character earlier than the cue alternative would (at `[` rather than
@@ -128,7 +137,8 @@ function newTokenRe(): RegExp {
       String.raw`|\[(${BRACKET_ITEM_KIND}):(${UUID})\]${NOT_A_LINK_LABEL}` +
       String.raw`|\b(${SESSION_ID})\b` +
       String.raw`|\b(${ITEM_CUE})([\s:=#]{1,4})(${UUID})\b` +
-      String.raw`|\b(${UUID})\b`,
+      String.raw`|\b(${UUID})\b` +
+      String.raw`|\b(${SESSION_ACTION_ID})\b`,
     'gi',
   );
 }
@@ -160,9 +170,11 @@ export function parseRefChips(value: string): RefSegment[] {
       // Keep the cue word + separator as plain text; chip only the uuid.
       out.push({ type: 'text', value: (match[5] ?? '') + (match[6] ?? '') });
       out.push({ type: 'chip', kind: kindForCue(match[5] ?? ''), refId: match[7] ?? '' });
-    } else {
+    } else if (match[8] !== undefined) {
       // A bare uuid with no cue: the resolver decides what it names.
-      out.push({ type: 'chip', kind: 'uuid', refId: match[8] ?? '' });
+      out.push({ type: 'chip', kind: 'uuid', refId: match[8] });
+    } else {
+      out.push({ type: 'chip', kind: 'action', refId: (match[9] ?? '').toLowerCase() });
     }
     last = match.index + match[0].length;
   }

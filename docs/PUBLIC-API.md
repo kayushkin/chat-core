@@ -678,6 +678,8 @@ Session actions — buttons an agent put in its chat (`SessionAction`, `SessionA
 `SessionActionState`, `SessionActionType`; entry kind `'action'`):
 `newestSessionActions(entries) → Map<action_id, SessionAction>` gives each action's current
 record, since every change is its own entry.
+`sessionActionIdsPlacedInProse(entries) → Set<action_id>` names the actions whose id the agent
+wrote in its reply text, where the chat draws the button; `RefKind` `'action'` is that id in text.
 
 Pure, framework-free selectors (exported for non-React consumers/tests):
 `harnessCapabilities(harnesses, harnessId) → Set<string>` and

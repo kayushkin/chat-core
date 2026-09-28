@@ -18,3 +18,20 @@ export function newestSessionActions(entries: Iterable<Entry>): Map<string, Sess
   }
   return new Map([...newest].map(([actionId, { action }]) => [actionId, action]));
 }
+
+const SESSION_ACTION_ID_IN_TEXT = /\bsession_action_\d{6,}\b/gi;
+
+/**
+ * Every session action id the agent wrote in its own prose among `entries`. The chat
+ * draws such an action as a button where its id is written, so the card at its offer
+ * shrinks to a line rather than showing the same button twice. Only the agent's
+ * reply text counts: an id in a tool's output or the user's message places nothing.
+ */
+export function sessionActionIdsPlacedInProse(entries: Iterable<Entry>): Set<string> {
+  const placed = new Set<string>();
+  for (const entry of entries) {
+    if (entry.role !== 'assistant' || (entry.kind !== 'text' && entry.kind !== 'result') || !entry.text) continue;
+    for (const match of entry.text.matchAll(SESSION_ACTION_ID_IN_TEXT)) placed.add(match[0].toLowerCase());
+  }
+  return placed;
+}

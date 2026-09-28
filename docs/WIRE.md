@@ -292,7 +292,9 @@ never invented. log-store's `Entry` struct and the live-tail reducer populate th
   carrying the whole record: the entry whose record is `offered` (role `assistant`) is where
   the button goes, and each later one (role `system`) is a step of its one run.
   `newestSessionActions(entries)` gives each action's current record;
-  `ApiClient.runSessionAction` confirms one.
+  `ApiClient.runSessionAction` confirms one. The agent places a button by writing its id
+  (`session_action_000007`) in its reply: `parseRefChips` gives it kind `'action'`, and
+  `sessionActionIdsPlacedInProse(entries)` names the ids placed that way.
 
 ### Session status (`SessionStatus`) — decided by the server, ordered by `as_of`
 What a session is doing right now is `msg.SessionStatus`, **passed through in its own

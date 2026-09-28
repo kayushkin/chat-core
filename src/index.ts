@@ -281,7 +281,7 @@ export {
   groupMembers,
   isOTelSourced,
 } from './reduce/otelDedup.js';
-export { newestSessionActions } from './reduce/sessionActions.js';
+export { newestSessionActions, sessionActionIdsPlacedInProse } from './reduce/sessionActions.js';
 export {
   parseRefChips,
   remarkRefChips,
