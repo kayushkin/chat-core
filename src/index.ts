@@ -11,6 +11,7 @@ export {
   useTurns,
   useFullEntry,
   useComposer,
+  type ComposerSendOptions,
   useFilters,
   useSessionActions,
   useFolders,

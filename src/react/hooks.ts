@@ -402,8 +402,22 @@ const RESUMABLE_STATES = new Set<string>(['aborted', 'disconnected']);
  *  /sessions/{id}/resume), and is LOUD on the same terms as `stop()`. `resumable`
  *  says when it will actually work — see RESUMABLE_STATES below for why that is
  *  NOT `paused`. */
+/** What `useComposer().send` takes besides the text.
+ *
+ *  `prepareMessage` runs once the target session exists — after `createSession` on a
+ *  new chat — and before anything is shown or posted. It gets that session's id and
+ *  returns the text to send, so a caller can put files into the session first (they
+ *  need its id) and name them in the message. When it throws, the send fails like any
+ *  other: nothing is posted, the draft comes back, and `error` says why. With it, an
+ *  empty `text` still sends, because the message is whatever it returns. */
+export interface ComposerSendOptions {
+  prepareMessage?: (sessionId: string) => Promise<string>;
+}
+
 export function useComposer(sessionId: string | null): {
-  send: (text: string) => void;
+  /** Resolves when the send has finished, failed or not; it never rejects, because a
+   *  failure is reported in `error`. */
+  send: (text: string, options?: ComposerSendOptions) => Promise<void>;
   draft: string;
   setDraft: (t: string) => void;
   sending: boolean;
@@ -502,69 +516,68 @@ export function useComposer(sessionId: string | null): {
   );
 
   const send = useCallback(
-    (text: string) => {
+    async (text: string, options?: ComposerSendOptions): Promise<void> => {
       const trimmed = text.trim();
-      if (!trimmed) return;
+      const prepareMessage = options?.prepareMessage;
+      if (!trimmed && !prepareMessage) return;
       actions.setDraft(key, '');
       setError(null);
 
-      // Lazy-create a real session for the pending pane on first send.
-      if (!sessionId) {
-        const pending = store.getState().pending;
-        const clientId = `c_${Date.now()}`;
-        let createdId: string | null = null;
-        void api
-          .createSession(
+      let targetId: string | null = sessionId;
+      let clientId: string | null = null;
+      try {
+        // Lazy-create a real session for the pending pane on first send.
+        if (!targetId) {
+          const pending = store.getState().pending;
+          const created = await api.createSession(
             pending
               ? { instanceId: pending.instanceId, harness: pending.harness, principalId: pending.principalId }
               : undefined,
-          )
-          .then((created) => {
-            const newId = created.sessionId;
-            createdId = newId;
-            actions.setActive(newId);
-            actions.clearPending();
-            // Apply the pending pane's settings via POST /config right after create
-            // (bridge-ui parity — create itself takes no model/effort/budget/tools).
-            // The pane carries the controls-bar pre-start picks AND the caller's saved
-            // per-harness defaults, already resolved into one record; ONE call, so the
-            // server never sees a half-configured session. Best-effort on this
-            // optimistic, non-blocking send path: a failure must not strand the message.
-            // `useSessionControls().setConfig` is the LOUD path for a live change.
-            const config = pendingSessionConfig(pending);
-            if (config) {
-              void api.setConfig(newId, config).catch((err: unknown) => {
-                // Still best-effort — a refused config must not strand the message
-                // the user just sent, which is why this does not rethrow. But it is
-                // no longer SILENT, and that distinction is the whole reason this
-                // bug lived: the server answered 500 "session not running" for every
-                // new chat that carried a model, the pick was dropped, and the
-                // session ran on the harness default while the picker still showed
-                // the user's choice. A wrong answer with nothing anywhere to say so.
-                //
-                // The server no longer refuses it (llm-bridge-server persists the
-                // config for a session with no live process and applies it at
-                // spawn), so reaching this handler now means something else is
-                // wrong and there is a line in the console saying what.
-                console.warn(`[chat-core] could not apply settings to new session ${newId}`, err);
-              });
-            }
-            actions.appendOptimisticUser(newId, trimmed, clientId);
-            actions.setSending(newId, true);
-            return api.send(newId, trimmed).finally(() => actions.setSending(newId, false));
-          })
-          .catch((e: unknown) => failSend(createdId, createdId ? clientId : null, trimmed, e));
-        return;
+          );
+          const newId = created.sessionId;
+          targetId = newId;
+          actions.setActive(newId);
+          actions.clearPending();
+          // Apply the pending pane's settings via POST /config right after create
+          // (bridge-ui parity — create itself takes no model/effort/budget/tools).
+          // The pane carries the controls-bar pre-start picks AND the caller's saved
+          // per-harness defaults, already resolved into one record; ONE call, so the
+          // server never sees a half-configured session. Best-effort on this
+          // optimistic, non-blocking send path: a failure must not strand the message.
+          // `useSessionControls().setConfig` is the LOUD path for a live change.
+          const config = pendingSessionConfig(pending);
+          if (config) {
+            void api.setConfig(newId, config).catch((err: unknown) => {
+              // Still best-effort — a refused config must not strand the message
+              // the user just sent, which is why this does not rethrow. But it is
+              // no longer SILENT, and that distinction is the whole reason this
+              // bug lived: the server answered 500 "session not running" for every
+              // new chat that carried a model, the pick was dropped, and the
+              // session ran on the harness default while the picker still showed
+              // the user's choice. A wrong answer with nothing anywhere to say so.
+              //
+              // The server no longer refuses it (llm-bridge-server persists the
+              // config for a session with no live process and applies it at
+              // spawn), so reaching this handler now means something else is
+              // wrong and there is a line in the console saying what.
+              console.warn(`[chat-core] could not apply settings to new session ${newId}`, err);
+            });
+          }
+        }
+        const message = prepareMessage ? (await prepareMessage(targetId)).trim() : trimmed;
+        if (!message) return;
+        // Optimistic: show the user's text instantly, then POST + reconcile.
+        clientId = `c_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        actions.appendOptimisticUser(targetId, message, clientId);
+        actions.setSending(targetId, true);
+        try {
+          await api.send(targetId, message);
+        } finally {
+          actions.setSending(targetId, false);
+        }
+      } catch (e: unknown) {
+        failSend(targetId, clientId, trimmed, e);
       }
-
-      // Optimistic: show the user's text instantly, then POST + reconcile.
-      const clientId = `c_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-      actions.appendOptimisticUser(sessionId, trimmed, clientId);
-      actions.setSending(sessionId, true);
-      void api
-        .send(sessionId, trimmed)
-        .catch((e: unknown) => failSend(sessionId, clientId, trimmed, e))
-        .finally(() => actions.setSending(sessionId, false));
     },
     [actions, api, store, sessionId, key, failSend],
   );
