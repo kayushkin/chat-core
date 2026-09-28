@@ -200,10 +200,10 @@ let visibleCache: {
  *  rule 3 covers everything and the result is exactly the old recency ordering.
  *
  *  Sessions within a group are ordered by their ORDER STAMP, newest first — the
- *  stamp of a session's last completed response, not its raw `updatedAt`. The
+ *  stamp of a session's last turn start or turn end, not its raw `updatedAt`. The
  *  server bumps `updatedAt` on every event, so ordering by it made concurrently
  *  running sessions leapfrog each other continuously; the stamp holds a row still
- *  until its turn ends (see `ChatState.listOrderStampBySession`). While a search
+ *  while its turn runs (see `ChatState.listOrderStampBySession`). While a search
  *  query is active they are ordered by `bySearchRank` instead — id match, then
  *  name match, then how many transcript events matched, then the same stamp.
  *  Memoized on identity of the sessions Map + filter object + content-hit set +

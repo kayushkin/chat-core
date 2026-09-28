@@ -192,17 +192,20 @@ export interface ChatState {
   /** What the sidebar ORDERS by, `sessionId -> RFC3339 stamp`. NOT `updatedAt`:
    *  the server bumps that on every event, so with several sessions running at
    *  once the rows leapfrogged each other continuously and the list could not be
-   *  read while it was working. This stamp moves on exactly two facts:
+   *  read while it was working. This stamp moves on exactly three facts:
    *
    *   - a session is seen for the FIRST time (seeded from its `updatedAt`, so a
    *     new session enters at its recency position — the top);
-   *   - a session's TURN ENDS — its summary state leaves the running set
-   *     (`upsertSession`), or a terminal event arrives on its live tail
-   *     (`applyTailEvents`) — meaning the response's final text has landed in
-   *     the chat.
+   *   - a session's TURN STARTS — its state enters the running set, which is what
+   *     the user's own send or any other new work does first;
+   *   - a session's TURN ENDS — its state leaves the running set — meaning the
+   *     response's final text has landed in the chat.
    *
-   *  Everything else — stream deltas, tool calls, renames, the user's own send —
-   *  leaves the stamp where it was, and the row where it was.
+   *  Either change of state can arrive as a list upsert (`upsertSession`) or as a
+   *  `session_status` on the session's live tail (`applySessionStatus`).
+   *  Everything in between — stream deltas, tool calls, the running state moving
+   *  between `model_generating` and `tool_running` — and renames leave the stamp
+   *  where it was, and the row where it was.
    *
    *  Monotonic per session (advances by max), because the same ending can arrive
    *  on both wires and on a replayed stream, in any order. `updatedAt` itself is
@@ -446,12 +449,12 @@ export type ChatStoreApi = StoreApi<ChatState>;
  *  re-renders the banner. */
 export const EMPTY_HOOKS: ReadonlyMap<string, PendingHook> = new Map();
 
-/** Whether this upsert says a running turn has just ended — the moment the
- *  response's final text is in the chat, and the one summary transition that moves
- *  a session's sidebar order stamp. A first-seen session has no `prev` and is
- *  seeded by the caller instead. */
-function turnEndedBetween(prev: SessionSummary | undefined, next: SessionSummary): boolean {
-  return prev !== undefined && isRunningState(prev.state) && !isRunningState(next.state);
+/** Whether a session's state has just crossed into or out of the running set —
+ *  a turn starting or a turn ending, the two state changes that move a session's
+ *  sidebar order stamp. A first-seen session has no previous state and is seeded
+ *  by the caller instead. */
+function turnStartedOrEndedBetween(previousState: string | undefined, nextState: string): boolean {
+  return previousState !== undefined && isRunningState(previousState) !== isRunningState(nextState);
 }
 
 function getOrInitTail(state: ChatState, sessionId: string): TailState {
@@ -780,14 +783,14 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
         // `session_status` the open session's own stream has already delivered.
         summary = withNewestStatus(heldOrAwaiting(get(), summary.sessionId, prev), summary);
         sessions.set(summary.sessionId, summary);
-        // The order stamp moves on exactly two upserts: a session seen for the first
-        // time (it enters at its recency position), and a running turn ending (the
-        // response's final text is in the chat). Every other upsert — and the server
-        // sends one per event while a session works — changes the row, not the order.
+        // The order stamp moves on exactly three upserts: a session seen for the first
+        // time (it enters at its recency position), a turn starting, and a turn
+        // ending. Every other upsert — and the server sends one per event while a
+        // session works — changes the row, not the order.
         const priorStamps = get().listOrderStampBySession;
         const current = priorStamps.get(summary.sessionId);
         let stamp = current ?? summary.updatedAt;
-        if (turnEndedBetween(prev, summary) && summary.updatedAt > stamp) {
+        if (turnStartedOrEndedBetween(prev?.state, summary.state) && summary.updatedAt > stamp) {
           stamp = summary.updatedAt;
         }
         let listOrderStampBySession = priorStamps;
@@ -813,15 +816,16 @@ export function createChatStore(options: CreateChatStoreOptions = {}): ChatStore
           if (listed.status?.as_of === status.as_of) return; // the same event, replayed
           const sessions = new Map(get().sessions);
           sessions.set(sessionId, { ...listed, status, state: status.state });
-          // A turn's ending moves the sidebar order stamp, exactly as it does when
-          // the ending arrives as a list upsert — whichever wire carries it first.
+          // A turn starting or ending moves the sidebar order stamp, exactly as it
+          // does when the change arrives as a list upsert — whichever wire carries it
+          // first.
           let listOrderStampBySession = get().listOrderStampBySession;
-          const endedAt = status.changed_at;
-          if (endedAt && isRunningState(listed.state) && !isRunningState(status.state)) {
+          const changedAt = status.changed_at;
+          if (changedAt && turnStartedOrEndedBetween(listed.state, status.state)) {
             const current = listOrderStampBySession.get(sessionId);
-            if (current === undefined || endedAt > current) {
+            if (current === undefined || changedAt > current) {
               listOrderStampBySession = new Map(listOrderStampBySession);
-              listOrderStampBySession.set(sessionId, endedAt);
+              listOrderStampBySession.set(sessionId, changedAt);
             }
           }
           set({ sessions, listOrderStampBySession });

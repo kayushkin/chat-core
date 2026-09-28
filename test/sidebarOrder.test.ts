@@ -5,18 +5,21 @@ import type { SessionSummary } from '../src/net/types.js';
 import type { WireEvent } from '../src/net/wireEvents.js';
 
 // The sidebar's ORDER STAMP (ChatState.listOrderStampBySession): the row order
-// moves only when a response's final text lands in the chat, never merely because
-// a session is working.
+// moves when a turn starts and when it ends, never while a session is working.
 //
 // What was wrong: `visibleSessions` ordered by `updatedAt`, which the server bumps
 // on every event. With several sessions running at once the list-stream upserts
 // arrived interleaved, so the rows leapfrogged each other continuously and the
 // sidebar could not be read while it was working — the complaint that opened this.
 //
-// Two wires can carry a turn's ending and both are covered here: the summary state
-// transition (`upsertSession`, the only signal for a BACKGROUND session) and a
-// terminal event on the live tail (`applyTailEvents`, the only signal when the
-// server strands the summary state — the F1 defect).
+// Before 2026-09-28 only a turn's END moved a row, so a session the user had just
+// written to, or one that had started work, stayed where it was until its reply
+// finished — and a page reload, which seeds every stamp from `updatedAt`, then moved
+// it all at once. The user read that as the list not updating until a refresh.
+//
+// Two wires can carry a turn starting or ending and both are covered here: the
+// summary state transition (`upsertSession`, the only signal for a BACKGROUND
+// session) and a `session_status` on the live tail (`applyTailEvents`).
 
 function summary(
   over: Partial<SessionSummary> & Pick<SessionSummary, 'sessionId'>,
@@ -75,13 +78,10 @@ describe('running sessions hold their place', () => {
     expect(orderOf(store)).toEqual(['a', 'b', 'c']);
   });
 
-  it("the user's own send does not move the row either", () => {
-    // Deliberate, not an accident of the mechanism: the order changes on a final
-    // RESPONSE text, and a send is not one. The session being written to is
-    // selected, so it does not need to be on top to be found.
-    const store = seedThree(['idle', 'idle', 'idle']);
+  it('moving between running states mid-turn does not move the row', () => {
+    const store = seedThree(['idle', 'idle', 'model_generating']);
     store.getState().actions.upsertSession(
-      summary({ sessionId: 'c', state: 'running', updatedAt: '2026-08-30T13:00:00+00:00' }),
+      summary({ sessionId: 'c', state: 'tool_running', updatedAt: '2026-08-30T13:00:00+00:00' }),
     );
     expect(orderOf(store)).toEqual(['a', 'b', 'c']);
   });
@@ -92,6 +92,38 @@ describe('running sessions hold their place', () => {
       summary({ sessionId: 'c', displayName: 'renamed', updatedAt: '2026-08-30T13:00:00+00:00' }),
     );
     expect(orderOf(store)).toEqual(['a', 'b', 'c']);
+  });
+});
+
+describe('a turn starting moves a row', () => {
+  it("the user's own send (settled → starting) lifts the session to the top", () => {
+    const store = seedThree(['idle', 'idle', 'idle']);
+    store.getState().actions.upsertSession(
+      summary({ sessionId: 'c', state: 'starting', updatedAt: '2026-08-30T13:00:00+00:00' }),
+    );
+    expect(orderOf(store)).toEqual(['c', 'a', 'b']);
+  });
+
+  it('a background session starting work lifts it, then holds it while it runs', () => {
+    const store = seedThree(['idle', 'idle', 'idle']);
+    const { upsertSession } = store.getState().actions;
+    upsertSession(summary({ sessionId: 'c', state: 'model_generating', updatedAt: '2026-08-30T13:00:00+00:00' }));
+    expect(orderOf(store)).toEqual(['c', 'a', 'b']);
+    // b starts later, so it goes above c; c's later mid-turn events do not win it back.
+    upsertSession(summary({ sessionId: 'b', state: 'running', updatedAt: '2026-08-30T13:01:00+00:00' }));
+    upsertSession(summary({ sessionId: 'c', state: 'tool_running', updatedAt: '2026-08-30T13:02:00+00:00' }));
+    expect(orderOf(store)).toEqual(['b', 'c', 'a']);
+  });
+
+  it('a session_status that starts the turn lifts the session on the tail wire', () => {
+    const store = seedThree(['idle', 'idle', 'idle']);
+    store.getState().actions.applyTailEvent(
+      'c',
+      ev('session_status', '2026-08-30T13:00:00+00:00', {
+        status: { state: 'model_generating', changed_at: '2026-08-30T13:00:00+00:00', as_of: 900 },
+      }),
+    );
+    expect(orderOf(store)).toEqual(['c', 'a', 'b']);
   });
 });
 
