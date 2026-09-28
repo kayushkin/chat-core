@@ -41,6 +41,7 @@ export {
 export {
   ResolveClient,
   type ResolveClientConfig,
+  type ResolvableType,
   type ResolvedRefMatch,
   type ResolveRefError,
   type ResolveResponse,
@@ -285,9 +286,11 @@ export { newestSessionActions, sessionActionIdsPlacedInProse } from './reduce/se
 export {
   parseRefChips,
   remarkRefChips,
+  type RefChipOptions,
   type RefKind,
   type RefSegment,
 } from './reduce/refChips.js';
+export { useResolvableIdPatterns } from './react/resolvableIdPatterns.js';
 
 // ---- Cache ----
 export {

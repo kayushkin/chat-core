@@ -11,11 +11,13 @@
 //    behavior for consumers that already run react-markdown. It uses the same
 //    core matcher and imports nothing, so chat-core stays dependency-free.
 //
-// Four grammars are recognised, all by one regex: bare session ids, a cue word
+// Five grammars are recognised, all by one regex: bare session ids, a cue word
 // in front of a noteboard uuid, the producer/orchestrator's `[kind:id]`
-// bracket dialect (added here, not present upstream), and a bare uuid with no
+// bracket dialect (added here, not present upstream), a bare uuid with no
 // cue at all — kind `uuid`, which the renderer classifies through the host's
-// reference resolver instead of guessing from the surrounding prose.
+// reference resolver instead of guessing from the surrounding prose — and,
+// when the host passes them, the id patterns its resolver declared (kind
+// `registered`, classified the same way).
 
 /**
  * Which backend a chip queries.
@@ -38,8 +40,25 @@
  * session's agent offered. The agent writes the id where the button belongs,
  * and the chat draws the button there — but only for an action offered in the
  * same session, so text alone can never make a button.
+ *
+ * `registered` is an id whose shape the host's resolver declared
+ * (`project_000001`, `prediction_000001`, …): kanban-store's entity-type
+ * registry lists each type's id patterns, the host hands the ones it can
+ * resolve to the matcher (`resolvableIdPatterns`), and the chip asks the
+ * resolver what the id names, as it does for a bare uuid. No prefix is written
+ * here, so a store added to the registry is detected with no change in this
+ * package.
  */
-export type RefKind = 'session' | 'note' | 'todo' | 'uuid' | 'action';
+export type RefKind = 'session' | 'note' | 'todo' | 'uuid' | 'action' | 'registered';
+
+/** What the matcher is told beyond its built-in grammars. */
+export interface RefChipOptions {
+  /** Id patterns the host's resolver can answer, as the registry wrote them
+   *  (`project_\\d{6,}`). An id matching one becomes a `registered` chip. A
+   *  pattern this engine cannot compile is left out and reported on the
+   *  console, rather than costing every other pattern. */
+  resolvableIdPatterns?: readonly string[] | null;
+}
 
 /** An ordered piece of a parsed message: literal text or a detected reference. */
 export type RefSegment =
@@ -120,6 +139,10 @@ function kindForCue(cue: string): RefKind {
 //   5 = item cue word    6 = separator    7 = item uuid
 //   8 = bare uuid, no cue — kind `uuid`, classified by the host's resolver
 //   9 = session action id — kind `action`
+//  10 = an id matching one of the resolver's registered patterns — kind
+//       `registered`. LAST, so a built-in grammar that claims the same text at
+//       the same position (the registry lists session and uuid shapes too)
+//       keeps its own kind.
 //
 // The bracket alternatives come FIRST so a bracket token is consumed whole. They
 // start one character earlier than the cue alternative would (at `[` rather than
@@ -131,24 +154,55 @@ function kindForCue(cue: string): RefKind {
 // word precedes the uuid, the cue alternative's match starts earlier in the
 // string, so leftmost-match prefers it and the cue's kind hint survives. The
 // bare alternative only fires when nothing better claimed the uuid.
-function newTokenRe(): RegExp {
-  return new RegExp(
-    String.raw`\[session:(${BRACKET_SESSION_ID})\]${NOT_A_LINK_LABEL}` +
-      String.raw`|\[(${BRACKET_ITEM_KIND}):(${UUID})\]${NOT_A_LINK_LABEL}` +
-      String.raw`|\b(${SESSION_ID})\b` +
-      String.raw`|\b(${ITEM_CUE})([\s:=#]{1,4})(${UUID})\b` +
-      String.raw`|\b(${UUID})\b` +
-      String.raw`|\b(${SESSION_ACTION_ID})\b`,
-    'gi',
-  );
+const BUILT_IN_TOKENS =
+  String.raw`\[session:(${BRACKET_SESSION_ID})\]${NOT_A_LINK_LABEL}` +
+  String.raw`|\[(${BRACKET_ITEM_KIND}):(${UUID})\]${NOT_A_LINK_LABEL}` +
+  String.raw`|\b(${SESSION_ID})\b` +
+  String.raw`|\b(${ITEM_CUE})([\s:=#]{1,4})(${UUID})\b` +
+  String.raw`|\b(${UUID})\b` +
+  String.raw`|\b(${SESSION_ACTION_ID})\b`;
+
+/** The registered patterns joined into one alternative, keyed by the list's
+ *  contents so each render does not recompile. A pattern that does not
+ *  compile alone would break the whole matcher, so each is tried first. */
+const registeredAlternativeCache = new Map<string, string>();
+
+function registeredAlternative(patterns: readonly string[] | null | undefined): string {
+  if (!patterns || patterns.length === 0) return '';
+  const key = patterns.join('\u0000');
+  const cached = registeredAlternativeCache.get(key);
+  if (cached !== undefined) return cached;
+  const usable: string[] = [];
+  for (const pattern of patterns) {
+    try {
+      // Wrapped in a group so a pattern's own alternation stays inside it.
+      const compiled = new RegExp(`^(?:${pattern})$`, 'i');
+      // A pattern that matches nothing at all would stall the scan loop on a
+      // zero-length match, so it is refused like one that does not compile.
+      if (compiled.test('')) {
+        console.error(`refChips: the resolver's id pattern ${JSON.stringify(pattern)} matches an empty string; ignored`);
+        continue;
+      }
+      usable.push(`(?:${pattern})`);
+    } catch (error) {
+      console.error(`refChips: the resolver's id pattern ${JSON.stringify(pattern)} does not compile here:`, error);
+    }
+  }
+  const alternative = usable.length === 0 ? '' : String.raw`|\b(${usable.join('|')})\b`;
+  registeredAlternativeCache.set(key, alternative);
+  return alternative;
+}
+
+function newTokenRe(options?: RefChipOptions): RegExp {
+  return new RegExp(BUILT_IN_TOKENS + registeredAlternative(options?.resolvableIdPatterns), 'gi');
 }
 
 /** Pure core: split `value` into text + chip segments. Never throws; a string
  *  with no references returns a single text segment (or none, for an empty
  *  string). This is the same matcher bridge-ui's remark plugin runs, exposed as
  *  a framework-agnostic function so it is trivially testable and reusable. */
-export function parseRefChips(value: string): RefSegment[] {
-  const re = newTokenRe();
+export function parseRefChips(value: string, options?: RefChipOptions): RefSegment[] {
+  const re = newTokenRe(options);
   const out: RefSegment[] = [];
   let last = 0;
   let match: RegExpExecArray | null;
@@ -173,8 +227,12 @@ export function parseRefChips(value: string): RefSegment[] {
     } else if (match[8] !== undefined) {
       // A bare uuid with no cue: the resolver decides what it names.
       out.push({ type: 'chip', kind: 'uuid', refId: match[8] });
+    } else if (match[9] !== undefined) {
+      out.push({ type: 'chip', kind: 'action', refId: match[9].toLowerCase() });
     } else {
-      out.push({ type: 'chip', kind: 'action', refId: (match[9] ?? '').toLowerCase() });
+      // A registered pattern: the resolver decides what it names. The whole
+      // match is the id, whatever groups the pattern holds of its own.
+      out.push({ type: 'chip', kind: 'registered', refId: match[0] });
     }
     last = match.index + match[0].length;
   }
@@ -241,7 +299,7 @@ function chip(kind: RefKind, refId: string): RefChipNode {
  * rather than loud: the id simply renders as text and looks like a chip that
  * failed, which is exactly how it was first reported.
  */
-export function remarkRefChips() {
+export function remarkRefChips(options?: RefChipOptions) {
   return (tree: MdParent): void => {
     const walk = (parent: MdParent): void => {
       // `link` nodes keep their text verbatim (a linkified id keeps its link).
@@ -250,7 +308,7 @@ export function remarkRefChips() {
         const node = parent.children[i];
         if (node === undefined) continue;
         if (node.type === 'text') {
-          const segments = parseRefChips((node as MdText).value);
+          const segments = parseRefChips((node as MdText).value, options);
           // Only rewrite when at least one chip was found.
           if (!segments.some((s) => s.type === 'chip')) continue;
           const replacement: MdNode[] = segments.map((s) =>
@@ -262,7 +320,7 @@ export function remarkRefChips() {
           continue;
         }
         if (node.type === 'inlineCode') {
-          const segments = parseRefChips((node as MdInlineCode).value);
+          const segments = parseRefChips((node as MdInlineCode).value, options);
           if (!segments.some((s) => s.type === 'chip')) continue;
           // Whatever was NOT a reference stays code — `todo: <uuid>` in backticks
           // becomes a code span reading "todo: " followed by the chip, rather

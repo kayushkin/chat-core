@@ -32,6 +32,11 @@ export interface SessionSummary {
   /** The managing session in the team tree (bridge session id); empty = top-level.
    *  A promoted subagent session carries its parent here. */
   managerSessionId: string;
+  /** What the session has spent so far, in US dollars (llm-bridge-server's
+   *  `spendUsd` on a summary row, `spend_usd` on a list-stream upsert). Absent
+   *  when the row came from somewhere that did not carry it — a row cached
+   *  before the field was kept — and absent is unknown, not zero. */
+  spendUsd?: number;
   /** Everything the session is doing right now, as llm-bridge-server decided it,
    *  with the event row id it is current as of. `state` above is `status.state` —
    *  the store keeps the two equal (`store/sessionStatus.ts`). Optional on the type
@@ -544,7 +549,9 @@ export interface HarnessConfig {
  *  The nine fields after `harnessConfig` are the identity, lineage and spend the endpoint
  *  has always returned and this type used to drop at the boundary. They live HERE and not
  *  on `summary`: `SessionSummary` is the sidebar row, and widening it would widen the
- *  session-list query for data only one session at a time ever needs.
+ *  session-list query for data only one session at a time ever needs. `spendUsd` is the
+ *  one exception, on both: the server's summary rows carry it, and a view that sums spend
+ *  over many sessions reads it from the list.
  *
  *  Every one of them is optional and ABSENT MEANS ABSENT — the server omits what it has
  *  no value for, and a reader must render that as unknown rather than substituting a

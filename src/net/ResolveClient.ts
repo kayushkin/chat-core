@@ -34,6 +34,15 @@ export interface ResolveResponse {
   errors?: ResolveRefError[];
 }
 
+/** One type the resolver can answer, from `GET` on its endpoint: the registry
+ *  row's type and owning service, and its id patterns as the registry wrote
+ *  them. */
+export interface ResolvableType {
+  type: string;
+  service: string;
+  id_patterns: string[];
+}
+
 export interface ResolveClientConfig {
   fetch: typeof fetch;
   /** The resolver endpoint itself, e.g. dash's '/api/resolve'. */
@@ -69,5 +78,24 @@ export class ResolveClient {
       });
     }
     return (await res.json()) as ResolveResponse;
+  }
+
+  /** The types this resolver can answer, with their id patterns — what the
+   *  matcher needs to find ids worth sending (`RefChipOptions`). Throws on a
+   *  non-2xx, like `resolve`. */
+  async resolvableTypes(): Promise<ResolvableType[]> {
+    const res = await this.doFetch(this.endpoint);
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new ApiError({
+        message: `GET ${this.endpoint} failed: ${res.status} ${res.statusText}`,
+        status: res.status,
+        body,
+        method: 'GET',
+        path: this.endpoint,
+      });
+    }
+    const answer = (await res.json()) as { types: ResolvableType[] };
+    return answer.types;
   }
 }

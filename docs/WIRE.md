@@ -18,7 +18,9 @@ the Go structs must serialize to exactly these JSON shapes. Keep both in lockste
 ## Endpoints (all additive; existing endpoints unchanged)
 
 ### `GET /sessions/summary?limit=100&before=<cursor>`
-Projected sidebar list, newest first, paginated. Omits `info` / `harness_config`.
+Projected sidebar list, newest first, paginated. Omits `info` / `harness_config`. Each row
+carries `spendUsd`, the session's spend so far in US dollars (`SessionSummary.spendUsd`); the
+list stream's upsert carries the same as `spend_usd`.
 → `SummaryResponse` `{ sessions: SessionSummary[], next: string|null, revision: string }`.
 Also sets `ETag: <revision>`; honors `If-None-Match` → `304`.
 `revision` = max(updatedAt) across the table (or a monotonic change counter).

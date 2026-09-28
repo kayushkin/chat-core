@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseRefChips, remarkRefChips, type RefSegment } from '../src/reduce/refChips.js';
+import { parseRefChips, remarkRefChips, type RefChipOptions, type RefSegment } from '../src/reduce/refChips.js';
 
 // This matcher had no test of its own until note support landed, which is why
 // the note/todo cue split is pinned here in detail: the cue vocabulary is
@@ -9,8 +9,8 @@ import { parseRefChips, remarkRefChips, type RefSegment } from '../src/reduce/re
 const UUID = '0d195aec-5ad0-4399-9b5d-75fe03262145';
 const OTHER_UUID = 'aa1feef3-bd79-428d-a657-f01d418f526b';
 
-function chips(text: string): Array<{ kind: string; refId: string }> {
-  return parseRefChips(text)
+function chips(text: string, options?: RefChipOptions): Array<{ kind: string; refId: string }> {
+  return parseRefChips(text, options)
     .filter((s): s is Extract<RefSegment, { type: 'chip' }> => s.type === 'chip')
     .map((s) => ({ kind: s.kind, refId: s.refId }));
 }
@@ -538,5 +538,71 @@ describe('remarkRefChips', () => {
     const kids = root.children?.[0]?.children ?? [];
     expect(kids.map((k) => k.type)).toEqual(['inlineCode', 'refChip', 'inlineCode']);
     expect(kids[1]?.children).toEqual([{ type: 'text', value: 'br_1234567890123456' }]);
+  });
+});
+
+describe('parseRefChips — ids the resolver registered', () => {
+  // The registry's own spellings, from kanban-store's /api/entity-types.
+  const REGISTERED = ['project_\\d{6,}', 'prediction_\\d{6,}', 'article_\\d{6,}', 'principal_\\d{6,}'];
+
+  it('leaves prefixed store ids as text when no patterns are passed', () => {
+    expect(chips('see project_000002 and prediction_000267')).toEqual([]);
+  });
+
+  it('chips every id matching a registered pattern, as kind registered', () => {
+    expect(
+      chips('project_000002, prediction_000267, article_000001 and principal_000001', {
+        resolvableIdPatterns: REGISTERED,
+      }),
+    ).toEqual([
+      { kind: 'registered', refId: 'project_000002' },
+      { kind: 'registered', refId: 'prediction_000267' },
+      { kind: 'registered', refId: 'article_000001' },
+      { kind: 'registered', refId: 'principal_000001' },
+    ]);
+  });
+
+  it('keeps the built-in kind when a registered pattern also matches the same text', () => {
+    const patterns = [...REGISTERED, 'br_\\d{16,19}', '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'];
+    expect(chips(`br_1234567890123456 and note ${UUID} and ${OTHER_UUID}`, { resolvableIdPatterns: patterns })).toEqual([
+      { kind: 'session', refId: 'br_1234567890123456' },
+      { kind: 'note', refId: UUID },
+      { kind: 'uuid', refId: OTHER_UUID },
+    ]);
+    expect(chips('session_action_000007', { resolvableIdPatterns: patterns })).toEqual([
+      { kind: 'action', refId: 'session_action_000007' },
+    ]);
+  });
+
+  it('does not chip an id glued inside a longer word', () => {
+    expect(chips('xproject_000002 project_0000', { resolvableIdPatterns: REGISTERED })).toEqual([]);
+  });
+
+  it('skips a pattern that does not compile or matches nothing, and keeps the rest', () => {
+    const errors: unknown[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => errors.push(args);
+    try {
+      expect(
+        chips('project_000002 and zzz', { resolvableIdPatterns: ['(unclosed', 'z*', ...REGISTERED] }),
+      ).toEqual([{ kind: 'registered', refId: 'project_000002' }]);
+    } finally {
+      console.error = original;
+    }
+    expect(errors).toHaveLength(2);
+  });
+
+  it('keeps the text around a registered id', () => {
+    expect(textOf(parseRefChips('filed under project_000003.', { resolvableIdPatterns: REGISTERED }))).toBe(
+      'filed under [registered:project_000003].',
+    );
+  });
+
+  it('passes the patterns through the remark plugin', () => {
+    const tree = { type: 'root', children: [{ type: 'paragraph', children: [{ type: 'text', value: 'see project_000002' }] }] };
+    remarkRefChips({ resolvableIdPatterns: REGISTERED })(tree as never);
+    const paragraph = tree.children[0] as { children: Array<{ type: string; data?: { hProperties: { kind: string; refId: string } } }> };
+    expect(paragraph.children.map((n) => n.type)).toEqual(['text', 'refChip']);
+    expect(paragraph.children[1]?.data?.hProperties).toEqual({ kind: 'registered', refId: 'project_000002' });
   });
 });

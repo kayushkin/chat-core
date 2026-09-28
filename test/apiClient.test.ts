@@ -220,13 +220,14 @@ describe('ApiClient.getSessionDetail — the identity, lineage and spend block',
     expect(detail.workingDir).toBe('/home/u/repos/dash');
     expect(detail.spendUsd).toBe(1.25);
     expect(detail.maxBudgetUsd).toBe(5);
-    // The sidebar row must not grow beyond its 14 keys: the original 12 plus the two
+    // The sidebar row must not grow beyond these keys: the original 12, the two
     // lineage ids (harnessSessionId, managerSessionId) the live-status surface joins
-    // subagent sessions on. Everything else detail-only.
+    // subagent sessions on, and spendUsd, which the server's summary rows carry and
+    // the projects view sums per project. Everything else detail-only.
     expect(Object.keys(detail.summary).sort()).toEqual([
       'agentId', 'createdAt', 'displayName', 'folderName', 'harness',
       'harnessSessionId', 'instanceId', 'managerSessionId', 'mode', 'principalId',
-      'purpose', 'sessionId', 'state', 'type', 'updatedAt',
+      'purpose', 'sessionId', 'spendUsd', 'state', 'type', 'updatedAt',
     ]);
   });
 

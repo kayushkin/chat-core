@@ -523,19 +523,26 @@ export type TimelineTone =
 // an id apart with backticks is how people write one. In a mixed span the non-reference
 // part stays code — `todo: <uuid>` becomes a code span reading "todo: " plus the chip.
 //
-// The matcher chips bare session ids (br_/herald-/autoworker- snowflakes) anywhere, and
-// noteboard uuids ONLY behind a cue word — note/workspace (kind 'note') or todo/item/card
-// (kind 'todo'), each also with an `_id` suffix. Bare uuids are never chipped: they
-// collide with harness session uuids. The cue only says where to LOOK; the loaded item's
-// own `type` is the authority and the chip relabels itself from it.
+// The matcher chips bare session ids (br_/herald-/autoworker- snowflakes) anywhere;
+// noteboard uuids behind a cue word — note/workspace (kind 'note') or todo/item/card
+// (kind 'todo'), each also with an `_id` suffix; a bare uuid as kind 'uuid', which the
+// chip classifies through the host's resolver; `session_action_…` ids as kind 'action';
+// and, when the host passes `resolvableIdPatterns`, every id matching one of them as kind
+// 'registered' (`project_000001`, `prediction_000001`, …), classified the same way. The
+// patterns come from the resolver itself (`useResolvableIdPatterns`, which reads `GET` on
+// the resolve endpoint once per client), so no store prefix is written in this package.
+// The cue only says where to LOOK; the loaded item's own `type` is the authority and the
+// chip relabels itself from it.
 //
 // ⚠️ bridge-ui's RefChip reads ChatProvider context (it resolves ids against llm-bridge
 // and noteboard through the loaders below), so it must be mounted inside one.
-export function parseRefChips(value: string): RefSegment[];
-export function remarkRefChips(): (tree: unknown) => void;
+export function parseRefChips(value: string, options?: RefChipOptions): RefSegment[];
+export function remarkRefChips(options?: RefChipOptions): (tree: unknown) => void;
+export interface RefChipOptions { resolvableIdPatterns?: readonly string[] | null }
+export function useResolvableIdPatterns(): readonly string[] | null;   // null until loaded
 export const ChatContext: React.Context<ChatContextValue | null>;
 export function useChatContext(): ChatContextValue;   // throws outside ChatProvider
-export type RefKind = 'session' | 'note' | 'todo';
+export type RefKind = 'session' | 'note' | 'todo' | 'uuid' | 'action' | 'registered';
 
 // Detail loaders behind the chip panels. Every one dedupes by id through a 30s promise
 // cache, because one id can mount dozens of chips in a single transcript. A rejection is
