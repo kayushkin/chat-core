@@ -20,6 +20,7 @@ import type {
   SummaryResponse,
   ValidatorsResponse,
 } from './types.js';
+import type { FileNamedByTools, FileNamedByToolsContent } from '../reduce/fileMentions.js';
 import { SUMMARY_FILTER_AXES } from './types.js';
 import type { Signal, SignalResolveState, SignalWire } from './signals.js';
 import { SIGNAL_STATE_OPEN, SIGNAL_SURFACE_CHAT, signalFromWire } from './signals.js';
@@ -641,6 +642,30 @@ export class ApiClient {
     return this.postJSON<SessionAction>(
       `/sessions/${encodeURIComponent(sessionId)}/actions/${encodeURIComponent(actionId)}/run`,
       {},
+    );
+  }
+
+  /**
+   * Every file on disk that the session's tool calls and their output named,
+   * with absolute paths. GET /sessions/{id}/files-named-by-tools. The chat
+   * matches a file an agent mentions against this list.
+   */
+  async listFilesNamedByTools(sessionId: string): Promise<FileNamedByTools[]> {
+    const body = await this.getJSON<{ files: FileNamedByTools[] }>(
+      `/sessions/${encodeURIComponent(sessionId)}/files-named-by-tools`,
+    );
+    return body.files;
+  }
+
+  /**
+   * One file on that list as it is on disk now. GET
+   * /sessions/{id}/files-named-by-tools/content?path=. A path not on the list is
+   * a 404, a file over 1 MiB a 413 and one that is not text a 415, each thrown
+   * as an `ApiError` carrying the server's message.
+   */
+  getFileNamedByToolsContent(sessionId: string, path: string): Promise<FileNamedByToolsContent> {
+    return this.getJSON<FileNamedByToolsContent>(
+      `/sessions/${encodeURIComponent(sessionId)}/files-named-by-tools/content?path=${encodeURIComponent(path)}`,
     );
   }
 

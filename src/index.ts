@@ -37,7 +37,16 @@ export {
   clearRefDetailCache,
   REF_TRANSCRIPT_TURNS,
   type RefDetailState,
+  useFilesNamedByTools,
+  useFileNamedByToolsContent,
 } from './react/refDetail.js';
+export {
+  fileMentionOf,
+  filesMatchingMention,
+  type FileMention,
+  type FileNamedByTools,
+  type FileNamedByToolsContent,
+} from './reduce/fileMentions.js';
 export {
   ResolveClient,
   type ResolveClientConfig,

@@ -3,6 +3,7 @@ import { useChatContext } from './context.js';
 import type { ManagedSessionDetail, TurnModel } from '../net/types.js';
 import type { NoteboardItem } from '../net/NoteboardClient.js';
 import type { ResolveClient, ResolvedRefMatch } from '../net/ResolveClient.js';
+import type { FileNamedByTools, FileNamedByToolsContent } from '../reduce/fileMentions.js';
 
 // Data layer for reference chips. A chip is a passive linkification of an id
 // that happens to appear in a message, so the same id can appear dozens of
@@ -49,6 +50,8 @@ const sessionDetailCache = new Map<string, CacheSlot<ManagedSessionDetail>>();
 const noteboardItemCache = new Map<string, CacheSlot<NoteboardItem>>();
 const transcriptCache = new Map<string, CacheSlot<TurnModel>>();
 const resolvedRefCache = new Map<string, CacheSlot<ResolvedRefMatch[]>>();
+const filesNamedByToolsCache = new Map<string, CacheSlot<FileNamedByTools[]>>();
+const fileNamedByToolsContentCache = new Map<string, CacheSlot<FileNamedByToolsContent>>();
 
 /** Drop every cached reference. Tests call this between cases; nothing in the
  *  app does, because entries age out on their own. */
@@ -57,6 +60,8 @@ export function clearRefDetailCache(): void {
   noteboardItemCache.clear();
   transcriptCache.clear();
   resolvedRefCache.clear();
+  filesNamedByToolsCache.clear();
+  fileNamedByToolsContentCache.clear();
 }
 
 // --- batched reference resolution ---
@@ -272,5 +277,35 @@ export function useSessionRefTranscript(
       const resp = await api.getMessages(sessionId, { limit: REF_TRANSCRIPT_TURNS });
       return resp.model;
     }),
+  );
+}
+
+/**
+ * The files a session's tools named, for matching the file chips in its
+ * transcript. One request per session per cache window, however many chips
+ * mount; a session still working names more files, which the next window picks
+ * up.
+ */
+export function useFilesNamedByTools(sessionId: string): RefDetailState<FileNamedByTools[]> {
+  const { api } = useChatContext();
+  return useCachedRef(sessionId, sessionId !== '', () =>
+    takeCached(filesNamedByToolsCache, sessionId, () => api.listFilesNamedByTools(sessionId)),
+  );
+}
+
+/**
+ * One of those files as it is on disk now, fetched only once `enabled` turns
+ * true — when the user opens the chip. The text can run to a megabyte, so no
+ * chip loads it for a glance.
+ */
+export function useFileNamedByToolsContent(
+  sessionId: string,
+  path: string,
+  enabled: boolean,
+): RefDetailState<FileNamedByToolsContent> {
+  const { api } = useChatContext();
+  const key = `${sessionId}\u0000${path}`;
+  return useCachedRef(key, enabled && sessionId !== '' && path !== '', () =>
+    takeCached(fileNamedByToolsContentCache, key, () => api.getFileNamedByToolsContent(sessionId, path)),
   );
 }

@@ -19,6 +19,8 @@
 // when the host passes them, the id patterns its resolver declared (kind
 // `registered`, classified the same way).
 
+import { fileMentionOf } from './fileMentions.js';
+
 /**
  * Which backend a chip queries.
  *
@@ -48,8 +50,13 @@
  * resolver what the id names, as it does for a bare uuid. No prefix is written
  * here, so a store added to the registry is detected with no change in this
  * package.
+ *
+ * `file` is a code span that reads as a file path (`sessions.go:707`), found
+ * only by `remarkRefChips` and never by `parseRefChips`. The refId is the span's
+ * text; the chip matches it against the files the session's tools named (see
+ * fileMentions.ts) and stays plain code when none match.
  */
-export type RefKind = 'session' | 'note' | 'todo' | 'uuid' | 'action' | 'registered';
+export type RefKind = 'session' | 'note' | 'todo' | 'uuid' | 'action' | 'registered' | 'file';
 
 /** What the matcher is told beyond its built-in grammars. */
 export interface RefChipOptions {
@@ -293,6 +300,10 @@ function chip(kind: RefKind, refId: string): RefChipNode {
  *  - `code` — a FENCED block holds a payload: a curl command, a JSON body, a log
  *    line. Chipping inside one would corrupt what a reader copies out of it.
  *
+ * A code span that is wholly a file path (`internal/server/renamer.go`) becomes
+ * a `file` chip. Only a whole span counts: file names in running prose are too
+ * often ordinary words with a dot.
+ *
  * `inlineCode` is deliberately NOT in that list. A single-backtick span is prose
  * emphasis, not a payload, and setting an id apart with backticks is the most
  * natural way to write one — so those resolve. Getting this wrong is invisible
@@ -320,8 +331,14 @@ export function remarkRefChips(options?: RefChipOptions) {
           continue;
         }
         if (node.type === 'inlineCode') {
-          const segments = parseRefChips((node as MdInlineCode).value, options);
-          if (!segments.some((s) => s.type === 'chip')) continue;
+          const value = (node as MdInlineCode).value;
+          const segments = parseRefChips(value, options);
+          if (!segments.some((s) => s.type === 'chip')) {
+            // A span that is wholly a file path becomes a file chip; the chip
+            // decides whether the session's files include it.
+            if (fileMentionOf(value)) parent.children.splice(i, 1, chip('file', value.trim()));
+            continue;
+          }
           // Whatever was NOT a reference stays code — `todo: <uuid>` in backticks
           // becomes a code span reading "todo: " followed by the chip, rather
           // than losing the code styling the author asked for. Whitespace-only
