@@ -297,6 +297,11 @@ never invented. log-store's `Entry` struct and the live-tail reducer populate th
   `ApiClient.runSessionAction` confirms one. The agent places a button by writing its id
   (`session_action_000007`) in its reply: `parseRefChips` gives it kind `'action'`, and
   `sessionActionIdsPlacedInProse(entries)` names the ids placed that way.
+  A `run_command` carries the reviewer's `review` (approve, caution, reject — a reject cannot
+  be run); `model_call` and `background_agent` carry the agent's `maximum_cost_usd`, and a
+  `model_call` its spend in `cost_usd`; a `background_agent` names its session in
+  `result_session_id` while it still runs. `output` is markdown for `model_call` and
+  `background_agent`, and for a `run_command` whose `result_format` is `markdown`.
 
 ### Session status (`SessionStatus`) — decided by the server, ordered by `as_of`
 What a session is doing right now is `msg.SessionStatus`, **passed through in its own

@@ -181,21 +181,41 @@ export interface SessionFile {
 export type SessionActionType =
   | 'deploy'
   | 'run_scheduler_job'
-  | 'send_message'
+  | 'run_command'
+  | 'model_call'
+  | 'background_agent'
+  | 'send_message' // no longer offered since 2026-09-28; older records still carry it
   | 'fork_and_send'
   | 'new_session_and_send';
+
+/** How the chat draws an action's output — `msg.SessionActionResultFormat`. */
+export type SessionActionResultFormat = 'text' | 'markdown';
+
+/** A reviewer model's reading of a `run_command`, made when it was offered —
+ *  `msg.SessionActionReview`. A `reject` cannot be run. */
+export interface SessionActionReview {
+  verdict: 'approve' | 'caution' | 'reject';
+  reasons: string;
+  model: string;
+  reviewed_at: string;
+}
 
 /** Where a session action is in its one run — `msg.SessionActionState`. */
 export type SessionActionState = 'offered' | 'running' | 'succeeded' | 'failed' | 'outcome_unknown';
 
-/** What the agent asked for — `msg.SessionActionOffer`. `type` decides which one of
- *  `repo_id`, `scheduler_job_id` and `message` is set. */
+/** What the agent asked for — `msg.SessionActionOffer`. `type` decides which fields
+ *  are set. */
 export interface SessionActionOffer {
   label: string;
   type: SessionActionType;
   repo_id?: number;
   scheduler_job_id?: number;
   message?: string;
+  shell_command?: string;
+  working_directory?: string;
+  result_format?: SessionActionResultFormat;
+  model?: string;
+  maximum_cost_usd?: number;
 }
 
 /** A button an agent put in its session and the record of its run — the canonical
@@ -215,6 +235,8 @@ export interface SessionAction {
   output?: string;
   error?: string;
   result_session_id?: string;
+  review?: SessionActionReview;
+  cost_usd?: number;
 }
 
 /** Where the client got an entry: folded from the live stream (or born in the
