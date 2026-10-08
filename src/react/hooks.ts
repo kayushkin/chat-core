@@ -54,6 +54,7 @@ import {
   type SessionCost,
 } from '../store/selectors.js';
 import { useChatContext } from './context.js';
+import { olderPageCursor } from '../reduce/TurnReducer.js';
 
 // All hooks read via Zustand selector subscriptions so only components whose
 // slice changed re-render. select() / filter changes / newSession / archive
@@ -328,14 +329,10 @@ export function useTurns(
 
   const loadOlder = useCallback(() => {
     if (!sessionId || !model || !model.more) return;
-    // Cursor = the oldest entry's eventId; page strictly older than it.
-    let oldest = Number.POSITIVE_INFINITY;
-    for (const e of Object.values(model.entries)) {
-      if (e.eventId < oldest) oldest = e.eventId;
-    }
-    if (!Number.isFinite(oldest)) return;
+    const before = olderPageCursor(model);
+    if (before === null) return;
     void api
-      .getMessages(sessionId, { limit: 30, before: Math.floor(oldest) })
+      .getMessages(sessionId, { limit: 30, before })
       .then((resp) => actions.prependOlder(sessionId, resp.model))
       .catch(() => {});
   }, [sessionId, model, api, actions]);

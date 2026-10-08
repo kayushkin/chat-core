@@ -180,6 +180,20 @@ export function isLiveEntry(entry: Entry): boolean {
   return entry.origin === 'live';
 }
 
+/** The `before` cursor for the next older page: the smallest log-store eventId among
+ *  entries a page delivered, or null when no page entry is held. Live entries carry
+ *  llm-bridge-server's own row ids, a different and smaller numbering, so counting
+ *  them asked for "older than" an id below the whole session: the server answered
+ *  no turns and `more: false`, and the chat stopped offering older history
+ *  (br_1791424129618218898, 2026-10-08). */
+export function olderPageCursor(model: TurnModel): number | null {
+  let oldest = Number.POSITIVE_INFINITY;
+  for (const entry of Object.values(model.entries)) {
+    if (!isLiveEntry(entry) && entry.eventId < oldest) oldest = entry.eventId;
+  }
+  return Number.isFinite(oldest) ? Math.floor(oldest) : null;
+}
+
 /** Stamp an entry a server page delivered. An entry that already says where it came
  *  from keeps its object, so a cached live row stays live and row memos keep hitting. */
 function stampedAsPage(entry: Entry): Entry {

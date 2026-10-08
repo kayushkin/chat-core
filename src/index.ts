@@ -286,6 +286,7 @@ export {
   applyEvent,
   applyEvents,
   initTailState,
+  olderPageCursor,
   type TailState,
 } from './reduce/TurnReducer.js';
 export {
