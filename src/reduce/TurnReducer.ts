@@ -267,9 +267,10 @@ function sameMaterializedEntry(held: Entry, incoming: Entry): boolean {
  *    off-window history and stays; one in the page takes the page's version,
  *    reusing the held object when the content is unchanged so memos keep hitting.
  *
- * ORDER never crosses the id spaces either: prior materialized-only turns keep
- * their place before the page's turns, the page's turns keep the page's order,
- * live-only turns come last; within a shared turn the page's entries come first
+ * ORDER never crosses the id spaces either: prior materialized-only turns, and
+ * live turns that began before the page's oldest turn, keep their place before the
+ * page's turns, the page's turns keep the page's order, other live-only turns come
+ * last; within a shared turn the page's entries come first
  * and kept live entries after, each side in its own order. Sorting the mix by
  * eventId put newer live entries (small stream-flavoured ids) ABOVE older
  * materialized ones — the original "narration arrives out of order" report.
@@ -412,6 +413,15 @@ export function mergeMaterializedPage(
     else keptByTurn.set(turnId, [id]);
   }
   const incomingTurnIds = new Set(incoming.turns.map((t) => t.id));
+  // The page's oldest turn start, in epoch ms. A turn with live entries that began
+  // before it fell off the page's window rather than arrived after it, so it is
+  // history. Its live entries are often id-less ticks no page ever reports, which
+  // kept it "live" for good and sank it below the page once the session outgrew one
+  // page (br_1791424129618218898, 2026-10-08). Timestamps are shared by both paths.
+  const pageStartMs = Math.min(
+    ...incoming.turns.map((t) => Date.parse(t.ts)).filter((ms) => !Number.isNaN(ms)),
+  );
+  const startedBeforePage = (turn: Turn): boolean => Date.parse(turn.ts) < pageStartMs;
 
   const historyTurns: Turn[] = [];
   const liveTurns: Turn[] = [];
@@ -420,7 +430,7 @@ export function mergeMaterializedPage(
     const surviving = turn.entryIds.filter((id) => entries[id]);
     if (surviving.length === 0) continue;
     const kept = surviving.length === turn.entryIds.length ? turn : { ...turn, entryIds: surviving };
-    if (surviving.some((id) => liveHeldIds.has(id))) liveTurns.push(kept);
+    if (surviving.some((id) => liveHeldIds.has(id)) && !startedBeforePage(turn)) liveTurns.push(kept);
     else historyTurns.push(kept);
   }
   const pageTurns: Turn[] = incoming.turns.map((turn) => {
