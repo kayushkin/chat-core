@@ -186,7 +186,9 @@ export type SessionActionType =
   | 'background_agent'
   | 'send_message' // no longer offered since 2026-09-28; older records still carry it
   | 'fork_and_send'
-  | 'new_session_and_send';
+  | 'new_session_and_send'
+  | 'send_to_session'
+  | 'stop_session';
 
 /** How the chat draws an action's output — `msg.SessionActionResultFormat`. */
 export type SessionActionResultFormat = 'text' | 'markdown';
@@ -216,13 +218,16 @@ export interface SessionActionOffer {
   result_format?: SessionActionResultFormat;
   model?: string;
   maximum_cost_usd?: number;
-  /** Text boxes the button shows (run_command only). */
+  /** The other session a send_to_session or stop_session acts on. */
+  target_session_id?: string;
+  /** Text boxes the button shows (run_command and send_to_session). */
   inputs?: SessionActionInput[];
 }
 
 /** One text box on a button — `msg.SessionActionInput`. What the person types is
- *  sent with the confirm and reaches the command as `$BRIDGE_INPUT_<name>`; the
- *  server stores it nowhere. A secret box is a password field. */
+ *  sent with the confirm and reaches the command as `$BRIDGE_INPUT_<name>`, or takes
+ *  the place of `$BRIDGE_INPUT_<name>` in a send_to_session message; the server
+ *  stores it nowhere. A secret box is a password field (run_command only). */
 export interface SessionActionInput {
   name: string;
   label: string;
