@@ -33,6 +33,7 @@ import {
 } from '../store/folders.js';
 import { resolvePendingHook } from '../store/pendingHooks.js';
 import { budgetHaltFromRefusal, type BudgetHalt } from '../store/budgetHalt.js';
+import { setSessionSpendCeiling } from '../store/spendCeiling.js';
 import { inProgressTodoFromModel, type InProgressTodo } from '../store/inProgressTodo.js';
 import {
   activeSummary,
@@ -1249,7 +1250,8 @@ export function usePendingPermissions(sessionId: string | null): {
  * every server that predates the gate — none of those can produce the 402 or the
  * error code that sets it.
  *
- * `raiseCeiling` sets a new ceiling on the halted session and clears the halt. It
+ * `raiseCeiling` sets a new ceiling on the halted session (`useSpendCeiling`), reads
+ * the session back, and clears the halt once the server says it is under. It
  * REPORTS the server's refusal text rather than throwing, and clears nothing when the
  * server refused: silence here would read as "raised" and the very next send would be
  * refused again. It works on a session whose process the gate already killed —
@@ -1260,25 +1262,38 @@ export function useBudgetHalt(sessionId: string | null): {
   halt: BudgetHalt | null;
   raiseCeiling: (maxBudgetUSD: number) => Promise<string | null>;
 } {
-  const { store, api } = useChatContext();
-  const actions = useActions();
+  const { store } = useChatContext();
   const halt = useStore(store, (s) => (sessionId ? s.budgetHalts.get(sessionId) ?? null : null));
+  const { setCeiling: raiseCeiling } = useSpendCeiling(sessionId);
+  return { halt, raiseCeiling };
+}
 
-  const raiseCeiling = useCallback(
+/**
+ * Set a session's spend ceiling at any time — raise it, lower it, or clear it with 0 —
+ * not only after the gate has halted the session.
+ *
+ * `setCeiling` resolves to null on success and to the server's refusal text otherwise,
+ * the same contract as `useBudgetHalt`'s `raiseCeiling`, which is this. On success the
+ * cached session detail holds the server's read-back, so every reader of
+ * `useManagedSession` sees the new ceiling. See `setSessionSpendCeiling`.
+ */
+export function useSpendCeiling(sessionId: string | null): {
+  setCeiling: (maxBudgetUSD: number) => Promise<string | null>;
+} {
+  const { store, api } = useChatContext();
+  const setCeiling = useCallback(
     async (maxBudgetUSD: number): Promise<string | null> => {
       if (!sessionId) return 'no active session';
       try {
-        await api.setConfig(sessionId, { maxBudget: maxBudgetUSD });
+        await setSessionSpendCeiling({ store, api }, sessionId, maxBudgetUSD);
       } catch (e) {
         return e instanceof Error ? e.message : String(e);
       }
-      actions.clearBudgetHalt(sessionId);
       return null;
     },
-    [api, actions, sessionId],
+    [store, api, sessionId],
   );
-
-  return { halt, raiseCeiling };
+  return { setCeiling };
 }
 
 /**

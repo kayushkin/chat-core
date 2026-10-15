@@ -25,6 +25,7 @@ export {
   useContextUsage,
   usePendingPermissions,
   useBudgetHalt,
+  useSpendCeiling,
   useSessionStatus,
   useInProgressTodo,
   usePrefetch,
@@ -209,6 +210,7 @@ export {
   type PersistedFilterAxes,
 } from './store/filterStorage.js';
 export { changeSessionPermissionState } from './store/permissionState.js';
+export { setSessionSpendCeiling } from './store/spendCeiling.js';
 export { ARCHIVE_FOLDER, setSessionDone } from './store/markDone.js';
 export {
   createFolder,
