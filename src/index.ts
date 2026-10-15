@@ -122,6 +122,7 @@ export type {
   SessionFileSharer,
   SessionAction,
   SessionActionOffer,
+  SessionActionInput,
   SessionActionResultFormat,
   SessionActionReview,
   SessionActionState,

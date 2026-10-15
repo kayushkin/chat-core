@@ -216,6 +216,17 @@ export interface SessionActionOffer {
   result_format?: SessionActionResultFormat;
   model?: string;
   maximum_cost_usd?: number;
+  /** Text boxes the button shows (run_command only). */
+  inputs?: SessionActionInput[];
+}
+
+/** One text box on a button — `msg.SessionActionInput`. What the person types is
+ *  sent with the confirm and reaches the command as `$BRIDGE_INPUT_<name>`; the
+ *  server stores it nowhere. A secret box is a password field. */
+export interface SessionActionInput {
+  name: string;
+  label: string;
+  secret?: boolean;
 }
 
 /** A button an agent put in its session and the record of its run — the canonical

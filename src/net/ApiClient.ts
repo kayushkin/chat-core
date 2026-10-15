@@ -636,12 +636,14 @@ export class ApiClient {
    * /sessions/{id}/actions/{action_id}/run answers the record as `running`; how the
    * run ends arrives as a `session_action` event. LOUD like every write: an action
    * that already ran, or whose command changed since it was offered, is a 409 that
-   * throws an `ApiError` carrying the server's message.
+   * throws an `ApiError` carrying the server's message. `inputs` is what the person
+   * typed into the button's boxes, by input name (`SessionActionRunRequest`); a
+   * missing or unknown one is a 400.
    */
-  runSessionAction(sessionId: string, actionId: string): Promise<SessionAction> {
+  runSessionAction(sessionId: string, actionId: string, inputs?: Record<string, string>): Promise<SessionAction> {
     return this.postJSON<SessionAction>(
       `/sessions/${encodeURIComponent(sessionId)}/actions/${encodeURIComponent(actionId)}/run`,
-      {},
+      inputs && Object.keys(inputs).length > 0 ? { inputs } : {},
     );
   }
 
