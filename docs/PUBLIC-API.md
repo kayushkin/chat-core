@@ -142,7 +142,9 @@ export function useTurns(sessionId: string | null, view?: 'turns' | 'raw'): {
 // request's duration. `resumable` is the gate: the server decides resumability from its
 // live process registry (a session WITH a process gets a 409), and the client-visible
 // proxy for "no process" is the state set in RESUMABLE_STATES — currently
-// aborted/disconnected. It is deliberately NOT `paused`: nothing emits
+// aborted/disconnected/completed (`completed` since 2026-10-19: the server now keeps a
+// reaped finished session's state as `completed` instead of overwriting it). It is
+// deliberately NOT `paused`: nothing emits
 // `msg.SessionPaused` today, so a control gated on it never renders. Interrupt also
 // leaves the process registered, so an interrupted session is not resumable — it is
 // idle, and sending to it continues it.
@@ -612,6 +614,24 @@ export interface OpenSignalsState {
   loading: boolean; error: string | null; reload: () => void;
   resolve: (request: SignalRequest, answersBySignalId: Readonly<Record<string, SignalAnswer>>) => Promise<void>;
 }
+// The reads take every surface (GET /signals?state=open, no `surface`): an autonomous
+// session's signals go to the `kanban` surface, and the chat lists them too, apart.
+// Whose a signal or a waiting session is to answer is decided by SESSION TYPE, in one
+// place: interactive and herald are the operator's; autonomous, system, external and an
+// unknown or empty type are background. A surface that marks or counts "needs you" uses
+// the operator group only; background is listed separately with its own count.
+export function useOpenSignalsByAttention(): OpenSignalsByAttentionState;
+export interface OpenSignalsByAttentionState {
+  operator: SignalAttentionGroup; background: SignalAttentionGroup;   // { signals, requests }
+  sessionTypeOf: (signal: Signal) => string;   // what the split used; '' = unknown
+  available: boolean; loading: boolean; error: string | null; reload: () => void;
+}
+export function isOperatorSessionType(sessionType: string): boolean;     // '' and unknown → false
+export function isAwaitingHumanState(state: string): boolean;            // awaiting_user | awaiting_permission
+export function isSessionAwaitingOperator(session: { type: string; state: string }): boolean;
+// The signal's own `session_type`, else the session row's type, else '' (background).
+export function sessionTypeOfSignal(signal: Signal, sessionTypeOf: (sessionId: string) => string | undefined): string;
+export function splitSignalsByAttention(signals: readonly Signal[], sessionTypeOf: (sessionId: string) => string | undefined): SignalsByAttention;
 // The verbs, for a host rendering its own answer UI. Submit stays disabled until
 // `everyQuestionAnswered` — one AskUserQuestion call resolves once, so a partial submit
 // would answer some questions and discard the rest (`answerSignalRequest` enforces it too).

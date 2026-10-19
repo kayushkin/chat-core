@@ -23,7 +23,7 @@ import type {
 import type { FileNamedByTools, FileNamedByToolsContent } from '../reduce/fileMentions.js';
 import { SUMMARY_FILTER_AXES } from './types.js';
 import type { Signal, SignalResolveState, SignalWire } from './signals.js';
-import { SIGNAL_STATE_OPEN, SIGNAL_SURFACE_CHAT, signalFromWire } from './signals.js';
+import { SIGNAL_STATE_OPEN, signalFromWire } from './signals.js';
 import type {
   HarnessConfigWire,
   HarnessInfoWire,
@@ -893,8 +893,15 @@ export class ApiClient {
   // --- session signals (the questions a session is waiting on) ---
 
   /**
-   * Open chat-surface signals — one session's when `sessionId` is given, every
-   * session's when it is not. GET /signals?state=open&surface=chat.
+   * Open signals on EVERY surface — one session's when `sessionId` is given,
+   * every session's when it is not. GET /signals?state=open.
+   *
+   * No `surface` filter, on purpose. The server routes an autonomous session's
+   * signals to the `kanban` surface, and until 2026-10-19 this read asked for
+   * `surface=chat` only — so the 35 open kanban signals that name no todo were
+   * shown nowhere at all. The chat now decides what needs the operator by the
+   * raising session's TYPE (`net/attention.ts`), and shows the rest in a
+   * separate, quieter group, which needs every surface in hand.
    *
    * ⚠️ Returns `null`, not an error and not an empty list, when the server
    * answers 404. A 404 here means this bridge-server predates the signals API,
@@ -908,14 +915,11 @@ export class ApiClient {
    * signals route here" and "no such session", and those two mean opposite
    * things to a caller; /signals only 404s for the first.
    */
-  async getOpenChatSignals(opts?: {
+  async getOpenSignals(opts?: {
     sessionId?: string;
     limit?: number;
   }): Promise<Signal[] | null> {
-    const params = new URLSearchParams({
-      state: SIGNAL_STATE_OPEN,
-      surface: SIGNAL_SURFACE_CHAT,
-    });
+    const params = new URLSearchParams({ state: SIGNAL_STATE_OPEN });
     if (opts?.sessionId) params.set('session_id', opts.sessionId);
     if (opts?.limit != null) params.set('limit', String(opts.limit));
     const path = `/signals?${params.toString()}`;
@@ -952,7 +956,7 @@ export class ApiClient {
    * refusal arrives as a thrown `ApiError`, which is correct: it reaches here
    * only from a click.
    *
-   * LOUD for the same reason: unlike `getOpenChatSignals`, a 404 is NOT swallowed
+   * LOUD for the same reason: unlike `getOpenSignals`, a 404 is NOT swallowed
    * here. A button that silently does nothing is worse than an error.
    */
   resolveSignal(signalId: string, state: SignalResolveState): Promise<unknown> {

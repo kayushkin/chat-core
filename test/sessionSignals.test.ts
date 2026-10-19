@@ -322,20 +322,20 @@ describe('a bridge-server with no signals route', () => {
     // null, not [] and not an error: a server without the feature is not a
     // failure to show the user, and an empty list would say "deployed and
     // quiet", which is a different fact.
-    await expect(api.getOpenChatSignals({ sessionId: 'br_a' })).resolves.toBeNull();
+    await expect(api.getOpenSignals({ sessionId: 'br_a' })).resolves.toBeNull();
   });
 
   it('still throws on a real failure — 404 is the ONLY swallowed status', async () => {
     const { api } = client(() => respond(500, 'boom'));
-    await expect(api.getOpenChatSignals()).rejects.toThrow(/500/);
+    await expect(api.getOpenSignals()).rejects.toThrow(/500/);
   });
 
   it('asks the cross-session route, scoped by session_id', async () => {
     const { api, calls } = client(() => respond(200, []));
-    await api.getOpenChatSignals({ sessionId: 'br_a' });
+    await api.getOpenSignals({ sessionId: 'br_a' });
     // The per-session route answers 404 for both "no signals route" and "no such
     // session"; this one only 404s for the first, so the answer is unambiguous.
-    expect(calls[0]!.url).toBe(`${BASE}/signals?state=open&surface=chat&session_id=br_a`);
+    expect(calls[0]!.url).toBe(`${BASE}/signals?state=open&session_id=br_a`);
   });
 });
 

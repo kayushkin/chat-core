@@ -12,7 +12,9 @@
 // which is the one piece of signal logic every surface needs and none of them
 // should re-derive.
 //
-// Read path: GET {basePath}/signals?state=open&surface=chat[&session_id=…].
+// Read path: GET {basePath}/signals?state=open[&session_id=…], every surface.
+// Which of those need the operator is decided by session type, in
+// `attention.ts`, not by surface.
 //
 // The per-session route GET /sessions/{id}/signals exists too, but everything
 // here deliberately uses the cross-session route: the per-session route answers

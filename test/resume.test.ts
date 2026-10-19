@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ApiClient } from '../src/net/ApiClient.js';
+import { isResumableState } from '../src/react/hooks.js';
 
 // `useComposer().resume` is the first caller `ApiClient.resume` has ever had — the
 // method shipped with the client and nothing invoked it, so the chat page rendered a passive
@@ -74,5 +75,21 @@ describe('ApiClient.resume — fails loud', () => {
       basePath: '/api/bridge',
     });
     await expect(api.resume('br_1')).rejects.toThrow(/500/);
+  });
+});
+
+describe('which states offer Resume', () => {
+  it('offers it for a session whose process is gone, including a reaped completed one', () => {
+    // `completed` is what llm-bridge-server leaves on a finished session after it reaps
+    // the process, once it stops overwriting that state with `aborted`.
+    for (const state of ['aborted', 'disconnected', 'completed']) {
+      expect(isResumableState(state), state).toBe(true);
+    }
+  });
+
+  it('does not offer it for states that still have a live process', () => {
+    for (const state of ['paused', 'idle', 'error', 'rate_limited', 'awaiting_user', 'model_generating', '']) {
+      expect(isResumableState(state), state).toBe(false);
+    }
   });
 });

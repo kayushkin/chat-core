@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useStore } from 'zustand';
 import { useChatContext } from './context.js';
+import { sessionTypeOfSignal, splitSignalsByAttention, type SignalAttentionGroup } from '../net/attention.js';
 import { groupSignalsByRequest, type Signal, type SignalAnswerDraft, type SignalRequest } from '../net/signals.js';
 import { answerSignalRequest, subscribeToSignalChanges } from '../store/signalResolve.js';
 
@@ -42,8 +44,10 @@ export function clearOpenSignalsCache(): void {
 
 /** What a signal surface knows at any moment. */
 export interface OpenSignalsState {
-  /** Open chat signals for this session, newest first as the server ordered
-   *  them. Empty while loading, empty on a server with no signals route. */
+  /** Open signals for this session, on every surface, newest first as the
+   *  server ordered them. Empty while loading, empty on a server with no
+   *  signals route. Not filtered by who should answer them: see
+   *  `useOpenSignalsByAttention` for the operator / background split. */
   signals: Signal[];
   /** The same signals grouped into the unit that actually gets answered. */
   requests: SignalRequest[];
@@ -73,8 +77,8 @@ function messageOf(e: unknown): string {
 }
 
 /**
- * Open chat signals for one session, or across every session when `sessionId` is
- * omitted.
+ * Open signals for one session, or across every session when `sessionId` is
+ * omitted, on every surface.
  *
  * Freshness comes from four places and none of them is a timer: the `signal`
  * frame on the session-events stream, which is how a question closed by anything
@@ -112,7 +116,7 @@ export function useOpenSignals(sessionId?: string): OpenSignalsState {
     if (hit && now - hit.at < OPEN_SIGNALS_TTL_MS) {
       flight = hit.promise;
     } else {
-      flight = api.getOpenChatSignals(sessionId ? { sessionId } : undefined);
+      flight = api.getOpenSignals(sessionId ? { sessionId } : undefined);
       openSignalsCache.set(key, { at: now, promise: flight });
       // A rejection must not be cached as a permanent failure — the next panel
       // to open should be free to retry. Only evict this exact promise, or a
@@ -151,4 +155,52 @@ export function useOpenSignals(sessionId?: string): OpenSignalsState {
   );
 
   return { signals, requests, available, loading, error, reload, resolve };
+}
+
+/** The cross-session open signals, split by whose they are to answer. */
+export interface OpenSignalsByAttentionState {
+  /** Raised by interactive and herald sessions: what needs the operator. The
+   *  only group that may raise a "needs you" marker or count. */
+  operator: SignalAttentionGroup;
+  /** Raised by autonomous, system and external sessions, and by any session
+   *  whose type is unknown. Listed apart, never counted as needing the
+   *  operator. */
+  background: SignalAttentionGroup;
+  /** The raising session's type as the split saw it — the signal's own
+   *  `session_type`, else the loaded session row's — or '' when neither knows.
+   *  For labelling a background card; '' is to be shown as unknown. */
+  sessionTypeOf: (signal: Signal) => string;
+  available: boolean;
+  loading: boolean;
+  error: string | null;
+  reload: () => void;
+}
+
+/**
+ * Every open signal across every session, split by `net/attention.ts`'s rule.
+ *
+ * The same one cross-session read as `useOpenSignals()` — same cache entry,
+ * same resolve announcements — so splitting costs no request. A signal that
+ * carries no `session_type` is joined to the session row the store already
+ * holds; one the store does not hold either stays typeless, and typeless is
+ * background.
+ */
+export function useOpenSignalsByAttention(): OpenSignalsByAttentionState {
+  const { store } = useChatContext();
+  const { signals, available, loading, error, reload } = useOpenSignals();
+  const sessions = useStore(store, (s) => s.sessions);
+  const sessionTypeOfRow = useCallback((sessionId: string) => sessions.get(sessionId)?.type, [sessions]);
+  const split = useMemo(() => splitSignalsByAttention(signals, sessionTypeOfRow), [signals, sessionTypeOfRow]);
+  const sessionTypeOf = useCallback((signal: Signal) => sessionTypeOfSignal(signal, sessionTypeOfRow), [sessionTypeOfRow]);
+  const operatorRequests = useMemo(() => groupSignalsByRequest(split.operatorSignals), [split]);
+  const backgroundRequests = useMemo(() => groupSignalsByRequest(split.backgroundSignals), [split]);
+  return {
+    operator: { signals: split.operatorSignals, requests: operatorRequests },
+    background: { signals: split.backgroundSignals, requests: backgroundRequests },
+    sessionTypeOf,
+    available,
+    loading,
+    error,
+    reload,
+  };
 }

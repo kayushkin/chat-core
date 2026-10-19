@@ -349,8 +349,8 @@ export function useTurns(
  *  (llm-bridge-server `internal/server/sessions.go`) consults the live process
  *  registry, NOT the denormalised state string — a session with a process is
  *  "already running" and gets a 409, one without is resumable whatever its state
- *  reads. `TestResumeSession_AlreadyRunning` pins that 409. These five states are
- *  the ones a session can only reach by its process being gone.
+ *  reads. `TestResumeSession_AlreadyRunning` pins that 409. These states are
+ *  the ones a session reaches when its process is gone.
  *
  *  Two things this set is deliberately NOT:
  *
@@ -370,8 +370,6 @@ export function useTurns(
  *  - `idle` sits between a live process waiting for the next turn and a dead one
  *    the state row never caught up with. Offering Resume on the live half would
  *    surface a routine 409 as an error.
- *  - `completed` is written both by a PTY child exiting AND by "mark done"
- *    (`handleSetSessionFolder`), which never touches the process.
  *  - `error` and `rate_limited` are mid-life states — the process is still there.
  *
  *  None of those need a Resume button anyway: `handleSendMessage` starts a process
@@ -382,8 +380,22 @@ export function useTurns(
  *  The note it left behind predicted `paused` would join — that prediction was
  *  wrong, and it was wrong because it assumed paused meant the process had
  *  gone. It does not: `Manager.Stop` interrupts the turn and leaves the process
- *  registered, so Resume on a paused session is the same 409 as ever. */
-const RESUMABLE_STATES = new Set<string>(['aborted', 'disconnected']);
+ *  registered, so Resume on a paused session is the same 409 as ever.
+ *
+ *  `completed` joined on 2026-10-19 (operator decision). llm-bridge-server stopped
+ *  overwriting a reaped session's state, so a session whose turn finished and whose
+ *  process was then reaped now reads `completed` instead of `aborted` — and without
+ *  `completed` here it would have lost its Resume button. The known cost: `completed`
+ *  is also written by a PTY child exiting AND by "mark done" (`handleSetSessionFolder`),
+ *  which never touches the process. Resume on a marked-done session that still has a
+ *  live process gets the server's 409, shown as an error, as `resume()` promises. */
+const RESUMABLE_STATES = new Set<string>(['aborted', 'disconnected', 'completed']);
+
+/** Whether `useComposer` offers Resume for a session in this state. Exported for its
+ *  test; the composer's `resumable` is this plus "there is a session". */
+export function isResumableState(state: string): boolean {
+  return RESUMABLE_STATES.has(state);
+}
 
 /** Composer + turn controls for a session (or the pending/new pane).
  *
@@ -434,7 +446,7 @@ export function useComposer(sessionId: string | null): {
   const sending = useStore(store, (s) => (sessionId ? s.sending.has(sessionId) : false));
   const state = useStore(store, (s) => (sessionId ? s.sessions.get(sessionId)?.state : undefined));
   const paused = state === 'paused';
-  const resumable = !!sessionId && !!state && RESUMABLE_STATES.has(state);
+  const resumable = !!sessionId && !!state && isResumableState(state);
   const [interrupting, setInterrupting] = useState(false);
   const [resuming, setResuming] = useState(false);
   const [error, setError] = useState<string | null>(null);

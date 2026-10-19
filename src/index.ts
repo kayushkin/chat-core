@@ -66,9 +66,23 @@ export { ChatContext, useChatContext, type ChatContextValue } from './react/cont
 // ---- Session signals (the open questions a session is waiting on) ----
 export {
   useOpenSignals,
+  useOpenSignalsByAttention,
   clearOpenSignalsCache,
   type OpenSignalsState,
+  type OpenSignalsByAttentionState,
 } from './react/signals.js';
+// Whose a waiting session or signal is to answer: the operator's (interactive,
+// herald) or background (everything else, unknown types included). The one rule
+// every "needs you" surface uses.
+export {
+  isOperatorSessionType,
+  isAwaitingHumanState,
+  isSessionAwaitingOperator,
+  sessionTypeOfSignal,
+  splitSignalsByAttention,
+  type SignalsByAttention,
+  type SignalAttentionGroup,
+} from './net/attention.js';
 export { useSessionNames, clearSessionNameCache } from './react/sessionNames.js';
 export {
   acknowledgeSignal,
