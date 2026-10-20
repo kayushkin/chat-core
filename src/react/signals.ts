@@ -188,8 +188,17 @@ export interface OpenSignalsByAttentionState {
 export function useOpenSignalsByAttention(): OpenSignalsByAttentionState {
   const { store } = useChatContext();
   const { signals, available, loading, error, reload } = useOpenSignals();
-  const sessions = useStore(store, (s) => s.sessions);
-  const sessionTypeOfRow = useCallback((sessionId: string) => sessions.get(sessionId)?.type, [sessions]);
+  // The row types this split reads, as one string, rather than the whole session
+  // map. The map is replaced on every change to any session — the list stream
+  // rewrites a row each time a session's status moves — and depending on it
+  // handed every surface new request objects several times a second, so a
+  // signals page holding hundreds of cards re-rendered all of them while the
+  // operator sat still. Measured 2026-10-20: 6.1s of main-thread time in 10s
+  // idle on 345 open signals. A string compares by value, so this re-renders
+  // only when a type the split depends on actually changes.
+  const rowTypesKey = useStore(store, (s) => sessionRowTypesKey(signals, s.sessions));
+  const rowTypes = useMemo(() => parseSessionRowTypesKey(rowTypesKey), [rowTypesKey]);
+  const sessionTypeOfRow = useCallback((sessionId: string) => rowTypes.get(sessionId), [rowTypes]);
   const split = useMemo(() => splitSignalsByAttention(signals, sessionTypeOfRow), [signals, sessionTypeOfRow]);
   const sessionTypeOf = useCallback((signal: Signal) => sessionTypeOfSignal(signal, sessionTypeOfRow), [sessionTypeOfRow]);
   const operatorRequests = useMemo(() => groupSignalsByRequest(split.operatorSignals), [split]);
@@ -203,4 +212,26 @@ export function useOpenSignalsByAttention(): OpenSignalsByAttentionState {
     error,
     reload,
   };
+}
+
+/** The loaded row type of every signal's session that carries no
+ *  `session_type` of its own — the only signals the split looks a row up for —
+ *  as JSON `[id, type]` pairs. A session the store does not hold is left out,
+ *  which is the same answer the lookup gives: no row, no type. Exported for
+ *  its test. */
+export function sessionRowTypesKey(
+  signals: readonly Signal[],
+  sessions: ReadonlyMap<string, { type: string }>,
+): string {
+  const pairs: [string, string][] = [];
+  for (const signal of signals) {
+    if (signal.sessionType !== '') continue;
+    const row = sessions.get(signal.sessionId);
+    if (row) pairs.push([signal.sessionId, row.type]);
+  }
+  return JSON.stringify(pairs);
+}
+
+export function parseSessionRowTypesKey(key: string): Map<string, string> {
+  return new Map(JSON.parse(key) as [string, string][]);
 }

@@ -64,7 +64,6 @@ export function clearSessionNameCache(): void {
  */
 export function useSessionNames(sessionIds: readonly string[]): (sessionId: string) => string {
   const { api, store } = useChatContext();
-  const loaded = useStore(store, (s) => s.sessions);
   const [resolvedAt, setResolvedAt] = useState(0);
 
   // Joined into a single string so the effect below depends on the SET, not on
@@ -74,6 +73,14 @@ export function useSessionNames(sessionIds: readonly string[]): (sessionId: stri
   // keeps `wanted` itself OUT of the dependencies; listing both would put the
   // identity right back in and make the key decorative.
   const wantedKey = useMemo(() => [...new Set(sessionIds)].sort().join(','), [sessionIds]);
+
+  // The loaded name of each wanted session, as one string, rather than the whole
+  // session map. The map is replaced on every change to any session, and
+  // depending on it handed the caller a new lookup function — and so a
+  // re-render of every card it labels — several times a second while nothing it
+  // shows had changed. A string compares by value.
+  const loadedNamesKey = useStore(store, (s) => loadedSessionNamesKey(wantedKey, s.sessions));
+  const loaded = useMemo(() => parseLoadedSessionNamesKey(loadedNamesKey), [loadedNamesKey]);
 
   useEffect(() => {
     const now = Date.now();
@@ -121,7 +128,7 @@ export function useSessionNames(sessionIds: readonly string[]): (sessionId: stri
     };
     // `loaded` is here because a session arriving in the store means one fewer
     // id to look up; the guard above turns that into a no-op when nothing is
-    // missing, so a store that churns costs nothing.
+    // missing.
   }, [api, wantedKey, loaded]);
 
   return useMemo(() => {
@@ -130,9 +137,29 @@ export function useSessionNames(sessionIds: readonly string[]): (sessionId: stri
     // a finished lookup into the next render.
     void resolvedAt;
     return (sessionId: string): string => {
-      const summary = loaded.get(sessionId);
-      if (summary) return summary.displayName || sessionId;
+      const loadedName = loaded.get(sessionId);
+      if (loadedName !== undefined) return loadedName || sessionId;
       return nameCache.get(sessionId)?.name ?? sessionId;
     };
   }, [loaded, resolvedAt]);
+}
+
+/** `[id, displayName]` for each wanted id the store holds, as JSON. Exported
+ *  for its test. */
+export function loadedSessionNamesKey(
+  wantedKey: string,
+  sessions: ReadonlyMap<string, { displayName: string }>,
+): string {
+  const pairs: [string, string][] = [];
+  if (wantedKey !== '') {
+    for (const id of wantedKey.split(',')) {
+      const row = sessions.get(id);
+      if (row) pairs.push([id, row.displayName]);
+    }
+  }
+  return JSON.stringify(pairs);
+}
+
+export function parseLoadedSessionNamesKey(key: string): Map<string, string> {
+  return new Map(JSON.parse(key) as [string, string][]);
 }
