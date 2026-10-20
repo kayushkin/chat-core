@@ -26,8 +26,26 @@ export async function setSessionSpendCeiling(
   sessionId: string,
   maxBudgetUSD: number,
 ): Promise<void> {
+  await deps.api.setConfig(sessionId, { maxBudget: maxBudgetUSD });
+  await recheckSessionBudgetHalt(deps, sessionId);
+}
+
+/**
+ * Read the session back, cache it, and lift its halt if it is now under its ceiling
+ * or has none.
+ *
+ * For a ceiling that something other than this client moved. The producer's home
+ * session is the case: its ceiling follows the producer's weekly limit, and the
+ * producer writes it to bridge-server itself, so the banner changes the limit and
+ * then asks bridge-server what the ceiling became.
+ *
+ * LOUD: a failed read rethrows, and the cache is left as it was.
+ */
+export async function recheckSessionBudgetHalt(
+  deps: { store: ChatStoreApi; api: ApiClient },
+  sessionId: string,
+): Promise<void> {
   const { store, api } = deps;
-  await api.setConfig(sessionId, { maxBudget: maxBudgetUSD });
   const detail = await api.getSessionDetail(sessionId);
   const { actions } = store.getState();
   actions.setSessionDetail(sessionId, detail);

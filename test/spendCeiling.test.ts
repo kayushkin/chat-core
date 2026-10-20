@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ApiClient } from '../src/net/ApiClient.js';
 import { createChatStore } from '../src/store/ChatStore.js';
-import { setSessionSpendCeiling } from '../src/store/spendCeiling.js';
+import { recheckSessionBudgetHalt, setSessionSpendCeiling } from '../src/store/spendCeiling.js';
 
 // The header's ceiling field calls this on a session that may or may not be halted.
 // What has to hold: the cache ends up with the server's read-back (nothing streams a
@@ -83,6 +83,23 @@ describe('setSessionSpendCeiling', () => {
       setSessionSpendCeiling({ store, api: fakeServer({ spend_usd: 10, max_budget_usd: 10 }, 400) }, 'br_1', -1),
     ).rejects.toThrow();
     expect(store.getState().sessionDetail.has('br_1')).toBe(false);
+    expect(store.getState().budgetHalts.has('br_1')).toBe(true);
+  });
+});
+
+describe('recheckSessionBudgetHalt', () => {
+  it('writes nothing, caches the read-back, and lifts a halt the server says is over', async () => {
+    const seen: Seen[] = [];
+    const store = haltedStore();
+    await recheckSessionBudgetHalt({ store, api: fakeServer({ spend_usd: 10, max_budget_usd: 160 }, 200, seen) }, 'br_1');
+    expect(seen.map((s) => s.method)).toEqual(['GET']);
+    expect(store.getState().sessionDetail.get('br_1')?.maxBudgetUsd).toBe(160);
+    expect(store.getState().budgetHalts.has('br_1')).toBe(false);
+  });
+
+  it('keeps the halt when the ceiling another service set is still at the spend', async () => {
+    const store = haltedStore();
+    await recheckSessionBudgetHalt({ store, api: fakeServer({ spend_usd: 10, max_budget_usd: 10 }) }, 'br_1');
     expect(store.getState().budgetHalts.has('br_1')).toBe(true);
   });
 });

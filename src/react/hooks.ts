@@ -33,7 +33,7 @@ import {
 } from '../store/folders.js';
 import { resolvePendingHook } from '../store/pendingHooks.js';
 import { budgetHaltFromRefusal, type BudgetHalt } from '../store/budgetHalt.js';
-import { setSessionSpendCeiling } from '../store/spendCeiling.js';
+import { recheckSessionBudgetHalt, setSessionSpendCeiling } from '../store/spendCeiling.js';
 import { inProgressTodoFromModel, type InProgressTodo } from '../store/inProgressTodo.js';
 import {
   activeSummary,
@@ -1269,15 +1269,30 @@ export function usePendingPermissions(sessionId: string | null): {
  * refused again. It works on a session whose process the gate already killed —
  * bridge-server persists the ceiling itself and only forwards to a harness when there
  * is one.
+ *
+ * `recheck` writes nothing: it reads the session back and clears the halt if the
+ * session is now under its ceiling, for a ceiling another service moved (the
+ * producer sets its home session's ceiling from its weekly limit). Same contract:
+ * null on success, the failure text otherwise.
  */
 export function useBudgetHalt(sessionId: string | null): {
   halt: BudgetHalt | null;
   raiseCeiling: (maxBudgetUSD: number) => Promise<string | null>;
+  recheck: () => Promise<string | null>;
 } {
-  const { store } = useChatContext();
+  const { store, api } = useChatContext();
   const halt = useStore(store, (s) => (sessionId ? s.budgetHalts.get(sessionId) ?? null : null));
   const { setCeiling: raiseCeiling } = useSpendCeiling(sessionId);
-  return { halt, raiseCeiling };
+  const recheck = useCallback(async (): Promise<string | null> => {
+    if (!sessionId) return 'no active session';
+    try {
+      await recheckSessionBudgetHalt({ store, api }, sessionId);
+    } catch (e) {
+      return e instanceof Error ? e.message : String(e);
+    }
+    return null;
+  }, [store, api, sessionId]);
+  return { halt, raiseCeiling, recheck };
 }
 
 /**
