@@ -357,12 +357,14 @@ export class Prefetcher {
   private async warm(sessionId: string): Promise<void> {
     try {
       const resp = await this.api.getMessages(sessionId, { limit: this.turnsPerBundle });
-      // Re-check: a live select() may have already warmed it.
-      if (!this.store.getState().turnsBySession.has(sessionId)) {
-        this.store
-          .getState()
-          .actions.setTurns(sessionId, resp.model);
-      }
+      // Always merge, even when the store already holds something for this session.
+      // A click joins this fetch, and the session stream it opens replays the LAST
+      // turn at once; that replay usually lands before this page. Skipping the page
+      // whenever the store held anything left the replay alone on screen — one turn of
+      // a long session — until the validator sweep repaired it (reported 2026-10-20 on
+      // br_1792098153821205901). `setTurns` merges, so a page landing over a live tail
+      // or over itself loses nothing.
+      this.store.getState().actions.setTurns(sessionId, resp.model);
       // Coalesced: this is a cache fill, and nothing is waiting on it reaching disk.
       this.cache.scheduleTurnsWrite(resp.model);
     } finally {

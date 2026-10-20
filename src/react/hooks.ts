@@ -183,8 +183,8 @@ export function useActiveSession(): {
         //
         // The prefetch FAILING is handled rather than assumed away: skipping our own
         // fetch on the strength of one that then errors would leave the pane empty with
-        // nothing left to retry it. `warm()` re-checks the store before writing, so a
-        // fetch here after a failed prefetch cannot double-apply.
+        // nothing left to retry it. Both paths write through `setTurns`, which merges,
+        // so a fetch here after a failed prefetch cannot double-apply.
         const warming = prefetcher.warming(nextId);
         if (warming) {
           void warming.catch(() => {
