@@ -23,6 +23,9 @@ export interface ChatProviderProps {
   turnsPerBundle?: number;      // last-N turns per bundled session, default 30
   sessionsPerPage?: number;     // sidebar sessions per page, default 100
   cache?: boolean;              // enable IndexedDB persistence, default true
+  keepDraftsAndFiltersInBrowser?: boolean; // drafts and filters in localStorage,
+                                // default true; a second provider on the page
+                                // (another server's sessions) passes false
   children: ReactNode;
 }
 export function ChatProvider(props: ChatProviderProps): JSX.Element;

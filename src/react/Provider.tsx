@@ -34,6 +34,12 @@ export interface ChatProviderProps {
    *  `DEFAULT_TURN_RETENTION_MIN_SESSIONS` — what guarantees that flipping between the
    *  few sessions someone is working across stays instant even when each is enormous. */
   turnRetentionMinSessions?: number;
+  /** Keep composer drafts and the sidebar's filters in localStorage. Default true.
+   *  Both live under one fixed key each, so a second provider on the same page — a
+   *  store for another server's sessions — passes false, or it would overwrite the
+   *  first provider's filters and share its drafts. Pass `cache={false}` beside it
+   *  to keep its sessions out of IndexedDB too. */
+  keepDraftsAndFiltersInBrowser?: boolean;
   children: ReactNode;
 }
 
@@ -54,12 +60,18 @@ export function ChatProvider(props: ChatProviderProps): JSX.Element {
     cache = true,
     turnRetentionBytes,
     turnRetentionMinSessions,
+    keepDraftsAndFiltersInBrowser = true,
     children,
   } = props;
 
   const ctxRef = useRef<ChatContextValue | null>(null);
   if (ctxRef.current === null) {
-    const store = createChatStore({ turnRetentionBytes, turnRetentionMinSessions });
+    const store = createChatStore({
+      turnRetentionBytes,
+      turnRetentionMinSessions,
+      // undefined keeps createChatStore's default, the browser's localStorage.
+      ...(keepDraftsAndFiltersInBrowser ? {} : { draftStorage: null, filterStorage: null }),
+    });
     const api = new ApiClient({ fetch: fetchFn, basePath });
     const sessionCache = new SessionCache(cache);
     const prefetcher = new Prefetcher({
