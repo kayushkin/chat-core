@@ -498,7 +498,7 @@ export function turnsFor(state: ChatState, sessionId: string | null): TurnModel 
 // The other memos in this file (`visibleCache`, `reachCache`, `facetsCache`) take NO
 // parameter beyond the state, so within one store there is only one live key; they keep
 // one slot per store, keyed on its `sessions` Map, because a page can hold more than one
-// store. `selectTimeline` is parameterized like these two and is
+// store. `selectTimeline` is parameterized like `sessionCost` and `contextUsage` and is
 // memoized the same way, for the same reason.
 
 /** A session's rolled-up cost, or all-zeros when no aggregates are loaded. */
