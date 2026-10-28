@@ -36,6 +36,7 @@ export {
   useResolvedRef,
   useSessionRefTranscript,
   clearRefDetailCache,
+  loadSessionRefDetail,
   REF_TRANSCRIPT_TURNS,
   type RefDetailState,
   useFilesNamedByTools,

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useChatContext } from './context.js';
+import type { ApiClient } from '../net/ApiClient.js';
 import type { ManagedSessionDetail, TurnModel } from '../net/types.js';
 import type { NoteboardItem } from '../net/NoteboardClient.js';
 import type { ResolveClient, ResolvedRefMatch } from '../net/ResolveClient.js';
@@ -10,7 +11,8 @@ import type { FileNamedByTools, FileNamedByToolsContent } from '../reduce/fileMe
 // times in one transcript and each occurrence mounts its own chip. Fetching per
 // chip would put dozens of identical requests on the wire for one render, so
 // every loader here goes through a short-lived promise cache keyed by id and
-// the duplicates share one flight.
+// the duplicates share one flight. Each cache is per client (ClientScopedCache):
+// two stores on one page number their records independently.
 //
 // The cache is deliberately NOT the SessionCache: that one is the durable
 // IndexedDB store for sessions the user actually opened, and a chip is a
@@ -27,11 +29,35 @@ interface CacheSlot<T> {
   promise: Promise<T>;
 }
 
+/** One cache per client that answers. Two stores on one page — this server's
+ *  and a connected server's, each with its own ApiClient — number their
+ *  records independently, so `principal_000001` or a session id must never be
+ *  answered from the other store's cache. The map from client to cache is weak,
+ *  so a store that goes away takes its cache with it. */
+class ClientScopedCache<T> {
+  private byClient = new WeakMap<object, Map<string, CacheSlot<T>>>();
+
+  of(client: object): Map<string, CacheSlot<T>> {
+    let cache = this.byClient.get(client);
+    if (!cache) {
+      cache = new Map();
+      this.byClient.set(client, cache);
+    }
+    return cache;
+  }
+
+  clear(): void {
+    this.byClient = new WeakMap();
+  }
+}
+
 function takeCached<T>(
-  cache: Map<string, CacheSlot<T>>,
+  scoped: ClientScopedCache<T>,
+  client: object,
   key: string,
   load: () => Promise<T>,
 ): Promise<T> {
+  const cache = scoped.of(client);
   const now = Date.now();
   const hit = cache.get(key);
   if (hit && now - hit.at < REF_TTL_MS) return hit.promise;
@@ -46,15 +72,27 @@ function takeCached<T>(
   return promise;
 }
 
-const sessionDetailCache = new Map<string, CacheSlot<ManagedSessionDetail>>();
-const noteboardItemCache = new Map<string, CacheSlot<NoteboardItem>>();
-const transcriptCache = new Map<string, CacheSlot<TurnModel>>();
-const resolvedRefCache = new Map<string, CacheSlot<ResolvedRefMatch[]>>();
-const filesNamedByToolsCache = new Map<string, CacheSlot<FileNamedByTools[]>>();
-const fileNamedByToolsContentCache = new Map<string, CacheSlot<FileNamedByToolsContent>>();
+/** A stable number per client, so a chip's React state is keyed by the client
+ *  as well as the id: the same id under another store is another reference. */
+const clientNumbers = new WeakMap<object, number>();
+let nextClientNumber = 1;
+function clientKey(client: object | null): string {
+  if (!client) return 'none';
+  let number = clientNumbers.get(client);
+  if (number === undefined) {
+    number = nextClientNumber++;
+    clientNumbers.set(client, number);
+  }
+  return String(number);
+}
 
-/** Drop every cached reference. Tests call this between cases; nothing in the
- *  app does, because entries age out on their own. */
+const sessionDetailCache = new ClientScopedCache<ManagedSessionDetail>();
+const noteboardItemCache = new ClientScopedCache<NoteboardItem>();
+const transcriptCache = new ClientScopedCache<TurnModel>();
+const resolvedRefCache = new ClientScopedCache<ResolvedRefMatch[]>();
+const filesNamedByToolsCache = new ClientScopedCache<FileNamedByTools[]>();
+const fileNamedByToolsContentCache = new ClientScopedCache<FileNamedByToolsContent>();
+
 export function clearRefDetailCache(): void {
   sessionDetailCache.clear();
   noteboardItemCache.clear();
@@ -207,9 +245,20 @@ function useCachedRef<T>(
  */
 export function useSessionRefDetail(sessionId: string): RefDetailState<ManagedSessionDetail> {
   const { api } = useChatContext();
-  return useCachedRef(sessionId, sessionId !== '', () =>
-    takeCached(sessionDetailCache, sessionId, () => api.getSessionDetail(sessionId)),
+  return useCachedRef(`${clientKey(api)}|${sessionId}`, sessionId !== '', () =>
+    loadSessionRefDetail(api, sessionId),
   );
+}
+
+/** What `useSessionRefDetail` loads: one flight per (client, session id)
+ *  within the cache window. Exported so callers outside a ChatProvider for
+ *  that client (a chip looking a session up on a connected server) share the
+ *  same cache, and so the per-client rule can be tested without a DOM. */
+export function loadSessionRefDetail(
+  api: Pick<ApiClient, 'getSessionDetail'>,
+  sessionId: string,
+): Promise<ManagedSessionDetail> {
+  return takeCached(sessionDetailCache, api, sessionId, () => api.getSessionDetail(sessionId));
 }
 
 /**
@@ -222,11 +271,11 @@ export function useSessionRefDetail(sessionId: string): RefDetailState<ManagedSe
  */
 export function useNoteboardRefDetail(itemId: string): RefDetailState<NoteboardItem> {
   const { noteboard } = useChatContext();
-  return useCachedRef(itemId, itemId !== '', () => {
+  return useCachedRef(`${clientKey(noteboard)}|${itemId}`, itemId !== '', () => {
     if (!noteboard) {
       return Promise.reject(new Error('noteboard lookup is not configured here'));
     }
-    return takeCached(noteboardItemCache, itemId, () => noteboard.getItem(itemId));
+    return takeCached(noteboardItemCache, noteboard, itemId, () => noteboard.getItem(itemId));
   });
 }
 
@@ -242,11 +291,11 @@ export function useNoteboardRefDetail(itemId: string): RefDetailState<NoteboardI
  */
 export function useResolvedRef(refId: string): RefDetailState<ResolvedRefMatch[]> {
   const { resolve } = useChatContext();
-  return useCachedRef(refId, refId !== '', () => {
+  return useCachedRef(`${clientKey(resolve)}|${refId}`, refId !== '', () => {
     if (!resolve) {
       return Promise.reject(new Error('reference resolver is not configured here'));
     }
-    return takeCached(resolvedRefCache, refId, () => enqueueResolve(resolve, refId));
+    return takeCached(resolvedRefCache, resolve, refId, () => enqueueResolve(resolve, refId));
   });
 }
 
@@ -272,8 +321,8 @@ export function useSessionRefTranscript(
   enabled: boolean,
 ): RefDetailState<TurnModel> {
   const { api } = useChatContext();
-  return useCachedRef(sessionId, enabled && sessionId !== '', () =>
-    takeCached(transcriptCache, sessionId, async () => {
+  return useCachedRef(`${clientKey(api)}|${sessionId}`, enabled && sessionId !== '', () =>
+    takeCached(transcriptCache, api, sessionId, async () => {
       const resp = await api.getMessages(sessionId, { limit: REF_TRANSCRIPT_TURNS });
       return resp.model;
     }),
@@ -288,8 +337,8 @@ export function useSessionRefTranscript(
  */
 export function useFilesNamedByTools(sessionId: string): RefDetailState<FileNamedByTools[]> {
   const { api } = useChatContext();
-  return useCachedRef(sessionId, sessionId !== '', () =>
-    takeCached(filesNamedByToolsCache, sessionId, () => api.listFilesNamedByTools(sessionId)),
+  return useCachedRef(`${clientKey(api)}|${sessionId}`, sessionId !== '', () =>
+    takeCached(filesNamedByToolsCache, api, sessionId, () => api.listFilesNamedByTools(sessionId)),
   );
 }
 
@@ -305,7 +354,7 @@ export function useFileNamedByToolsContent(
 ): RefDetailState<FileNamedByToolsContent> {
   const { api } = useChatContext();
   const key = `${sessionId}\u0000${path}`;
-  return useCachedRef(key, enabled && sessionId !== '' && path !== '', () =>
-    takeCached(fileNamedByToolsContentCache, key, () => api.getFileNamedByToolsContent(sessionId, path)),
+  return useCachedRef(`${clientKey(api)}|${key}`, enabled && sessionId !== '' && path !== '', () =>
+    takeCached(fileNamedByToolsContentCache, api, key, () => api.getFileNamedByToolsContent(sessionId, path)),
   );
 }
