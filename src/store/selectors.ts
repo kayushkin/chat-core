@@ -162,18 +162,24 @@ function byOrderStampDesc(
   };
 }
 
-// Simple identity-keyed memo: recompute only when (sessions, filter, contentHits,
-// folders) change. contentHits is part of the key so a content-search response
-// repaints; folders is, so the first `GET /folders` response after boot repaints
-// rather than sitting behind a memo hit.
-let visibleCache: {
-  sessions: Map<string, SessionSummary>;
+// Identity-keyed memo: recompute only when (sessions, filter, contentHits, folders)
+// change. contentHits is part of the key so a content-search response repaints;
+// folders is, so the first `GET /folders` response after boot repaints rather than
+// sitting behind a memo hit.
+//
+// One slot PER STORE, found by the store's own `sessions` Map, which every store
+// creates for itself and replaces on every session mutation. A page can hold more than
+// one store — bridge-ui mounts one per connected server beside this server's — and a
+// single module-level slot let their reads evict each other, so every
+// `useSyncExternalStore` check got a new array and React looped until "Maximum update
+// depth exceeded" blanked the chat. The same holds for `reachCache` and `facetsCache`.
+const visibleCache = new WeakMap<Map<string, SessionSummary>, {
   filter: FilterState;
   contentHits: ContentHits | null;
   folders: string[];
   stamps: Map<string, string>;
   result: FolderGroup[];
-} | null = null;
+}>();
 
 /** Filter → group-by-folder → order by the SERVER's folder list.
  *
@@ -211,15 +217,15 @@ let visibleCache: {
 export function visibleSessions(state: ChatState): FolderGroup[] {
   const { sessions, filter, contentHits, folders } = state;
   const stamps = state.listOrderStampBySession;
+  const cached = visibleCache.get(sessions);
   if (
-    visibleCache &&
-    visibleCache.sessions === sessions &&
-    visibleCache.filter === filter &&
-    visibleCache.contentHits === contentHits &&
-    visibleCache.folders === folders &&
-    visibleCache.stamps === stamps
+    cached &&
+    cached.filter === filter &&
+    cached.contentHits === contentHits &&
+    cached.folders === folders &&
+    cached.stamps === stamps
   ) {
-    return visibleCache.result;
+    return cached.result;
   }
   const byFolder = new Map<string, SessionSummary[]>();
   for (const s of sessions.values()) {
@@ -277,7 +283,7 @@ export function visibleSessions(state: ChatState): FolderGroup[] {
   });
   groups.push(...unknown);
 
-  visibleCache = { sessions, filter, contentHits, folders, stamps, result: groups };
+  visibleCache.set(sessions, { filter, contentHits, folders, stamps, result: groups });
   return groups;
 }
 
@@ -312,24 +318,19 @@ export interface ContentSearchReach {
   truncated: boolean;
 }
 
-let reachCache: {
-  sessions: Map<string, SessionSummary>;
+const reachCache = new WeakMap<Map<string, SessionSummary>, {
   filter: FilterState;
   contentHits: ContentHits | null;
   result: ContentSearchReach | null;
-} | null = null;
+}>();
 
 /** The reach of the active content search, or null when none is active (no query,
  *  or the hits for it have not landed yet). */
 export function selectContentSearchReach(state: ChatState): ContentSearchReach | null {
   const { sessions, filter, contentHits } = state;
-  if (
-    reachCache &&
-    reachCache.sessions === sessions &&
-    reachCache.filter === filter &&
-    reachCache.contentHits === contentHits
-  ) {
-    return reachCache.result;
+  const cached = reachCache.get(sessions);
+  if (cached && cached.filter === filter && cached.contentHits === contentHits) {
+    return cached.result;
   }
   let result: ContentSearchReach | null = null;
   const query = filter.search.trim();
@@ -347,7 +348,7 @@ export function selectContentSearchReach(state: ChatState): ContentSearchReach |
       truncated: contentHits.truncated,
     };
   }
-  reachCache = { sessions, filter, contentHits, result };
+  reachCache.set(sessions, { filter, contentHits, result });
   return result;
 }
 
@@ -373,13 +374,15 @@ function tally(map: Record<string, number>, value: string): void {
 
 // Identity memo keyed on the sessions Map: facets recompute only when the loaded set
 // changes (the Map is replaced immutably on every session mutation), so `useStore` sees
-// a stable reference between unrelated renders.
-let facetsCache: { sessions: Map<string, SessionSummary>; result: Facets } | null = null;
+// a stable reference between unrelated renders. One entry per store, for the reason
+// given above `visibleCache`.
+const facetsCache = new WeakMap<Map<string, SessionSummary>, Facets>();
 
 /** Facet counts over every loaded session, independent of the active filter. */
 export function selectFacets(state: ChatState): Facets {
   const { sessions } = state;
-  if (facetsCache && facetsCache.sessions === sessions) return facetsCache.result;
+  const cached = facetsCache.get(sessions);
+  if (cached) return cached;
   const result: Facets = {
     harness: {},
     status: {},
@@ -396,7 +399,7 @@ export function selectFacets(state: ChatState): Facets {
     tally(result.mode, s.mode);
     tally(result.machine, s.instanceId);
   }
-  facetsCache = { sessions, result };
+  facetsCache.set(sessions, result);
   return result;
 }
 
@@ -492,10 +495,10 @@ export function turnsFor(state: ChatState, sessionId: string | null): TurnModel 
 // cannot be a WeakMap key, but it does not need to be: a session with no loaded model
 // gets the shared `EMPTY_*` constant, which is referentially stable by construction.
 //
-// The other memos in this file (`visibleCache`, `reachCache`, `facetsCache`,
-// `activeEffectiveCache`) are deliberately left as single slots: they take NO parameter
-// beyond the state, so there is only ever one live key and a second caller cannot exist
-// to fight over the slot. `selectTimeline` is parameterized like these two and is
+// The other memos in this file (`visibleCache`, `reachCache`, `facetsCache`) take NO
+// parameter beyond the state, so within one store there is only one live key; they keep
+// one slot per store, keyed on its `sessions` Map, because a page can hold more than one
+// store. `selectTimeline` is parameterized like these two and is
 // memoized the same way, for the same reason.
 
 /** A session's rolled-up cost, or all-zeros when no aggregates are loaded. */
