@@ -281,6 +281,7 @@ export {
   sourcesForEntry,
   matchesFilter,
   DEFAULT_HIDDEN_SESSION_TYPES,
+  isSpawnedSession,
   selectFacets,
   selectContentSearchReach,
   sessionCost,

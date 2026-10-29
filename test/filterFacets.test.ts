@@ -171,6 +171,27 @@ describe('matchesFilter — the default-hidden types are a rule, not a default',
   });
 });
 
+describe('matchesFilter — a spawned session is listed under its parent, not beside it', () => {
+  const child = summary({ sessionId: 'child', purpose: 'subagent', managerSessionId: 'parent' });
+  const parent = summary({ sessionId: 'parent', purpose: 'chat' });
+
+  it('hides a session that names a manager while no purpose is selected', () => {
+    expect(matchesFilter(child, EMPTY_FILTER)).toBe(false);
+    expect(matchesFilter(parent, EMPTY_FILTER)).toBe(true);
+  });
+
+  it('lists it again once its purpose is selected', () => {
+    expect(matchesFilter(child, { ...EMPTY_FILTER, purpose: ['subagent'] })).toBe(true);
+  });
+
+  it('keys on the manager, not on the purpose string', () => {
+    // A subagent row whose parent link was never written is not reachable under
+    // any parent, so hiding it would hide it everywhere.
+    const unlinked = summary({ sessionId: 'orphan', purpose: 'subagent' });
+    expect(matchesFilter(unlinked, EMPTY_FILTER)).toBe(true);
+  });
+});
+
 describe('matchesFilter — a content hit belongs to the query that produced it', () => {
   const hitsFor = (query: string, sessionIds: string[]): ContentHits => ({
     query,

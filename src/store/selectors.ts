@@ -26,6 +26,18 @@ export interface FolderGroup {
  *  and nothing is ever persisted on the user's behalf. */
 export const DEFAULT_HIDDEN_SESSION_TYPES: ReadonlySet<string> = new Set(['external']);
 
+/** True iff the session was spawned by another session — it names a manager.
+ *
+ *  The list hides such a session while the `purpose` axis carries no selection. A
+ *  subagent is reached under the session that spawned it (`useSubagentSessions`), so
+ *  listing it beside top-level conversations as well showed every one twice, and a
+ *  Codex parent's reviewer and spawned threads crowded out the conversations around
+ *  it. Selecting any purpose, `subagent` included, lists them again — the same escape
+ *  the `type` axis gives `external`. */
+export function isSpawnedSession(s: SessionSummary): boolean {
+  return (s.managerSessionId ?? '') !== '';
+}
+
 /** True iff a session passes the current filter.
  *
  *  Each faceted axis (`harness`, `status`, `type`, `purpose`, `mode`, `machine`) is a
@@ -37,7 +49,9 @@ export const DEFAULT_HIDDEN_SESSION_TYPES: ReadonlySet<string> = new Set(['exter
  *
  *  The `type` axis has ONE exception to "empty is no filter": with nothing selected on
  *  it, the types in `DEFAULT_HIDDEN_SESSION_TYPES` are still dropped. Select any type
- *  and the array rules alone.
+ *  and the array rules alone. The `purpose` axis has the same kind of exception: with
+ *  nothing selected on it, a session another session spawned (`isSpawnedSession`) is
+ *  dropped.
  *
  *  `folder` is a scalar exact match; `search` matches the display name OR the session
  *  id case-insensitively AND, when `contentHits` is supplied (C6 content search), any
@@ -55,7 +69,11 @@ export function matchesFilter(
   } else if (DEFAULT_HIDDEN_SESSION_TYPES.has(s.type)) {
     return false;
   }
-  if (f.purpose.length && !f.purpose.includes(s.purpose)) return false;
+  if (f.purpose.length) {
+    if (!f.purpose.includes(s.purpose)) return false;
+  } else if (isSpawnedSession(s)) {
+    return false;
+  }
   if (f.mode.length && !f.mode.includes(s.mode)) return false;
   if (f.machine.length && !f.machine.includes(s.instanceId)) return false;
   if (f.folder && s.folderName !== f.folder) return false;
