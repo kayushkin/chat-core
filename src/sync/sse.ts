@@ -100,6 +100,7 @@ function summaryFromManaged(m: ManagedSessionWire): SessionSummary {
     harnessSessionId: m.harness_session_id ?? '',
     managerSessionId: m.manager_session_id ?? '',
     ...(m.spend_usd !== undefined ? { spendUsd: m.spend_usd } : {}),
+    ...(m.working_dir !== undefined ? { workingDir: m.working_dir } : {}),
     ...(m.status ? { status: m.status } : {}),
   };
 }

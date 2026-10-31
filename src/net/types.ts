@@ -37,6 +37,11 @@ export interface SessionSummary {
    *  when the row came from somewhere that did not carry it — a row cached
    *  before the field was kept — and absent is unknown, not zero. */
   spendUsd?: number;
+  /** The directory the session was started in, llm-bridge-server's `workingDir` on a
+   *  summary row and `working_dir` on a list-stream upsert; '' when none was recorded.
+   *  Absent when the row came from somewhere that did not carry it (a row cached before
+   *  2026-10-31), and absent is unknown, not "no directory". */
+  workingDir?: string;
   /** Everything the session is doing right now, as llm-bridge-server decided it,
    *  with the event row id it is current as of. `state` above is `status.state` —
    *  the store keeps the two equal (`store/sessionStatus.ts`). Optional on the type
