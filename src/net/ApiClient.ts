@@ -24,6 +24,7 @@ import type { FileNamedByTools, FileNamedByToolsContent } from '../reduce/fileMe
 import { SUMMARY_FILTER_AXES } from './types.js';
 import type { Signal, SignalResolveState, SignalWire } from './signals.js';
 import { SIGNAL_STATE_OPEN, signalFromWire } from './signals.js';
+import { sessionBriefFromWire, type LooseEndState, type SessionBrief, type SessionBriefViewWire } from './sessionBriefs.js';
 import type {
   HarnessConfigWire,
   HarnessInfoWire,
@@ -985,6 +986,66 @@ export class ApiClient {
   answerSignal(signalId: string, answers: Record<string, string>): Promise<unknown> {
     if (!signalId) return Promise.reject(new Error('a signal cannot be answered without its id'));
     return this.postJSON(`/signals/${encodeURIComponent(signalId)}/answer`, { answers });
+  }
+
+  /**
+   * Chat briefs across the caller's sessions, most recently updated first.
+   * GET /session-briefs.
+   *
+   * Returns `null` on a 404, the same as `getOpenSignals`: a bridge-server
+   * that predates briefs is not a failure, and the surfaces showing briefs
+   * then show nothing. Any other non-2xx throws.
+   */
+  async getSessionBriefs(opts?: {
+    sessionIds?: readonly string[];
+    looseEndState?: LooseEndState;
+    updatedSince?: string;
+    limit?: number;
+  }): Promise<SessionBrief[] | null> {
+    const params = new URLSearchParams();
+    for (const id of opts?.sessionIds ?? []) params.append('session_id', id);
+    if (opts?.looseEndState) params.set('loose_end_state', opts.looseEndState);
+    if (opts?.updatedSince) params.set('updated_since', opts.updatedSince);
+    if (opts?.limit != null) params.set('limit', String(opts.limit));
+    const query = params.toString();
+    const path = `/session-briefs${query ? `?${query}` : ''}`;
+    const res = await this.doFetch(`${this.basePath}${path}`);
+    if (res.status === 404) return null;
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new ApiError({
+        message: `GET ${path} failed: ${res.status} ${res.statusText}`,
+        status: res.status,
+        body,
+        method: 'GET',
+        path,
+      });
+    }
+    const wire: unknown = await res.json();
+    if (!Array.isArray(wire)) {
+      throw new Error(`GET ${path} returned ${typeof wire}, expected an array of session briefs`);
+    }
+    return (wire as SessionBriefViewWire[])
+      .map(sessionBriefFromWire)
+      .filter((brief): brief is SessionBrief => brief !== null);
+  }
+
+  /** Answer a loose end: the server sends `text` to the session as a message
+   *  quoting the remark, and closes it. Loud, like every other write. */
+  answerLooseEnd(sessionId: string, looseEndId: string, text: string): Promise<unknown> {
+    if (!sessionId || !looseEndId) return Promise.reject(new Error('a loose end is answered by its session and its id'));
+    return this.postJSON(
+      `/sessions/${encodeURIComponent(sessionId)}/loose-ends/${encodeURIComponent(looseEndId)}/answer`,
+      { text },
+    );
+  }
+
+  /** Close a loose end without an answer. */
+  dismissLooseEnd(sessionId: string, looseEndId: string): Promise<unknown> {
+    if (!sessionId || !looseEndId) return Promise.reject(new Error('a loose end is dismissed by its session and its id'));
+    return this.postJSON(
+      `/sessions/${encodeURIComponent(sessionId)}/loose-ends/${encodeURIComponent(looseEndId)}/dismiss`,
+    );
   }
 }
 

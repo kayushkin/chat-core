@@ -64,6 +64,21 @@ export {
 // data layer and ships none.
 export { ChatContext, useChatContext, type ChatContextValue } from './react/context.js';
 
+// ---- Session briefs (each chat's goal, step, changes and loose ends) ----
+export { useSessionBriefs, type SessionBriefsState } from './react/sessionBriefs.js';
+export {
+  sessionBriefFromWire,
+  sessionBriefChanges,
+  openLooseEnds,
+  type SessionBrief,
+  type SessionBriefRevision,
+  type LooseEnd,
+  type LooseEndKind,
+  type LooseEndState,
+  type SessionBriefViewWire,
+} from './net/sessionBriefs.js';
+export { subscribeToSessionBriefChanges, announceSessionBriefsChanged } from './store/sessionBriefChanges.js';
+
 // ---- Session signals (the open questions a session is waiting on) ----
 export {
   useOpenSignals,

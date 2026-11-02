@@ -142,6 +142,8 @@ export async function* connectListSSE(
       yield { type: 'delete', sessionId: String(data.session_id), ...(frame.id ? { id: frame.id } : {}) };
     } else if (frame.type === 'signal' && data.session_id) {
       yield { type: 'signal', sessionId: String(data.session_id), ...(frame.id ? { id: frame.id } : {}) };
+    } else if (frame.type === 'session_brief' && data.session_id) {
+      yield { type: 'session_brief', sessionId: String(data.session_id), ...(frame.id ? { id: frame.id } : {}) };
     }
   }
 }

@@ -7,6 +7,7 @@ import type { WireEvent } from '../net/wireEvents.js';
 import { connectListSSE, connectSessionSSE } from './sse.js';
 import { clearOpenSignalsCache } from '../react/signals.js';
 import { announceSignalsChanged } from '../store/signalResolve.js';
+import { announceSessionBriefsChanged } from '../store/sessionBriefChanges.js';
 
 // L2 sync (decision D6). Owns exactly:
 //   - ONE global list SSE (list deltas → session upsert/delete)
@@ -171,6 +172,10 @@ export class SyncEngine {
             // happen.
             clearOpenSignalsCache();
             announceSignalsChanged();
+          } else if (frame.type === 'session_brief') {
+            // A chat's brief or loose ends moved; the surfaces showing briefs
+            // re-read them.
+            announceSessionBriefsChanged();
           }
         }
       } catch {
