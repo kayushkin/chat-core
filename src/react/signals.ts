@@ -4,6 +4,7 @@ import { useChatContext } from './context.js';
 import { sessionTypeOfSignal, splitSignalsByAttention, type SignalAttentionGroup } from '../net/attention.js';
 import { groupSignalsByRequest, type Signal, type SignalAnswerDraft, type SignalRequest } from '../net/signals.js';
 import { answerSignalRequest, subscribeToSignalChanges } from '../store/signalResolve.js';
+import { readRetryingUnanswered, UnansweredReadError, UNANSWERED_READ_RECHECK_MS } from '../net/unansweredRead.js';
 
 // Data layer for session signals — the open questions and notifications a
 // session is waiting on.
@@ -85,7 +86,11 @@ function messageOf(e: unknown): string {
  * OUTSIDE this tab reaches it (the session answered it itself, another client
  * did, a turn ended and superseded it); the in-process announcement every local
  * resolve makes, which keeps two surfaces in the same tab from disagreeing; an
- * explicit `reload`; and, last, the 30s cache TTL.
+ * explicit `reload`; and, last, the 30s cache TTL. Two more cover a read that
+ * failed or went stale while nobody could see it: the browser coming back
+ * online or the page back into view asks again, and a read this host's server
+ * never answered is retried within seconds (`readRetryingUnanswered`) and then
+ * every 30 seconds until it is answered.
  */
 export function useOpenSignals(sessionId?: string): OpenSignalsState {
   const { api } = useChatContext();
@@ -107,8 +112,28 @@ export function useOpenSignals(sessionId?: string): OpenSignalsState {
   // means the open set may have changed here too.
   useEffect(() => subscribeToSignalChanges(reload), [reload]);
 
+  // The browser is back online, or the page is shown again after the phone put
+  // it away: ask again if the last answer is old or was a failure (a failed
+  // read is never left in the cache). Every surface on the key runs this, and
+  // the first reload's flight is the one the rest share.
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof document === 'undefined') return undefined;
+    const onReturn = () => {
+      if (document.visibilityState === 'hidden') return;
+      const slot = openSignalsCache.get(key);
+      if (!slot || Date.now() - slot.at >= OPEN_SIGNALS_TTL_MS) reload();
+    };
+    window.addEventListener('online', onReturn);
+    document.addEventListener('visibilitychange', onReturn);
+    return () => {
+      window.removeEventListener('online', onReturn);
+      document.removeEventListener('visibilitychange', onReturn);
+    };
+  }, [key, reload]);
+
   useEffect(() => {
     let live = true;
+    let recheck: ReturnType<typeof setTimeout> | null = null;
     setLoading(true);
     const now = Date.now();
     const hit = openSignalsCache.get(key);
@@ -116,7 +141,10 @@ export function useOpenSignals(sessionId?: string): OpenSignalsState {
     if (hit && now - hit.at < OPEN_SIGNALS_TTL_MS) {
       flight = hit.promise;
     } else {
-      flight = api.getOpenSignals(sessionId ? { sessionId } : undefined);
+      // A read that gets no answer is retried within seconds inside this one
+      // flight, so every surface sharing it waits quietly through a dropped
+      // request rather than each showing an error.
+      flight = readRetryingUnanswered(() => api.getOpenSignals(sessionId ? { sessionId } : undefined));
       openSignalsCache.set(key, { at: now, promise: flight });
       // A rejection must not be cached as a permanent failure — the next panel
       // to open should be free to retry. Only evict this exact promise, or a
@@ -139,12 +167,18 @@ export function useOpenSignals(sessionId?: string): OpenSignalsState {
         if (!live) return;
         setError(messageOf(e));
         setLoading(false);
+        // Nothing else re-reads this on a timer, so a read that got no answer
+        // would stay failed until some other event. Its error says "still
+        // trying"; this keeps that true. A refusal waits for an event or a
+        // reload, as before: asking again will not change the answer.
+        if (e instanceof UnansweredReadError) recheck = setTimeout(reload, UNANSWERED_READ_RECHECK_MS);
       },
     );
     return () => {
       live = false;
+      if (recheck !== null) clearTimeout(recheck);
     };
-  }, [api, key, sessionId, reloadToken]);
+  }, [api, key, sessionId, reloadToken, reload]);
 
   const requests = useMemo(() => groupSignalsByRequest(signals), [signals]);
 
