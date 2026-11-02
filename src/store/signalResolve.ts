@@ -42,23 +42,20 @@ export function announceSignalsChanged(): void {
   for (const listener of signalChangeListeners) listener();
 }
 
-/** What goes on the wire for one signal: the picked options, or the typed text.
- *  Empty means unanswered.
+/** What goes on the wire for one signal: the picked options, then the typed
+ *  text. Empty means unanswered.
  *
- *  A signal is answered with options OR with freeform text, never both — picking
- *  one clears the other in the card, and this is the reader that holds the same
- *  rule for anything composing an answer without the card.
+ *  A human can pick options AND write something — "these three, but staging
+ *  first" — so both go out, the picks on the first line and the text after a
+ *  blank line. Either alone is a whole answer too.
  *
  *  Several picked options join with ', '. That is not a display choice: the
  *  answer wire is one string per question, and a comma-joined list is what
- *  AskUserQuestion's own input schema accepts for a multiSelect answer. The
- *  permission banner that used to render these questions joined them the same
- *  way, so folding it into the card changed nothing about what the tool
- *  receives. */
+ *  AskUserQuestion's own input schema accepts for a multiSelect answer. */
 export function answerTextOf(answer: SignalAnswerDraft | undefined): string {
-  const picked = (answer?.pickedOptionValues ?? []).filter((v) => v !== '');
-  if (picked.length > 0) return picked.join(', ');
-  return (answer?.text ?? '').trim();
+  const picked = (answer?.pickedOptionValues ?? []).filter((v) => v !== '').join(', ');
+  const typed = (answer?.text ?? '').trim();
+  return [picked, typed].filter((part) => part !== '').join('\n\n');
 }
 
 /** The signals in a request that need an ANSWER. Notifications ride in the same

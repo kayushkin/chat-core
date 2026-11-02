@@ -115,8 +115,7 @@ export interface SignalAnswer {
  *  pick-one, and sharing them again would put the multi-select answer somewhere
  *  it does not fit.
  *
- *  A picked option and typed text stay exclusive: choosing either clears the
- *  other. See `answerTextOf`. */
+ *  Picked options and typed text can both be set; `answerTextOf` sends both. */
 export interface SignalAnswerDraft {
   /** The `value` of every option picked. More than one entry only when the
    *  signal's `allowMultipleOptions` says so. */

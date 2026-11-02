@@ -301,9 +301,12 @@ describe('a question that allows more than one answer', () => {
     // so the fold changed nothing about what reaches the tool.
     expect(answerTextOf({ pickedOptionValues: ['a.go', 'b.go'] })).toBe('a.go, b.go');
     expect(answerTextOf({ pickedOptionValues: ['a.go'] })).toBe('a.go');
-    // Picked options win over stale text: the card clears one when the other is
-    // touched, and this is the reader that holds the rule for anything else.
-    expect(answerTextOf({ pickedOptionValues: ['a.go'], text: 'left over' })).toBe('a.go');
+    // Picks and typed text go out together: the picks first, the text after a
+    // blank line.
+    expect(answerTextOf({ pickedOptionValues: ['a.go', 'b.go'], text: ' staging first ' })).toBe(
+      'a.go, b.go\n\nstaging first',
+    );
+    expect(answerTextOf({ pickedOptionValues: ['a.go'], text: '   ' })).toBe('a.go');
     expect(answerTextOf({ pickedOptionValues: [], text: 'typed' })).toBe('typed');
     expect(answerTextOf(undefined)).toBe('');
   });
