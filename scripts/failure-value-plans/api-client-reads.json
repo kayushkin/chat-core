@@ -54,7 +54,7 @@
   {
     "id": "A2-signals-404-A",
     "kind": "A",
-    "describes": "producer of null: a bridge-server predating the signals API stops being recognised, and its 404 falls through to the throw -- every signal surface shows an error instead of rendering nothing",
+    "describes": "producer of null: a bridge-server predating the signals API stops being recognized, and its 404 falls through to the throw -- every signal surface shows an error instead of rendering nothing",
     "edits": [
       {
         "file": "src/net/ApiClient.ts",

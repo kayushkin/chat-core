@@ -594,7 +594,7 @@ export interface RefDetailState<T> { data: T | null; error: string | null; loadi
 //                  `value || label`.
 //   freeform     — a textarea, for every question that has no editable option to rewrite
 //                  instead. Never gated on `allowFreeform`: `signalFromWire` defaults that
-//                  to FALSE when the key is absent, so honouring it fails closed onto an
+//                  to FALSE when the key is absent, so honoring it fails closed onto an
 //                  unanswerable card.
 //
 // `compact` trims chrome (descriptions, body) for tight surfaces and never the means of

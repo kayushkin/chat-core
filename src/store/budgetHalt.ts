@@ -50,7 +50,7 @@ interface RefusalBody {
  *  Reports null for everything that is not this specific refusal: a different error
  *  type, a non-402 status, a 402 that is not a budget refusal, a body that does not
  *  parse. The caller then falls through to its ordinary error path, so a refusal shape
- *  this code does not recognise still reaches the user as text instead of being folded
+ *  this code does not recognize still reaches the user as text instead of being folded
  *  into a banner that would describe it wrongly.
  *
  *  Takes the thrown value rather than a (status, body) pair so a caller can hand it

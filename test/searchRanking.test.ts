@@ -126,7 +126,7 @@ describe('search ranking — the match count must survive the store', () => {
   // The ranking is applied inside each folder group, and the group order is the
   // server's. This is the chat page's deliberate difference from bridge-ui, which flattens
   // grouping entirely while a query is active — recorded here so a future flatten is
-  // a red test rather than a silent behaviour change.
+  // a red test rather than a silent behavior change.
   it('ranks within a folder group and leaves the group order to the server', () => {
     const store = createChatStore();
     store.getState().actions.setFolders(['zeta', 'alpha']);

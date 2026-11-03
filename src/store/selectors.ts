@@ -284,7 +284,7 @@ export function visibleSessions(state: ChatState): FolderGroup[] {
   // that shortcut was only true while every group was sorted newest-first, and a
   // search-ranked group puts the best hit at index 0 instead. The stamp rather
   // than `updatedAt` for the groups' own ordering too — a folder holding a
-  // running session would otherwise leapfrog its neighbours on every event, the
+  // running session would otherwise leapfrog its neighbors on every event, the
   // same churn the row ordering just gave up.
   const newestIn = (g: FolderGroup): string => {
     let newest = '';
@@ -968,7 +968,7 @@ function applyTaskFields(item: TimelineItem, e: Entry): void {
 const TASK_FINISH_BY_STATUS: Record<string, { icon: string; label: string; tone: TimelineTone }> = {
   completed: { icon: '▣✓', label: 'Task finished', tone: 'task-done' },
   failed: { icon: '▣✗', label: 'Task failed', tone: 'task-err' },
-  cancelled: { icon: '▣–', label: 'Task cancelled', tone: 'task-cancelled' },
+  cancelled: { icon: '▣–', label: 'Task canceled', tone: 'task-cancelled' },
 };
 
 /** Flatten the model's entries into the ordered rows of what THIS session did.

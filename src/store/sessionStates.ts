@@ -26,7 +26,7 @@ export const RUNNING_STATES: ReadonlySet<string> = new Set([
 
 /** True when `state` says a turn is in flight. An empty or unknown state reads as
  *  NOT running: the caller is asking "may I assume work is happening", and a state
- *  this client does not recognise is not evidence that it is. */
+ *  this client does not recognize is not evidence that it is. */
 export function isRunningState(state: string | undefined | null): boolean {
   return !!state && RUNNING_STATES.has(state);
 }

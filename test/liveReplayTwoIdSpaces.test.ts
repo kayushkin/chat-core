@@ -40,7 +40,7 @@ function visibleTexts(store: ReturnType<typeof createChatStore>): string[] {
 }
 
 // The optimistic row carries EXACTLY what the user typed — that equality is the
-// text-match half of its reconciliation, so the fixture must honour it.
+// text-match half of its reconciliation, so the fixture must honor it.
 const userPrompt =
   (frames.find((f) => f.type === 'user_message')!.data as { result?: { text?: string } }).result!
     .text!;

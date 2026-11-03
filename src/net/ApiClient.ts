@@ -42,7 +42,7 @@ import { HOOK_PHASE_AWAITING, pendingHookFromWire } from '../store/pendingHooks.
  *  to 100). It used to apply because the client sent no `limit` at all, so the
  *  bound was the server's fallback rather than anyone's choice, and the client
  *  could not tell a complete result from a truncated one. Sending it explicitly
- *  changes no behaviour and makes `truncated` answerable.
+ *  changes no behavior and makes `truncated` answerable.
  *
  *  Raising it is NOT free, and the reason is not the request. Measured on this
  *  host 2026-08-02: a broad query matches thousands of sessions (`the` 11,124,

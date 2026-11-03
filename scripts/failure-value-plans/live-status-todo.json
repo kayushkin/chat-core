@@ -113,7 +113,7 @@
   {
     "id": "L3-no-in-progress-item-B",
     "kind": "B",
-    "describes": "producer 3 covered by a neighbour: `completed` is admitted alongside `in_progress`, so a finished list reports its last completed item as though it were live work",
+    "describes": "producer 3 covered by a neighbor: `completed` is admitted alongside `in_progress`, so a finished list reports its last completed item as though it were live work",
     "edits": [
       {
         "file": "src/store/liveStatus.ts",

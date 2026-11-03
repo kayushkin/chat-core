@@ -613,7 +613,7 @@ export interface ManagedSessionDetail {
    *  `sessionId`. */
   harnessSessionId?: string;
   /** ⚠️ The FORK parent's `harnessSessionId` — a harness UUID, not a session id.
-   *  Deprecated on the server in favour of `forkedFromSessionId`; do not label it
+   *  Deprecated on the server in favor of `forkedFromSessionId`; do not label it
    *  simply "parent" in a UI, because it is not one. */
   forkParentHarnessSessionId?: string;
   /** The session this one was forked from, as a bridge session id. */

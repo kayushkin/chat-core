@@ -24,7 +24,7 @@ import type { SessionSummary, TurnModel } from '../src/net/types.js';
 //
 // The empty-success half is why every test here SEEDS the store first and asserts the
 // seeded rows SURVIVE. Asserting "the store is empty after a failed read" would pass
-// for both the correct behaviour and the bug.
+// for both the correct behavior and the bug.
 
 function summary(id: string): SessionSummary {
   return {

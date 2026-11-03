@@ -395,7 +395,7 @@ export interface ChatActions {
    *  Clears any previous error. */
   startContentSearch(query: string | null): void;
   /** Record that the content search for `query` ended with no hits to fold in:
-   *  `error` non-null when it failed, null when it was cancelled before firing.
+   *  `error` non-null when it failed, null when it was canceled before firing.
    *  Ignored unless `query` is still the one in flight, so a late failure can never
    *  clear the search that replaced it. */
   endContentSearch(query: string, error: string | null): void;
@@ -495,7 +495,7 @@ export const DEFAULT_TURN_RETENTION_BYTES = 32_000_000;
  *
  * Without a floor the budget alone has a bad failure mode: three 10 MB sessions
  * overshoot 32M characters, so switching between the two the user is actually working
- * across would evict and refetch on every switch — the slowest possible behaviour
+ * across would evict and refetch on every switch — the slowest possible behavior
  * arriving exactly when the transcripts are biggest and refetching hurts most.
  *
  * Four covers "the thing I am doing", "the thing I was doing", and the two either side.

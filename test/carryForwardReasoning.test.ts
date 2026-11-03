@@ -79,7 +79,7 @@ describe('carryForwardReasoning', () => {
 
   it('does NOT preserve any other kind — the server is authoritative for those', () => {
     // A page that drops a text entry is reporting a real edit (a compaction, a
-    // redaction) and the client must honour it. Only reasoning is unreportable.
+    // redaction) and the client must honor it. Only reasoning is unreportable.
     const live = model([
       entry({ id: 'text_gone', kind: 'text', turnId: 't1', eventId: 2, text: 'compacted away' }),
       entry({ id: 'tool_gone', kind: 'tool_call', turnId: 't1', eventId: 3, toolName: 'Bash' }),

@@ -76,7 +76,7 @@ describe('SyncEngine.sweepValidators — idle over-poll fix', () => {
   it('an ACTIVE session whose validator is UNCHANGED is not refetched', () => {
     // The sweep's reason to exist. Every tick compares a cheap validator so the
     // ~500 KB tail is pulled only when something moved; if "equal" stopped being
-    // recognised, every idle tick would refetch the open session's whole tail.
+    // recognized, every idle tick would refetch the open session's whole tail.
     // The session is ACTIVE here on purpose — with it unselected, `isDisplayed`
     // would suppress the fetch on its own and the case would pass without the
     // comparison ever being consulted.

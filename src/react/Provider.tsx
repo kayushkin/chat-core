@@ -101,7 +101,7 @@ export function ChatProvider(props: ChatProviderProps): JSX.Element {
   const ctx = ctxRef.current;
 
   useEffect(() => {
-    let cancelled = false;
+    let canceled = false;
     // The live stream starts FIRST, and never waits on boot.
     //
     // It used to be `boot().then(() => sync.start())`, which made the session-list SSE —
@@ -119,10 +119,10 @@ export function ChatProvider(props: ChatProviderProps): JSX.Element {
     // LOUD: a boot failure costs the cache paint and the first list page, which the
     // stream then has to fill in. That is a real degradation and it gets reported.
     void ctx.prefetcher.boot().catch((err: unknown) => {
-      if (!cancelled) console.error('chat-core: boot failed; running on the stream alone', err);
+      if (!canceled) console.error('chat-core: boot failed; running on the stream alone', err);
     });
     return () => {
-      cancelled = true;
+      canceled = true;
       ctx.sync.stop();
       void ctx.cache.close();
     };

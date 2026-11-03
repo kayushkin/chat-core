@@ -347,7 +347,7 @@ export function useTurns(
  *
  *  The gate is the server's to define and it has defined it: `handleResumeSession`
  *  (llm-bridge-server `internal/server/sessions.go`) consults the live process
- *  registry, NOT the denormalised state string — a session with a process is
+ *  registry, NOT the denormalized state string — a session with a process is
  *  "already running" and gets a 409, one without is resumable whatever its state
  *  reads. `TestResumeSession_AlreadyRunning` pins that 409. These states are
  *  the ones a session reaches when its process is gone.

@@ -114,7 +114,7 @@ describe('a task contributes two rows: a spawn and a finish', () => {
     expect(labels(m)).toEqual(['Task started']);
   });
 
-  it('draws failed and cancelled apart — cancelled is not an error', () => {
+  it('draws failed and canceled apart — canceled is not an error', () => {
     const m = model([
       entry({ id: 'u1', turnId: 't1', role: 'user', kind: 'text', eventId: 1, text: 'go' }),
       taskStarted({ id: 's1', turnId: 't1', eventId: 2, taskId: 'A' }),
@@ -132,7 +132,7 @@ describe('a task contributes two rows: a spawn and a finish', () => {
     const rows = selectTimeline(m).turns[0]!.children;
     expect(rows[1]!.tone).toBe('task-err');
     expect(rows[3]!.tone).toBe('task-cancelled');
-    expect(rows[3]!.label).toBe('Task cancelled');
+    expect(rows[3]!.label).toBe('Task canceled');
     // A derived close says why; nothing else in the stream does.
     expect(rows[3]!.detail).toBe('the harness process exited before this task reported a status');
   });

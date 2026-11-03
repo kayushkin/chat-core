@@ -10,7 +10,7 @@ import type { SessionSummary } from '../src/net/types.js';
 // newest session, and a folder nobody had filed anything into was unrepresentable.
 //
 // The controls below are as load-bearing as the failing cases. Two of them pin
-// behaviour that must SURVIVE the fix (newest-first within a group; a folder the
+// behavior that must SURVIVE the fix (newest-first within a group; a folder the
 // server has not listed still groups its sessions), and one pins the degraded
 // path (no folder list → the old recency order, not an empty sidebar).
 

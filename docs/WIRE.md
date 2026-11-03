@@ -321,7 +321,7 @@ nothing. `SessionSummary.state` is always `status.state`. A row with no status (
 
 The client derives no status from the transcript. The activity fold, the transcript-derived
 activity, the last-turn tool/subagent scan and the F1 terminal-state reconcile
-(`effectiveState`, `terminalStateFromTail`) were all deleted on 2026-09-17 in its favour. The
+(`effectiveState`, `terminalStateFromTail`) were all deleted on 2026-09-17 in its favor. The
 one transcript read left beside a status line is the harness's in-progress todo
 (`store/inProgressTodo.ts`), which is conversation, not status.
 

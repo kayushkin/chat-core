@@ -202,7 +202,7 @@ export interface OpenSignalsByAttentionState {
   background: SignalAttentionGroup;
   /** The raising session's type as the split saw it — the signal's own
    *  `session_type`, else the loaded session row's — or '' when neither knows.
-   *  For labelling a background card; '' is to be shown as unknown. */
+   *  For labeling a background card; '' is to be shown as unknown. */
   sessionTypeOf: (signal: Signal) => string;
   available: boolean;
   loading: boolean;

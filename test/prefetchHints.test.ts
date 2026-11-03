@@ -159,7 +159,7 @@ describe('Prefetcher.hydrateFromCache — a disabled cache', () => {
     await new Prefetcher({ store, api, cache }).hydrateFromCache();
     expect(hydrateCalls).toBe(0);
 
-    // Same fake with the flag flipped, so "never called" cannot be an artefact
+    // Same fake with the flag flipped, so "never called" cannot be an artifact
     // of a fake nobody wired up.
     const enabled = { ...cache, isEnabled: true } as unknown as SessionCache;
     await new Prefetcher({ store, api, cache: enabled }).hydrateFromCache();

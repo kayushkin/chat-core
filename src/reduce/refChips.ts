@@ -11,7 +11,7 @@
 //    behavior for consumers that already run react-markdown. It uses the same
 //    core matcher and imports nothing, so chat-core stays dependency-free.
 //
-// Five grammars are recognised, all by one regex: bare session ids, a cue word
+// Five grammars are recognized, all by one regex: bare session ids, a cue word
 // in front of a noteboard uuid, the producer/orchestrator's `[kind:id]`
 // bracket dialect (added here, not present upstream), a bare uuid with no
 // cue at all — kind `uuid`, which the renderer classifies through the host's

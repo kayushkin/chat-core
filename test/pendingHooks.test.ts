@@ -41,7 +41,7 @@ function parkedIn(store: ChatStoreApi, sessionId: string): PendingHook[] {
 
 describe('pendingHookFromWire — what cannot become a decision', () => {
   // Tested through the projector directly, because `foldHookEvent` cannot tell
-  // these apart: it discards a null hook and a hook with an unrecognised phase
+  // these apart: it discards a null hook and a hook with an unrecognized phase
   // by the same `return current`. Projecting an absent payload into a blank
   // PendingHook instead of refusing it left every folding case green -- the
   // blank's phase is '' and falls out of the fold anyway. The refusal is only

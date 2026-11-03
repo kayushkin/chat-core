@@ -12,7 +12,7 @@ import type { PersistedFilterAxis } from '../src/store/filterStorage.js';
 import type { WebStorageLike } from '../src/store/webStorage.js';
 
 // The sidebar's filter selection used to live in memory only: `ChatState.filter` was
-// initialised to `EMPTY_FILTER` and nothing ever rehydrated it, so every reload threw
+// initialized to `EMPTY_FILTER` and nothing ever rehydrated it, so every reload threw
 // away whatever the user had narrowed the list down to.
 //
 // Four things have to hold, and they are why these tests exist rather than a

@@ -91,7 +91,7 @@ export function carryForwardAggregates(
  * `thinking`, carries text, and the fresher page has no entry under that id. Nothing
  * else is preserved: for every other kind the server IS authoritative, and a page that
  * drops a text entry is reporting a real edit — a compaction, a redaction — that the
- * client must honour. Carried entries keep their place in their turn, and a turn the
+ * client must honor. Carried entries keep their place in their turn, and a turn the
  * fresher page does not contain is not resurrected: it is off the loaded window and
  * renders nothing either way.
  *

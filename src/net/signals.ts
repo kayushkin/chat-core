@@ -7,7 +7,7 @@
 // sends, the camelCase shape chat-core renders from, and the mapping between
 // them. It sits in its own module rather than in `types.ts` + `wireEvents.ts`
 // because a signal is BOTH — the same record is read over HTTP and grouped for
-// display — and splitting six small types across two files to honour a
+// display — and splitting six small types across two files to honor a
 // file-per-direction rule would leave nowhere to put `groupSignalsByRequest`,
 // which is the one piece of signal logic every surface needs and none of them
 // should re-derive.

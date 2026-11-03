@@ -111,7 +111,7 @@ describe('composer drafts survive a reload', () => {
 
     expect(store.getState().drafts.has('sess-a')).toBe(false);
     expect(storedDrafts(storage)['sess-a']).toBeUndefined();
-    // A removal must not take the neighbours with it.
+    // A removal must not take the neighbors with it.
     expect(storedDrafts(storage)['sess-b']?.text).toBe('keep me');
   });
 
@@ -208,7 +208,7 @@ describe('a broken or absent store never breaks the composer', () => {
     expect(createChatStore({ draftStorage: storage }).getState().drafts.size).toBe(0);
   });
 
-  it('a malformed entry is dropped and its well-formed neighbours are kept', () => {
+  it('a malformed entry is dropped and its well-formed neighbors are kept', () => {
     const now = 1_800_000_000_000;
     const storage = fakeStorage({
       [DRAFT_STORAGE_KEY]: JSON.stringify({

@@ -238,7 +238,7 @@ describe('the in-memory transcript store is bounded', () => {
   it('keeps the session floor warm even when every transcript is enormous', () => {
     // The failure mode a byte budget has on its own: three 10 MB sessions overshoot any
     // sane budget, so flipping between the two the user is working across would evict and
-    // refetch on every single switch — the slowest possible behaviour arriving exactly
+    // refetch on every single switch — the slowest possible behavior arriving exactly
     // when transcripts are biggest and refetching hurts most.
     const store = createChatStore({ turnRetentionBytes: 1, turnRetentionMinSessions: 4 });
 

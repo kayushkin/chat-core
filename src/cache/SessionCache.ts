@@ -151,7 +151,7 @@ export class SessionCache {
 
       // The open is raced against a budget rather than awaited outright: a BLOCKED
       // upgrade never settles, and the cache is not allowed to be the reason boot hangs.
-      // The losing side of the race is not cancelled — IndexedDB has no such affordance —
+      // The losing side of the race is not canceled — IndexedDB has no such affordance —
       // so a late open still completes and simply goes unused.
       let timer: ReturnType<typeof setTimeout>;
       this.dbPromise = Promise.race([

@@ -138,7 +138,7 @@ describe('defaultWebStorage — the two producers no assertion can tell apart', 
     // this test reddens. Recorded rather than papered over, because a reader who
     // sees producer 2 covered would otherwise believe a single-guard mutation is
     // caught here. It is not, and the fix is not a cleverer assertion — the two
-    // are behaviourally identical from outside and the guard earns its place by
+    // are behaviorally identical from outside and the guard earns its place by
     // being the readable one, not the observable one.
     vi.stubGlobal('window', {});
     vi.stubGlobal('localStorage', undefined);

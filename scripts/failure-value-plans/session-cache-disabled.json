@@ -28,7 +28,7 @@
   {
     "id": "SC-putList",
     "kind": "A",
-    "describes": "putList stops honouring `disabled` and reaches db(), which rejects",
+    "describes": "putList stops honoring `disabled` and reaches db(), which rejects",
     "tests": [],
     "edits": [
       {
@@ -41,7 +41,7 @@
   {
     "id": "SC-putSummary",
     "kind": "A",
-    "describes": "putSummary stops honouring `disabled`",
+    "describes": "putSummary stops honoring `disabled`",
     "tests": [],
     "edits": [
       {
@@ -54,7 +54,7 @@
   {
     "id": "SC-getList",
     "kind": "A",
-    "describes": "getList stops honouring `disabled` -- the empty list producer goes",
+    "describes": "getList stops honoring `disabled` -- the empty list producer goes",
     "tests": [],
     "edits": [
       {
@@ -67,7 +67,7 @@
   {
     "id": "SC-deleteSession",
     "kind": "A",
-    "describes": "deleteSession stops honouring `disabled`",
+    "describes": "deleteSession stops honoring `disabled`",
     "tests": [],
     "edits": [
       {
@@ -80,7 +80,7 @@
   {
     "id": "SC-putTurns",
     "kind": "A",
-    "describes": "putTurns stops honouring `disabled`",
+    "describes": "putTurns stops honoring `disabled`",
     "tests": [],
     "edits": [
       {
@@ -93,7 +93,7 @@
   {
     "id": "SC-getTurns",
     "kind": "A",
-    "describes": "getTurns stops honouring `disabled` -- the undefined producer goes",
+    "describes": "getTurns stops honoring `disabled` -- the undefined producer goes",
     "tests": [],
     "edits": [
       {
@@ -106,7 +106,7 @@
   {
     "id": "SC-putValidator",
     "kind": "A",
-    "describes": "putValidator stops honouring `disabled`",
+    "describes": "putValidator stops honoring `disabled`",
     "tests": [],
     "edits": [
       {
@@ -119,7 +119,7 @@
   {
     "id": "SC-getValidator-disabled",
     "kind": "A",
-    "describes": "getValidator stops honouring `disabled` -- the first of its TWO undefined producers",
+    "describes": "getValidator stops honoring `disabled` -- the first of its TWO undefined producers",
     "tests": [],
     "edits": [
       {
@@ -145,7 +145,7 @@
   {
     "id": "SC-hydrate",
     "kind": "A",
-    "describes": "hydrate stops honouring `disabled` -- the empty-everything producer goes",
+    "describes": "hydrate stops honoring `disabled` -- the empty-everything producer goes",
     "tests": [],
     "edits": [
       {
@@ -158,7 +158,7 @@
   {
     "id": "SC-listKeysOldestFirst",
     "kind": "A",
-    "describes": "listKeysOldestFirst stops honouring `disabled` -- the evictor's empty-keys producer goes",
+    "describes": "listKeysOldestFirst stops honoring `disabled` -- the evictor's empty-keys producer goes",
     "tests": [],
     "edits": [
       {
@@ -171,7 +171,7 @@
   {
     "id": "SC-evictListRows-disabled",
     "kind": "A",
-    "describes": "evictListRows stops honouring `disabled` -- the FIRST half of its two-part guard",
+    "describes": "evictListRows stops honoring `disabled` -- the FIRST half of its two-part guard",
     "tests": [],
     "edits": [
       {
@@ -197,7 +197,7 @@
   {
     "id": "SC-turnKeys",
     "kind": "A",
-    "describes": "turnKeys stops honouring `disabled` -- the evictor's other empty-keys producer goes",
+    "describes": "turnKeys stops honoring `disabled` -- the evictor's other empty-keys producer goes",
     "tests": [],
     "edits": [
       {
@@ -210,7 +210,7 @@
   {
     "id": "SC-evictTurns",
     "kind": "A",
-    "describes": "evictTurns stops honouring `disabled`",
+    "describes": "evictTurns stops honoring `disabled`",
     "tests": [],
     "edits": [
       {
