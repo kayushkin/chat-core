@@ -688,6 +688,7 @@ function applyPayload(prev: Entry, ev: WireEvent): Entry {
       if (raw.system?.task_output_file !== undefined) {
         next.taskOutputFile = raw.system.task_output_file;
       }
+      if (raw.system?.held_message_id !== undefined) next.heldMessageId = raw.system.held_message_id;
       if (raw.system?.task_type !== undefined) next.taskType = raw.system.task_type;
       if (raw.system?.subagent_type !== undefined) {
         next.subagentType = raw.system.subagent_type;

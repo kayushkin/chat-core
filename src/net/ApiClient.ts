@@ -180,8 +180,14 @@ export interface CreatedSession {
   [k: string]: unknown;
 }
 
+/** The answer to POST /sessions/{id}/send (llm-bridge `SendMessageResponse`).
+ *  `status` is `sent`, or `held` when the server is waiting to restart and will
+ *  send the message once it can; `heldMessageId` then names it, and the session's
+ *  stream carries a `message_held_for_restart` system event for it. */
 export interface SendResult {
+  status: 'sent' | 'held';
   messageId?: string;
+  heldMessageId?: string;
 }
 
 /**
@@ -590,8 +596,12 @@ export class ApiClient {
     return createdSessionFromWire(wire);
   }
 
-  send(id: string, text: string): Promise<SendResult> {
-    return this.postJSON<SendResult>(`/sessions/${id}/send`, { message: text });
+  async send(id: string, text: string): Promise<SendResult> {
+    const wire = await this.postJSON<{ status: 'sent' | 'held'; message_id?: string; held_message_id?: string }>(
+      `/sessions/${id}/send`,
+      { message: text },
+    );
+    return { status: wire.status, messageId: wire.message_id, heldMessageId: wire.held_message_id };
   }
 
   /**

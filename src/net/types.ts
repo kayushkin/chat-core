@@ -398,6 +398,10 @@ export interface Entry {
   taskStatus?: string;
   taskSummary?: string;
   taskOutputFile?: string;
+  /** system entries about a message the server held while it waited to restart
+   *  (subtypes `message_held_for_restart`, `held_message_delivered`,
+   *  `held_message_delivery_failed`). The three frames of one message share it. */
+  heldMessageId?: string;
   /** What kind of background work the task is (`local_agent`, `local_bash`, …).
    *  Only `task_started` carries it; without it a background `sleep 2` is
    *  indistinguishable from an agent. */

@@ -99,6 +99,10 @@ export interface WireEventData {
     task_status?: string;
     task_summary?: string;
     task_output_file?: string;
+    /** The message a server held instead of sending, because it was about to
+     *  restart, on `message_held_for_restart`, `held_message_delivered` and
+     *  `held_message_delivery_failed` (llm-bridge `SystemEvent.HeldMessageID`). */
+    held_message_id?: string;
     /** What kind of background work the task is (`local_agent`, `local_bash`, …).
      *  Only `task_started` carries it — Claude Code backgrounds a shell command
      *  through the same task frames it uses for a subagent, and without the kind a
