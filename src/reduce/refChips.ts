@@ -70,7 +70,15 @@ export interface RefChipOptions {
 /** An ordered piece of a parsed message: literal text or a detected reference. */
 export type RefSegment =
   | { type: 'text'; value: string }
-  | { type: 'chip'; kind: RefKind; refId: string };
+  | { type: 'chip'; kind: RefKind; refId: string; serverId?: string };
+
+// A record on another bridge server is written `<id>@<server_id>`: the id as
+// that server hands it out, then the server's own id, `server_` and a ULID
+// (Crockford base 32, 26 characters). A bare id means the server holding the
+// text. Only the forms whose id names a record take a server: a session, a
+// uuid, a registered id. A ULID is upper case, so this suffix never reads as
+// a commit's `<repo>@<sha>`, whose sha is lower-case hex.
+const SERVER_SUFFIX = /^@(server_[0-9A-HJKMNP-TV-Z]{26})(?![0-9A-Za-z_])/;
 
 // Bridge session ids are unambiguous on their own, so they are linkified
 // wherever they appear:
@@ -217,6 +225,7 @@ export function parseRefChips(value: string, options?: RefChipOptions): RefSegme
     if (match.index > last) {
       out.push({ type: 'text', value: value.slice(last, match.index) });
     }
+    const chipsBefore = out.length;
     if (match[1] !== undefined) {
       // `[session:<id>]` — brackets and prefix are part of the token, so the
       // whole match is replaced by the chip and nothing literal is left behind.
@@ -242,6 +251,17 @@ export function parseRefChips(value: string, options?: RefChipOptions): RefSegme
       out.push({ type: 'chip', kind: 'registered', refId: match[0] });
     }
     last = match.index + match[0].length;
+    // `<id>@<server_id>`: the chip names another server's record, and the
+    // suffix is consumed with it.
+    const added = out[out.length - 1];
+    if (out.length > chipsBefore && added?.type === 'chip' && added.kind !== 'action') {
+      const suffix = SERVER_SUFFIX.exec(value.slice(last));
+      if (suffix) {
+        added.serverId = suffix[1];
+        last += suffix[0].length;
+        re.lastIndex = last;
+      }
+    }
   }
   if (last < value.length) {
     out.push({ type: 'text', value: value.slice(last) });
@@ -264,7 +284,7 @@ interface MdInlineCode {
 }
 interface RefChipNode {
   type: 'refChip';
-  data: { hName: 'ref-chip'; hProperties: { kind: RefKind; refId: string } };
+  data: { hName: 'ref-chip'; hProperties: { kind: RefKind; refId: string; serverId?: string } };
   children: MdText[];
 }
 interface MdParent {
@@ -277,11 +297,11 @@ function isParent(node: MdNode): node is MdParent {
   return Array.isArray((node as MdParent).children);
 }
 
-function chip(kind: RefKind, refId: string): RefChipNode {
+function chip(kind: RefKind, refId: string, serverId?: string): RefChipNode {
   return {
     type: 'refChip',
-    data: { hName: 'ref-chip', hProperties: { kind, refId } },
-    children: [{ type: 'text', value: refId }],
+    data: { hName: 'ref-chip', hProperties: serverId ? { kind, refId, serverId } : { kind, refId } },
+    children: [{ type: 'text', value: serverId ? `${refId}@${serverId}` : refId }],
   };
 }
 
@@ -323,7 +343,7 @@ export function remarkRefChips(options?: RefChipOptions) {
           // Only rewrite when at least one chip was found.
           if (!segments.some((s) => s.type === 'chip')) continue;
           const replacement: MdNode[] = segments.map((s) =>
-            s.type === 'text' ? { type: 'text', value: s.value } : chip(s.kind, s.refId),
+            s.type === 'text' ? { type: 'text', value: s.value } : chip(s.kind, s.refId, s.serverId),
           );
           parent.children.splice(i, 1, ...replacement);
           // Skip past the inserted nodes so their text is never re-scanned.
@@ -346,7 +366,7 @@ export function remarkRefChips(options?: RefChipOptions) {
           // stray tick-mark box.
           const replacement: MdNode[] = segments.map((s) =>
             s.type === 'chip'
-              ? chip(s.kind, s.refId)
+              ? chip(s.kind, s.refId, s.serverId)
               : s.value.trim() === ''
                 ? { type: 'text', value: s.value }
                 : { type: 'inlineCode', value: s.value },

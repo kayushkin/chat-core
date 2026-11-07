@@ -19,6 +19,8 @@ export interface ChatProviderProps {
   basePath: string;             // '/api/bridge'
   noteboardBasePath?: string;   // '/api/noteboard' — omit and note/todo ref chips
                                 // say lookup is not configured, never guess a path
+  referenceStoreBasePath?: string; // '/api/bridge/reference-store' — the list of
+                                // reference types and lookups for the signed-in person
   recentN?: number;             // warm-cache size, default 20
   turnsPerBundle?: number;      // last-N turns per bundled session, default 30
   sessionsPerPage?: number;     // sidebar sessions per page, default 100
@@ -545,6 +547,18 @@ export function parseRefChips(value: string, options?: RefChipOptions): RefSegme
 export function remarkRefChips(options?: RefChipOptions): (tree: unknown) => void;
 export interface RefChipOptions { resolvableIdPatterns?: readonly string[] | null }
 export function useResolvableIdPatterns(): readonly string[] | null;   // null until loaded
+// reference-store through the bridge (ChatProvider's `referenceStoreBasePath`): the one
+// list of reference types, and lookups for the signed-in person. A match from it carries
+// `label`, `page_url`, or `refused: true` with nothing else. While hosts move to it, chips
+// use it when it is configured and `resolveEndpoint` otherwise; the latter then goes.
+export function useReferenceTypes(): ReadonlyMap<string, ReferenceType> | null;   // null until loaded
+export class ReferenceStoreClient { constructor(config: { fetch: typeof fetch; basePath: string }); resolve(ids: string[]): Promise<ResolveResponse>; types(): Promise<ReferenceType[]> }
+export function isResolvableReferenceType(type: ReferenceType): boolean;
+export interface ReferenceType { type: string; service: string; description: string; get?: string; id_patterns?: string[]; search?: string; search_results?: string; label_field?: string; summary?: ReferenceSummaryField[]; page?: string; page_site?: string; glyph?: string; access: 'grant' | 'owner' }
+export interface ReferenceSummaryField { field: string; label: string; format: ReferenceFieldFormat }
+export type ReferenceFieldFormat = 'text' | 'number' | 'unix_seconds' | 'unix_milliseconds' | 'iso_time' | 'date' | 'cents' | 'probability' | 'url' | 'reference' | 'boolean';
+// A record on another bridge server is written `<id>@<server_id>` (`server_` and a ULID):
+// the chip segment, and the markdown chip's properties, then carry `serverId`.
 export const ChatContext: React.Context<ChatContextValue | null>;
 export function useChatContext(): ChatContextValue;   // throws outside ChatProvider
 export type RefKind = 'session' | 'note' | 'todo' | 'uuid' | 'action' | 'registered';

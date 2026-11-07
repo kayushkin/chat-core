@@ -15,7 +15,16 @@ import { ApiError } from './ApiClient.js';
 export interface ResolvedRefMatch {
   type: string;
   service: string;
-  data: unknown;
+  /** The store's answer, unchanged. Absent on a refused match. */
+  data?: unknown;
+  /** reference-store only: the record's name, read by the type's label field. */
+  label?: string;
+  /** reference-store only: the record's page, the type's page template filled
+   *  in; absent when the type has no page of its own. */
+  page_url?: string;
+  /** reference-store only: the record exists and the signed-in person may not
+   *  see it. Nothing else about it is sent. */
+  refused?: boolean;
 }
 
 /** Per-id-and-type failures the resolver reports alongside its results (a

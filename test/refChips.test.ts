@@ -606,3 +606,47 @@ describe('parseRefChips — ids the resolver registered', () => {
     expect(paragraph.children[1]?.data?.hProperties).toEqual({ kind: 'registered', refId: 'project_000002' });
   });
 });
+
+describe('a record on another server: <id>@<server_id>', () => {
+  const SERVER = 'server_01JD3Z9Q8W6X2B4C5N7M8P9R0T';
+  const PATTERNS = { resolvableIdPatterns: [String.raw`prediction_\d{6,}`, String.raw`(?:[\w.-]+/)?[\w.-]+@[0-9a-f]{7,40}`] };
+
+  it('takes the server onto the chip and consumes the suffix', () => {
+    const segments = parseRefChips(`see prediction_000012@${SERVER} now`, PATTERNS);
+    expect(segments).toEqual([
+      { type: 'text', value: 'see ' },
+      { type: 'chip', kind: 'registered', refId: 'prediction_000012', serverId: SERVER },
+      { type: 'text', value: ' now' },
+    ]);
+  });
+
+  it('works for a session id and a bare uuid too', () => {
+    const segments = parseRefChips(`br_1794083694355010889@${SERVER} and ${UUID}@${SERVER}`).filter((s) => s.type === 'chip');
+    expect(segments).toEqual([
+      { type: 'chip', kind: 'session', refId: 'br_1794083694355010889', serverId: SERVER },
+      { type: 'chip', kind: 'uuid', refId: UUID, serverId: SERVER },
+    ]);
+  });
+
+  it('leaves a bare id on this server and a commit as a commit', () => {
+    const segments = parseRefChips('prediction_000012 and dash@8487d32', PATTERNS).filter((s) => s.type === 'chip');
+    expect(segments).toEqual([
+      { type: 'chip', kind: 'registered', refId: 'prediction_000012' },
+      { type: 'chip', kind: 'registered', refId: 'dash@8487d32' },
+    ]);
+  });
+
+  it('ignores a suffix that is not a whole server id', () => {
+    expect(textOf(parseRefChips(`prediction_000012@server_short and prediction_000013@${SERVER}x`, PATTERNS))).toBe(
+      '[registered:prediction_000012]@server_short and [registered:prediction_000013]@' + SERVER + 'x',
+    );
+  });
+
+  it('carries the server to the markdown chip and shows it in the text', () => {
+    const tree = { type: 'root', children: [{ type: 'paragraph', children: [{ type: 'text', value: `prediction_000012@${SERVER}` }] }] };
+    remarkRefChips(PATTERNS)(tree as never);
+    const node = (tree.children[0] as { children: Array<{ data?: { hProperties: unknown }; children?: Array<{ value: string }> }> }).children[0];
+    expect(node?.data?.hProperties).toEqual({ kind: 'registered', refId: 'prediction_000012', serverId: SERVER });
+    expect(node?.children?.[0]?.value).toBe(`prediction_000012@${SERVER}`);
+  });
+});

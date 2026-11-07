@@ -57,6 +57,14 @@ export {
   type ResolveRefError,
   type ResolveResponse,
 } from './net/ResolveClient.js';
+export {
+  ReferenceStoreClient,
+  isResolvableReferenceType,
+  type ReferenceStoreClientConfig,
+  type ReferenceType,
+  type ReferenceSummaryField,
+  type ReferenceFieldFormat,
+} from './net/ReferenceStoreClient.js';
 
 // The context itself, for a component library that draws on this store —
 // bridge-ui's reference chips and signal cards read `api` off it. Every React
@@ -336,7 +344,7 @@ export {
   type RefKind,
   type RefSegment,
 } from './reduce/refChips.js';
-export { useResolvableIdPatterns } from './react/resolvableIdPatterns.js';
+export { useResolvableIdPatterns, useReferenceTypes } from './react/resolvableIdPatterns.js';
 
 // ---- Cache ----
 export {

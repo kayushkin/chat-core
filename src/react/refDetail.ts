@@ -3,7 +3,7 @@ import { useChatContext } from './context.js';
 import type { ApiClient } from '../net/ApiClient.js';
 import type { ManagedSessionDetail, TurnModel } from '../net/types.js';
 import type { NoteboardItem } from '../net/NoteboardClient.js';
-import type { ResolveClient, ResolvedRefMatch } from '../net/ResolveClient.js';
+import type { ResolvedRefMatch, ResolveResponse } from '../net/ResolveClient.js';
 import type { FileNamedByTools, FileNamedByToolsContent } from '../reduce/fileMentions.js';
 
 // Data layer for reference chips. A chip is a passive linkification of an id
@@ -128,9 +128,15 @@ interface ResolveQueue {
   timer: ReturnType<typeof setTimeout> | null;
 }
 
-const resolveQueues = new WeakMap<ResolveClient, ResolveQueue>();
+/** Anything that looks ids up in a batch: reference-store's client, or the
+ *  host's old resolver while hosts move off it. */
+interface BatchResolver {
+  resolve(ids: string[]): Promise<ResolveResponse>;
+}
 
-async function flushResolveQueue(client: ResolveClient, queue: ResolveQueue): Promise<void> {
+const resolveQueues = new WeakMap<BatchResolver, ResolveQueue>();
+
+async function flushResolveQueue(client: BatchResolver, queue: ResolveQueue): Promise<void> {
   queue.timer = null;
   const taken = queue.pending;
   queue.pending = new Map();
@@ -165,7 +171,7 @@ async function flushResolveQueue(client: ResolveClient, queue: ResolveQueue): Pr
   }
 }
 
-function enqueueResolve(client: ResolveClient, id: string): Promise<ResolvedRefMatch[]> {
+function enqueueResolve(client: BatchResolver, id: string): Promise<ResolvedRefMatch[]> {
   let queue = resolveQueues.get(client);
   if (!queue) {
     queue = { pending: new Map(), timer: null };
@@ -290,12 +296,15 @@ export function useNoteboardRefDetail(itemId: string): RefDetailState<NoteboardI
  * only honest rendering of an unclassified id.
  */
 export function useResolvedRef(refId: string): RefDetailState<ResolvedRefMatch[]> {
-  const { resolve } = useChatContext();
-  return useCachedRef(`${clientKey(resolve)}|${refId}`, refId !== '', () => {
-    if (!resolve) {
+  const { resolve, references } = useChatContext();
+  // reference-store when the host gave it; the old resolver only for a host
+  // that has not moved yet (see ChatContextValue.references).
+  const client: BatchResolver | null = references ?? resolve;
+  return useCachedRef(`${clientKey(client)}|${refId}`, refId !== '', () => {
+    if (!client) {
       return Promise.reject(new Error('reference resolver is not configured here'));
     }
-    return takeCached(resolvedRefCache, resolve, refId, () => enqueueResolve(resolve, refId));
+    return takeCached(resolvedRefCache, client, refId, () => enqueueResolve(client, refId));
   });
 }
 

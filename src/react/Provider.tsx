@@ -2,6 +2,7 @@ import { useEffect, useRef, type JSX, type ReactNode } from 'react';
 import { ApiClient } from '../net/ApiClient.js';
 import { NoteboardClient } from '../net/NoteboardClient.js';
 import { ResolveClient } from '../net/ResolveClient.js';
+import { ReferenceStoreClient } from '../net/ReferenceStoreClient.js';
 import { SessionCache } from '../cache/SessionCache.js';
 import { SyncEngine } from '../sync/SyncEngine.js';
 import { Prefetcher } from '../boot/Prefetcher.js';
@@ -20,6 +21,11 @@ export interface ChatProviderProps {
    *  it and bare-uuid ref chips render as plain text — with no resolver there
    *  is no honest way to say what an unclassified id names. */
   resolveEndpoint?: string;
+  /** Where reference-store is reached through the bridge, e.g. dash's
+   *  '/api/bridge/reference-store'. It owns the list of reference types and
+   *  looks ids up for the signed-in person; when given, chips use it instead of
+   *  `resolveEndpoint`. */
+  referenceStoreBasePath?: string;
   recentN?: number; // warm-cache size, default 20
   turnsPerBundle?: number; // last-N turns per bundled session, default 30
   sessionsPerPage?: number; // sidebar sessions per page, default 100
@@ -54,6 +60,7 @@ export function ChatProvider(props: ChatProviderProps): JSX.Element {
     basePath,
     noteboardBasePath,
     resolveEndpoint,
+    referenceStoreBasePath,
     recentN = 20,
     turnsPerBundle = 30,
     sessionsPerPage,
@@ -95,7 +102,10 @@ export function ChatProvider(props: ChatProviderProps): JSX.Element {
     const resolve = resolveEndpoint
       ? new ResolveClient({ fetch: fetchFn, endpoint: resolveEndpoint })
       : null;
-    ctxRef.current = { store, api, cache: sessionCache, sync, prefetcher, noteboard, resolve };
+    const references = referenceStoreBasePath
+      ? new ReferenceStoreClient({ fetch: fetchFn, basePath: referenceStoreBasePath })
+      : null;
+    ctxRef.current = { store, api, cache: sessionCache, sync, prefetcher, noteboard, resolve, references };
   }
 
   const ctx = ctxRef.current;

@@ -2,6 +2,7 @@ import { createContext, useContext } from 'react';
 import type { ApiClient } from '../net/ApiClient.js';
 import type { NoteboardClient } from '../net/NoteboardClient.js';
 import type { ResolveClient } from '../net/ResolveClient.js';
+import type { ReferenceStoreClient } from '../net/ReferenceStoreClient.js';
 import type { SessionCache } from '../cache/SessionCache.js';
 import type { SyncEngine } from '../sync/SyncEngine.js';
 import type { Prefetcher } from '../boot/Prefetcher.js';
@@ -23,6 +24,12 @@ export interface ChatContextValue {
    *  configure a `resolveEndpoint`. Null means a bare uuid stays plain text —
    *  the chip never guesses which store an unclassified id belongs to. */
   resolve: ResolveClient | null;
+  /** reference-store through the bridge, or null when the host did not
+   *  configure a `referenceStoreBasePath`. It answers the list of reference
+   *  types and looks ids up for the signed-in person. While hosts move to it,
+   *  a chip reads it when present and the old resolver otherwise; the old
+   *  resolver goes once every host passes this. */
+  references: ReferenceStoreClient | null;
 }
 
 export const ChatContext = createContext<ChatContextValue | null>(null);
