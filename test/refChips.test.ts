@@ -650,3 +650,30 @@ describe('a record on another server: <id>@<server_id>', () => {
     expect(node?.children?.[0]?.value).toBe(`prediction_000012@${SERVER}`);
   });
 });
+
+describe('parseRefChips — ids that are part of an address', () => {
+  const options: RefChipOptions = { resolvableIdPatterns: ['possession_\\d{6,}', 'entry_\\d{6,}'] };
+
+  it('leaves an id that is a path segment as text', () => {
+    const text = 'image at /possessions/possession_000377/image, keep possession_000377';
+    expect(chips(text, options)).toEqual([{ kind: 'registered', refId: 'possession_000377' }]);
+    expect(textOf(parseRefChips(text, options))).toBe(
+      'image at /possessions/possession_000377/image, keep [registered:possession_000377]',
+    );
+  });
+
+  it('leaves an id at the end of a path as text', () => {
+    expect(chips(`saved under notes/${UUID}`)).toEqual([]);
+  });
+
+  it('leaves an id inside a web address as text', () => {
+    expect(chips('open https://dash.example/journal?id=entry_000284 now', options)).toEqual([]);
+    expect(chips(`https://dash.example/notes?id=${UUID}`)).toEqual([]);
+  });
+
+  it('still chips an id next to an address', () => {
+    expect(chips('entry_000284 is at https://dash.example/journal', options)).toEqual([
+      { kind: 'registered', refId: 'entry_000284' },
+    ]);
+  });
+});
