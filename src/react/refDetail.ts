@@ -3,7 +3,7 @@ import { useChatContext } from './context.js';
 import type { ApiClient } from '../net/ApiClient.js';
 import type { ManagedSessionDetail, TurnModel } from '../net/types.js';
 import type { NoteboardItem } from '../net/NoteboardClient.js';
-import type { ResolvedRefMatch, ResolveResponse } from '../net/ResolveClient.js';
+import type { ResolvedRefMatch, ResolveResponse } from '../net/ReferenceStoreClient.js';
 import type { FileNamedByTools, FileNamedByToolsContent } from '../reduce/fileMentions.js';
 
 // Data layer for reference chips. A chip is a passive linkification of an id
@@ -128,8 +128,7 @@ interface ResolveQueue {
   timer: ReturnType<typeof setTimeout> | null;
 }
 
-/** Anything that looks ids up in a batch: reference-store's client, or the
- *  host's old resolver while hosts move off it. */
+/** What looks ids up in a batch: reference-store's client. */
 interface BatchResolver {
   resolve(ids: string[]): Promise<ResolveResponse>;
 }
@@ -296,10 +295,8 @@ export function useNoteboardRefDetail(itemId: string): RefDetailState<NoteboardI
  * only honest rendering of an unclassified id.
  */
 export function useResolvedRef(refId: string): RefDetailState<ResolvedRefMatch[]> {
-  const { resolve, references } = useChatContext();
-  // reference-store when the host gave it; the old resolver only for a host
-  // that has not moved yet (see ChatContextValue.references).
-  const client: BatchResolver | null = references ?? resolve;
+  const { references } = useChatContext();
+  const client: BatchResolver | null = references;
   return useCachedRef(`${clientKey(client)}|${refId}`, refId !== '', () => {
     if (!client) {
       return Promise.reject(new Error('reference resolver is not configured here'));

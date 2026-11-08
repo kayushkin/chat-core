@@ -32,9 +32,9 @@ import { fileMentionOf } from './fileMentions.js';
  * labels itself from that once loaded (see NoteboardClient.getItem).
  *
  * `uuid` is a bare uuid with no cue word at all: the text says nothing about
- * what it names, so the chip asks the host's reference resolver (dash's
- * `POST /api/resolve`, see ResolveClient), which probes the stores registered
- * in the entity-type registry and reports every one that recognizes the id.
+ * what it names, so the chip asks reference-store (see ReferenceStoreClient),
+ * which probes the stores on its list of reference types and reports every one
+ * that recognizes the id.
  * This is the kind that makes chips independent of how the author phrased the
  * mention — "note <uuid>", "saved as <uuid>", or the uuid alone all resolve.
  *
@@ -44,8 +44,8 @@ import { fileMentionOf } from './fileMentions.js';
  * same session, so text alone can never make a button.
  *
  * `registered` is an id whose shape the host's resolver declared
- * (`project_000001`, `prediction_000001`, …): kanban-store's entity-type
- * registry lists each type's id patterns, the host hands the ones it can
+ * (`project_000001`, `prediction_000001`, …): reference-store's list of
+ * reference types gives each type's id patterns, the host hands the ones it can
  * resolve to the matcher (`resolvableIdPatterns`), and the chip asks the
  * resolver what the id names, as it does for a bare uuid. No prefix is written
  * here, so a store added to the registry is detected with no change in this

@@ -50,14 +50,9 @@ export {
   type FileNamedByToolsContent,
 } from './reduce/fileMentions.js';
 export {
-  ResolveClient,
-  type ResolveClientConfig,
-  type ResolvableType,
   type ResolvedRefMatch,
   type ResolveRefError,
   type ResolveResponse,
-} from './net/ResolveClient.js';
-export {
   ReferenceStoreClient,
   isResolvableReferenceType,
   type ReferenceStoreClientConfig,

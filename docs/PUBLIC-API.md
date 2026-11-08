@@ -533,11 +533,11 @@ export type TimelineTone =
 // The matcher chips bare session ids (br_/herald-/autoworker- snowflakes) anywhere;
 // noteboard uuids behind a cue word — note/workspace (kind 'note') or todo/item/card
 // (kind 'todo'), each also with an `_id` suffix; a bare uuid as kind 'uuid', which the
-// chip classifies through the host's resolver; `session_action_…` ids as kind 'action';
+// chip classifies through reference-store; `session_action_…` ids as kind 'action';
 // and, when the host passes `resolvableIdPatterns`, every id matching one of them as kind
 // 'registered' (`project_000001`, `prediction_000001`, …), classified the same way. The
-// patterns come from the resolver itself (`useResolvableIdPatterns`, which reads `GET` on
-// the resolve endpoint once per client), so no store prefix is written in this package.
+// patterns come from reference-store's list (`useResolvableIdPatterns`, which reads its
+// `GET /types` once per client), so no store prefix is written in this package.
 // The cue only says where to LOOK; the loaded item's own `type` is the authority and the
 // chip relabels itself from it.
 //
@@ -549,8 +549,8 @@ export interface RefChipOptions { resolvableIdPatterns?: readonly string[] | nul
 export function useResolvableIdPatterns(): readonly string[] | null;   // null until loaded
 // reference-store through the bridge (ChatProvider's `referenceStoreBasePath`): the one
 // list of reference types, and lookups for the signed-in person. A match from it carries
-// `label`, `page_url`, or `refused: true` with nothing else. While hosts move to it, chips
-// use it when it is configured and `resolveEndpoint` otherwise; the latter then goes.
+// `label`, `page_url`, or `refused: true` with nothing else. It is the only resolver: with
+// no `referenceStoreBasePath`, an id with no chip of its own stays plain text.
 export function useReferenceTypes(): ReadonlyMap<string, ReferenceType> | null;   // null until loaded
 export class ReferenceStoreClient { constructor(config: { fetch: typeof fetch; basePath: string }); resolve(ids: string[]): Promise<ResolveResponse>; types(): Promise<ReferenceType[]> }
 export function isResolvableReferenceType(type: ReferenceType): boolean;

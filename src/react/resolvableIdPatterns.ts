@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react';
-import type { ResolveClient } from '../net/ResolveClient.js';
 import {
   isResolvableReferenceType,
   type ReferenceStoreClient,
@@ -17,8 +16,6 @@ import { useChatContext } from './context.js';
 
 const typesByClient = new WeakMap<ReferenceStoreClient, Promise<readonly ReferenceType[]>>();
 const loadedTypesByClient = new WeakMap<ReferenceStoreClient, ReadonlyMap<string, ReferenceType>>();
-const patternsByResolver = new WeakMap<ResolveClient, Promise<readonly string[]>>();
-const loadedPatternsByResolver = new WeakMap<ResolveClient, readonly string[]>();
 
 function typesFor(client: ReferenceStoreClient): Promise<readonly ReferenceType[]> {
   let pending = typesByClient.get(client);
@@ -51,22 +48,6 @@ function patternsOf(types: ReadonlyMap<string, ReferenceType>): readonly string[
   return patterns;
 }
 
-/** The old resolver's patterns, for a host that has not moved to
- *  reference-store yet. Goes with the old resolver. */
-function resolverPatternsFor(client: ResolveClient): Promise<readonly string[]> {
-  let pending = patternsByResolver.get(client);
-  if (!pending) {
-    pending = client.resolvableTypes().then((types) => {
-      const patterns = types.flatMap((type) => type.id_patterns);
-      loadedPatternsByResolver.set(client, patterns);
-      return patterns;
-    });
-    pending.catch(() => patternsByResolver.delete(client));
-    patternsByResolver.set(client, pending);
-  }
-  return pending;
-}
-
 /** Every reference type by name, or null until the list arrives, when the
  *  host configured no reference-store, or when the read failed. A chip reads
  *  its type's label field, summary fields and glyph from here. */
@@ -97,26 +78,6 @@ export function useReferenceTypes(): ReadonlyMap<string, ReferenceType> | null {
  *  host configured nowhere to look ids up, or when the read failed. Pass the
  *  result to `parseRefChips` / `remarkRefChips` as `resolvableIdPatterns`. */
 export function useResolvableIdPatterns(): readonly string[] | null {
-  const { resolve, references } = useChatContext();
   const types = useReferenceTypes();
-  const [resolverPatterns, setResolverPatterns] = useState<readonly string[] | null>(() =>
-    resolve ? (loadedPatternsByResolver.get(resolve) ?? null) : null,
-  );
-  useEffect(() => {
-    if (references || !resolve) return;
-    let live = true;
-    resolverPatternsFor(resolve).then(
-      (loaded) => {
-        if (live) setResolverPatterns(loaded);
-      },
-      (error: unknown) => {
-        console.error('chat-core: could not read the id patterns the reference resolver answers:', error);
-      },
-    );
-    return () => {
-      live = false;
-    };
-  }, [resolve, references]);
-  if (references) return types ? patternsOf(types) : null;
-  return resolverPatterns;
+  return types ? patternsOf(types) : null;
 }

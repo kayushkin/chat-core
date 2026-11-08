@@ -1,7 +1,6 @@
 import { useEffect, useRef, type JSX, type ReactNode } from 'react';
 import { ApiClient } from '../net/ApiClient.js';
 import { NoteboardClient } from '../net/NoteboardClient.js';
-import { ResolveClient } from '../net/ResolveClient.js';
 import { ReferenceStoreClient } from '../net/ReferenceStoreClient.js';
 import { SessionCache } from '../cache/SessionCache.js';
 import { SyncEngine } from '../sync/SyncEngine.js';
@@ -17,14 +16,9 @@ export interface ChatProviderProps {
    *  chips render but say lookup is not configured here — they never guess a
    *  path, because a wrong one would 404 as if the item did not exist. */
   noteboardBasePath?: string;
-  /** The host's reference-resolver endpoint, e.g. dash's '/api/resolve'. Omit
-   *  it and bare-uuid ref chips render as plain text — with no resolver there
-   *  is no honest way to say what an unclassified id names. */
-  resolveEndpoint?: string;
   /** Where reference-store is reached through the bridge, e.g. dash's
    *  '/api/bridge/reference-store'. It owns the list of reference types and
-   *  looks ids up for the signed-in person; when given, chips use it instead of
-   *  `resolveEndpoint`. */
+   *  looks ids up for the signed-in person. */
   referenceStoreBasePath?: string;
   recentN?: number; // warm-cache size, default 20
   turnsPerBundle?: number; // last-N turns per bundled session, default 30
@@ -59,7 +53,6 @@ export function ChatProvider(props: ChatProviderProps): JSX.Element {
     fetch: fetchFn,
     basePath,
     noteboardBasePath,
-    resolveEndpoint,
     referenceStoreBasePath,
     recentN = 20,
     turnsPerBundle = 30,
@@ -99,13 +92,10 @@ export function ChatProvider(props: ChatProviderProps): JSX.Element {
     const noteboard = noteboardBasePath
       ? new NoteboardClient({ fetch: fetchFn, basePath: noteboardBasePath })
       : null;
-    const resolve = resolveEndpoint
-      ? new ResolveClient({ fetch: fetchFn, endpoint: resolveEndpoint })
-      : null;
     const references = referenceStoreBasePath
       ? new ReferenceStoreClient({ fetch: fetchFn, basePath: referenceStoreBasePath })
       : null;
-    ctxRef.current = { store, api, cache: sessionCache, sync, prefetcher, noteboard, resolve, references };
+    ctxRef.current = { store, api, cache: sessionCache, sync, prefetcher, noteboard, references };
   }
 
   const ctx = ctxRef.current;

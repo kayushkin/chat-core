@@ -1,5 +1,4 @@
 import { ApiError } from './ApiClient.js';
-import type { ResolveResponse } from './ResolveClient.js';
 
 // reference-store, reached through llm-bridge-server's gateway at
 // `<bridge>/reference-store`: the one list of reference types (what each kind
@@ -8,6 +7,37 @@ import type { ResolveResponse } from './ResolveClient.js';
 // person, narrowed to what they may see. One reference-store per bridge
 // server; a connected server's is reached through that server's connection
 // proxy, so a chip there is looked up by the server that owns the record.
+
+/** One record an id names, as reference-store answers it for the signed-in
+ *  person: which type and service, the store's answer unchanged, the record's
+ *  name and page, or `refused` with nothing else. */
+export interface ResolvedRefMatch {
+  type: string;
+  service: string;
+  /** The store's answer, unchanged. Absent on a refused match. */
+  data?: unknown;
+  /** The record's name, read by the type's label field. */
+  label?: string;
+  /** The record's page, the type's page template filled in; absent when the
+   *  type has no page of its own. */
+  page_url?: string;
+  /** The record exists and the signed-in person may not see it. */
+  refused?: boolean;
+}
+
+/** A store that could not say whether it holds an id. Present means the id's
+ *  absence from that store is NOT known to be a miss. */
+export interface ResolveRefError {
+  id: string;
+  type: string;
+  error: string;
+}
+
+export interface ResolveResponse {
+  /** Every requested id is present; an empty array is a definitive miss. */
+  results: Record<string, ResolvedRefMatch[]>;
+  errors?: ResolveRefError[];
+}
 
 /** How a summary field's value should be shown. A hint about the value, not a
  *  rendering: the chip formats it. reference-store's `GET /vocabulary` serves
