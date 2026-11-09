@@ -671,6 +671,24 @@ describe('parseRefChips — ids that are part of an address', () => {
     expect(chips(`https://dash.example/notes?id=${UUID}`)).toEqual([]);
   });
 
+  it('leaves an id inside a path with a query as text', () => {
+    expect(chips('/journal?id=entry_000284', options)).toEqual([]);
+    expect(chips('open /journal?id=entry_000284 now', options)).toEqual([]);
+    expect(chips(`(see ./notes?id=${UUID})`)).toEqual([]);
+  });
+
+  it('leaves the ref: link form written out as text', () => {
+    expect(chips('[a group](ref:entry_000284)', options)).toEqual([]);
+  });
+
+  it('still chips an id in prose that holds a slash elsewhere', () => {
+    expect(chips('entry_000284 and/or possession_000377', options)).toEqual([
+      { kind: 'registered', refId: 'entry_000284' },
+      { kind: 'registered', refId: 'possession_000377' },
+    ]);
+    expect(chips('id=entry_000284', options)).toEqual([{ kind: 'registered', refId: 'entry_000284' }]);
+  });
+
   it('still chips an id next to an address', () => {
     expect(chips('entry_000284 is at https://dash.example/journal', options)).toEqual([
       { kind: 'registered', refId: 'entry_000284' },

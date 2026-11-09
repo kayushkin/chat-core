@@ -208,24 +208,31 @@ function registeredAlternative(patterns: readonly string[] | null | undefined): 
   return alternative;
 }
 
-// A web address, up to the first space or bracket. An id inside one is part of
-// the address (`https://dash.example/journal?id=entry_000284`), and chipping it
-// would cut the address in two.
-const WEB_ADDRESS = /\b[a-z][a-z0-9+.-]*:\/\/[^\s<>()\[\]]+/gi;
+// An address, up to the first space, bracket or quote: a web address with
+// its scheme (`https://dash.example/journal?id=entry_000284`), or a path that
+// starts a word (`/photos?id=photo_000001`, `./out/<uuid>.json`, `~/x`). An id
+// inside one is part of the address, and chipping it would cut the address in
+// two.
+const ADDRESS = /(?:\b[a-z][a-z0-9+.-]*:\/\/|(?<![^\s([{"'`])(?:~|\.{1,2})?\/)[^\s<>()[\]{}"'`]+/gi;
 
-function webAddressSpans(value: string): Array<[number, number]> {
+function addressSpans(value: string): Array<[number, number]> {
   const spans: Array<[number, number]> = [];
-  for (const found of value.matchAll(WEB_ADDRESS)) {
+  for (const found of value.matchAll(ADDRESS)) {
     spans.push([found.index, found.index + found[0].length]);
   }
   return spans;
 }
 
-/** An id with a `/` against either end is one segment of a path
- *  (`/possessions/possession_000377/image`, `photos/<uuid>.jpg`'s folder), and
- *  an id inside a web address is part of that address: both stay text. */
+// `ref:<id>` that is not a markdown link's target is the link form written
+// out, as in `[a face group](ref:face_group_000001)` set in code to show it.
+const REFERENCE_LINK_SCHEME = 'ref:';
+
+/** An id stays text when it is part of an address: a `/` against either end
+ *  (one segment of a path, `possessions/possession_000377/image`), inside a web
+ *  address or a path, or right after `ref:`. */
 function isPartOfAnAddress(value: string, start: number, end: number, spans: Array<[number, number]>): boolean {
   if (value[start - 1] === '/' || value[end] === '/') return true;
+  if (value.slice(start - REFERENCE_LINK_SCHEME.length, start) === REFERENCE_LINK_SCHEME) return true;
   return spans.some(([spanStart, spanEnd]) => start >= spanStart && end <= spanEnd);
 }
 
@@ -239,13 +246,13 @@ function newTokenRe(options?: RefChipOptions): RegExp {
  *  a framework-agnostic function so it is trivially testable and reusable. */
 export function parseRefChips(value: string, options?: RefChipOptions): RefSegment[] {
   const re = newTokenRe(options);
-  const addressSpans = webAddressSpans(value);
+  const spans = addressSpans(value);
   const out: RefSegment[] = [];
   let last = 0;
   let match: RegExpExecArray | null;
   while ((match = re.exec(value)) !== null) {
     // Left in the text run: `last` stays put, so the next text segment takes it.
-    if (isPartOfAnAddress(value, match.index, match.index + match[0].length, addressSpans)) continue;
+    if (isPartOfAnAddress(value, match.index, match.index + match[0].length, spans)) continue;
     if (match.index > last) {
       out.push({ type: 'text', value: value.slice(last, match.index) });
     }
